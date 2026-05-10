@@ -2,7 +2,7 @@
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-
+import 'package:flutter/foundation.dart';
 // 1. Định nghĩa trạng thái (Dữ liệu) của WebSocket
 class WebSocketState {
   final bool isConnected;
@@ -71,7 +71,7 @@ class WebSocketNotifier extends Notifier<WebSocketState> {
       // Khi có lỗi
       onError: (error) {
         state = state.copyWith(isConnected: false);
-        print('Lỗi WebSocket: $error');
+        debugPrint('Lỗi WebSocket: $error');
       },
     );
   }

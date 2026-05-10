@@ -75,7 +75,7 @@ class DevicesTab extends StatefulWidget {
 }
 
 class _DevicesTabState extends State<DevicesTab> {
-  // THAY ĐỊA CHỈ IP NÀY BẰNG IP IPv4 CỦA MÁY TÍNH (MỞ TERMINAL GÕ ipconfig)
+  // THAY ĐỊA CHỈ IP NÀY BẰNG IP IPv4 CỦA MÁY TÍNH
   final String serverIp = '192.168.1.62'; 
   
   List<dynamic> devices = [];
@@ -91,16 +91,39 @@ class _DevicesTabState extends State<DevicesTab> {
     try {
       final response = await http.get(Uri.parse('http://$serverIp:8000/api/devices'));
       if (response.statusCode == 200) {
-        final data = json.decode(utf8.decode(response.bodyBytes)); // Xử lý UTF-8 cho Web
+        final data = json.decode(utf8.decode(response.bodyBytes));
         setState(() {
           devices = data['data'];
           isLoading = false;
         });
       }
     } catch (e) {
-      print("Lỗi kết nối API: $e");
+      debugPrint("Lỗi kết nối API: $e"); // ĐÃ SỬA print -> debugPrint
       setState(() => isLoading = false);
     }
+  }
+
+// Hàm tạo giao diện Nút bấm cho máy lọc
+  Widget _buildModeButton(dynamic device, String label, String modeValue) {
+    return ActionChip(
+      label: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+      backgroundColor: Colors.blueAccent.withValues(alpha: 0.1),
+      side: const BorderSide(color: Colors.blueAccent, width: 0.5),
+      onPressed: () async {
+        final brand = device['brand'];
+        final deviceId = device['id'];
+        try {
+          final url = Uri.parse('http://$serverIp:8000/api/test-control/$brand/$deviceId/mode?mode=$modeValue');
+          await http.get(url);
+          // Tùy chọn: Thể hiện thông báo nhỏ trên màn hình
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Đã chọn chế độ: $label'), duration: const Duration(seconds: 1)),
+          );
+        } catch (e) {
+          debugPrint("Lỗi đổi chế độ: $e");
+        }
+      },
+    );
   }
 
   @override
@@ -119,50 +142,66 @@ class _DevicesTabState extends State<DevicesTab> {
               itemCount: devices.length,
               itemBuilder: (context, index) {
                 final device = devices[index];
-                IconData icon = Icons.device_hub;
                 
+                // Nhận diện loại thiết bị để vẽ Icon và Nút
+                bool isAirPurifier = device['name'].toString().toLowerCase().contains('lọc');
+                IconData icon = Icons.device_hub;
                 if (device['name'].toString().toLowerCase().contains('mèo')) icon = Icons.pets;
-                if (device['name'].toString().toLowerCase().contains('lọc')) icon = Icons.air;
-                if (device['name'].toString().toLowerCase().contains('cửa')) icon = Icons.door_sliding;
+                if (isAirPurifier) icon = Icons.air;
 
                 return Card(
                   color: Colors.white10,
                   margin: const EdgeInsets.only(bottom: 16),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                    leading: CircleAvatar(
-                      backgroundColor: Colors.blueAccent.withOpacity(0.2),
-                      child: Icon(icon, color: Colors.blueAccent),
-                    ),
-                    title: Text(device['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text("Hãng: ${device['brand']}"),
-                    trailing: Switch(
-                      value: device['is_active'],
-                      onChanged: (bool value) async {
-                        // 1. Cập nhật giao diện ngay lập tức cho mượt
-                        setState(() => device['is_active'] = value);
-                        
-                        // 2. Gọi API điều khiển xuống Backend FastAPI
-                        final action = value ? "on" : "off";
-                        final brand = device['brand'];
-                        final deviceId = device['id'];
-                        
-                        try {
-                          final url = Uri.parse('http://$serverIp:8000/api/test-control/$brand/$deviceId?action=$action');
-                          final response = await http.get(url);
-                          
-                          if (response.statusCode != 200) {
-                            // Nếu lỗi, trả công tắc về trạng thái cũ
-                            setState(() => device['is_active'] = !value);
-                            print("Lỗi từ server: ${response.body}");
-                          }
-                        } catch (e) {
-                          setState(() => device['is_active'] = !value);
-                          print("Lỗi kết nối: $e");
-                        }
-                      },
-                    ),
+                  child: Column( // Dùng Column để chứa ListTile và phần Nút bấm bên dưới
+                    children: [
+                      ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                        leading: CircleAvatar(
+                          backgroundColor: device['is_active'] ? Colors.blueAccent.withValues(alpha: 0.2) : Colors.grey.withValues(alpha: 0.1),
+                          child: Icon(icon, color: device['is_active'] ? Colors.blueAccent : Colors.grey),
+                        ),
+                        title: Text(device['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text("Hãng: ${device['brand']}"),
+                        trailing: Switch(
+                          value: device['is_active'],
+                          onChanged: (bool value) async {
+                            setState(() => device['is_active'] = value);
+                            final action = value ? "on" : "off";
+                            final brand = device['brand'];
+                            final deviceId = device['id'];
+                            
+                            try {
+                              final url = Uri.parse('http://$serverIp:8000/api/test-control/$brand/$deviceId?action=$action');
+                              final response = await http.get(url);
+                              if (response.statusCode != 200) {
+                                setState(() => device['is_active'] = !value);
+                              }
+                            } catch (e) {
+                              setState(() => device['is_active'] = !value);
+                            }
+                          },
+                        ),
+                      ),
+                      
+                      // Hiển thị dải nút điều khiển NẾU là máy lọc và đang BẬT
+                      if (isAirPurifier && device['is_active'])
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
+                          child: Wrap(
+                            spacing: 8.0, // Khoảng cách ngang giữa các nút
+                            runSpacing: 8.0, // Khoảng cách dọc khi nút rớt dòng
+                            alignment: WrapAlignment.center,
+                            children: [
+                              _buildModeButton(device, 'Thấp', '1'),
+                              _buildModeButton(device, 'Trung bình', '2'),
+                              _buildModeButton(device, 'Cao', '3'),
+                              _buildModeButton(device, 'Auto', 'auto'),
+                              _buildModeButton(device, 'Ngủ', 'sleep'),
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                 );
               },
@@ -182,13 +221,11 @@ class AIAssistantTab extends ConsumerStatefulWidget {
 }
 
 class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
-  // Bộ điều khiển ô nhập văn bản (Giả lập Speech-to-Text)
   final TextEditingController _commandController = TextEditingController();
 
   void _sendCommand() {
     final text = _commandController.text.trim();
     if (text.isNotEmpty) {
-      // Gửi văn bản lên Server qua WebSocket
       ref.read(webSocketProvider.notifier).sendMessage(text);
       _commandController.clear();
     }
