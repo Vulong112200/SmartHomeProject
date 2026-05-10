@@ -37,17 +37,20 @@ class RojecoConnector(DeviceConnector):
 
     async def set_mode(self, device_id: str, mode: str) -> bool:
         try:
+            if not self.is_connected: self.openapi.connect()
+            
+            # Chuyển mode sang số nguyên (portions)
             portions = int(mode)
-            print(f"[Rojeco] 🐈 Đang gọi API nhả {portions} phần...")
             
-            # Mã lệnh chuẩn xác từ ảnh Debug của bạn
+            # Cấu trúc Body chuẩn theo ảnh Debug của bạn
             commands = {'commands': [{'code': 'manual_feed', 'value': portions}]}
-            response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
             
-            # IN RA LOG ĐỂ XEM TUYA TRẢ LỜI GÌ
-            print(f"[Rojeco Phản hồi từ Tuya]: {response}") 
+            # ĐƯỜNG DẪN CHUẨN: /v1.0/iot-03/...
+            endpoint = f'/v1.0/iot-03/devices/{device_id}/commands'
+            response = self.openapi.post(endpoint, commands)
             
+            print(f"[Rojeco] Gửi lệnh thành công: {response}")
             return response.get('success', False)
         except Exception as e:
-            print(f"[Rojeco Lỗi Code]: {e}")
+            print(f"[Rojeco] Lỗi: {e}")
             return False

@@ -34,16 +34,22 @@ class TuyaConnector(DeviceConnector):
     async def turn_off(self, device_id: str) -> bool:
         return await self.set_mode(device_id, "close")
 
-    async def set_mode(self, device_id: str, mode: str) -> bool:
-        if not self.is_connected: return False
-        mode = mode.lower()
-        print(f"[Tuya] 🚪 Đang gọi API {mode} cửa cuốn...")
-        
-        # Mã lệnh chuẩn xác từ ảnh Debug của bạn
-        commands = {'commands': [{'code': 'control', 'value': mode}]}
-        response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
-        
-        # IN RA LOG ĐỂ XEM TUYA TRẢ LỜI GÌ
-        print(f"[Tuya Phản hồi từ Tuya]: {response}")
-        
-        return response.get('success', False)
+    aasync def set_mode(self, device_id: str, mode: str) -> bool:
+        try:
+            if not self.is_connected: self.openapi.connect()
+            
+            # Với cửa cuốn, mode là 'open', 'close', 'stop'
+            mode = mode.lower()
+            
+            # Cấu trúc Body chuẩn theo ảnh Debug
+            commands = {'commands': [{'code': 'control', 'value': mode}]}
+            
+            # ĐƯỜNG DẪN CHUẨN: /v1.0/iot-03/...
+            endpoint = f'/v1.0/iot-03/devices/{device_id}/commands'
+            response = self.openapi.post(endpoint, commands)
+            
+            print(f"[Tuya Door] Gửi lệnh {mode}: {response}")
+            return response.get('success', False)
+        except Exception as e:
+            print(f"[Tuya Door] Lỗi: {e}")
+            return False
