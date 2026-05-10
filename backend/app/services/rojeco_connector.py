@@ -1,33 +1,49 @@
-# backend/app/services/rojeco_connector.py
+from tuya_connector import TuyaOpenAPI
 from .base_connector import DeviceConnector
 from typing import Dict, Any
 
 class RojecoConnector(DeviceConnector):
     def __init__(self):
         self.is_connected = False
+        
+        # --- ĐIỀN 2 MÃ CỦA BẠN VÀO ĐÂY ---
+        self.ACCESS_ID = "vucjttuxyjnvq9drt4j9"      # Vd: vuqttuxyj...
+        self.ACCESS_KEY = "dffb86f14ef34d87a14d38c0f30314ce" # Vd: dffb86f...
+        
+        # Server cho khu vực Singapore
+        self.API_ENDPOINT = "https://openapi.tuyain.com" 
+        
+        self.openapi = TuyaOpenAPI(self.API_ENDPOINT, self.ACCESS_ID, self.ACCESS_KEY)
 
     async def connect(self) -> bool:
-        print("[Rojeco] ?? k?t n?i h? th?ng m?y cho th? c?ng ?n.")
-        self.is_connected = True
-        return True
+        try:
+            self.openapi.connect()
+            print("[Rojeco] ✅ Đã kết nối thành công với Tuya Cloud!")
+            self.is_connected = True
+            return True
+        except Exception as e:
+            print(f"[Rojeco] ❌ Lỗi kết nối Tuya: {e}")
+            return False
 
     async def get_device_state(self, device_id: str) -> Dict[str, Any]:
-        return {"device_id": device_id, "status": "ON", "food_level": "OK"}
+        return {"device_id": device_id, "status": "ON"}
 
     async def turn_on(self, device_id: str) -> bool:
-        # B?t = M?c ??nh cho ?n 1 ph?n
-        return await self.feed(device_id, 1)
-
-    async def turn_off(self, device_id: str) -> bool:
-        print(f"[Rojeco] M?y cho ?n {device_id} ?ang ? ch? ?? ch?.")
-        return True
-
-    # H?m ??c th? c?a Rojeco: Cho ?n theo ph?n
-    async def feed(self, device_id: str, portions: int) -> bool:
-        if 1 <= portions <= 10:
-            print(f"[Rojeco] ? ?? nh? {portions} ph?n th?c ?n cho ({device_id}).")
-            # TODO: Sau n?y b?n s? g?n API th?t c?a Tuya/Rojeco v?o ??y
+        if not self.is_connected: 
+            return False
+        print(f"[Rojeco] 🐈 Đang ra lệnh nhả 1 phần thức ăn...")
+        
+        # Lệnh nhả hạt chuẩn của Tuya cho Smart Feeder
+        commands = {'commands': [{'code': 'manual_feed', 'value': 1}]}
+        response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
+        
+        if response.get('success', False):
+            print("[Rojeco] ✅ Đã nhả thức ăn thành công!")
             return True
         else:
-            print("[Rojeco] ? S? l??ng kh?u ph?n ph?i t? 1 ??n 10.")
+            print(f"[Rojeco] ❌ Lỗi: {response}")
             return False
+
+    async def turn_off(self, device_id: str) -> bool:
+        print("[Rojeco] Nút TẮT không có tác dụng với máy cho ăn.")
+        return True

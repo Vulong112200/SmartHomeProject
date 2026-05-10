@@ -75,17 +75,9 @@ async def startup_event():
     # Tuya
     # =========================
 
-    tuya_plugin = TuyaConnector(
-        api_key="tuya_key_123",
-        api_secret="tuya_secret_456"
-    )
-
+    tuya_plugin = TuyaConnector()
     await tuya_plugin.connect()
-
-    device_manager.register_connector(
-        "tuya",
-        tuya_plugin
-    )
+    device_manager.register_connector("tuya", tuya_plugin)
 
     # =========================
     # VeSync
@@ -373,5 +365,21 @@ async def test_control_mode(brand: str, device_id: str, mode: str):
             return {"status": "success", "message": f"Đã chuyển sang chế độ {mode}"}
         else:
             return {"status": "error", "message": "Thiết bị này không hỗ trợ đổi chế độ"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.delete("/api/devices/{device_id}")
+async def delete_device(device_id: str):
+    try:
+        # Tùy thuộc vào cách bạn viết code DB, thường sẽ mở session ở đây
+        db = SessionLocal()
+        device = db.query(Device).filter(Device.id == device_id).first()
+        if device:
+            db.delete(device)
+            db.commit()
+            db.close()
+            return {"status": "success", "message": f"Đã xóa thiết bị {device_id}"}
+        db.close()
+        return {"status": "error", "message": "Không tìm thấy thiết bị để xóa."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
