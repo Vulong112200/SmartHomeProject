@@ -1,0 +1,33 @@
+name: frontend
+description: Smart Home Control Application
+publish_to: 'none' # Ngăn việc vô tình publish app lên mạng
+version: 1.0.0+1
+
+# Khai báo phiên bản SDK (Đoạn này sẽ sửa lỗi bạn vừa gặp)
+environment:
+  sdk: '>=3.2.3 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # Thư viện quản lý trạng thái
+  flutter_riverpod: ^2.4.9
+  
+  # Thư viện giao tiếp mạng
+  http: ^1.1.0
+  
+  # Thư viện giao tiếp thời gian thực
+  web_socket_channel: ^2.4.1
+
+  # Cung cấp các icon Material Design
+  cupertino_icons: ^1.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+# Bật tính năng Material Design 3
+flutter:
+  uses-material-design: true
