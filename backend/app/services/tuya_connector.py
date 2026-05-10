@@ -18,45 +18,31 @@ class TuyaConnector(DeviceConnector):
     async def connect(self) -> bool:
         try:
             self.openapi.connect()
-            print("[Tuya] ✅ Đã kết nối thành công với Tuya Cloud!")
             self.is_connected = True
+            print("[Tuya] ✅ Đã kết nối Tuya Cloud!")
             return True
         except Exception as e:
-            print(f"[Tuya] ❌ Lỗi kết nối Tuya: {e}")
             return False
 
     async def get_device_state(self, device_id: str) -> Dict[str, Any]:
         return {"device_id": device_id, "status": "ON"}
 
     async def turn_on(self, device_id: str) -> bool:
-        if not self.is_connected: return False
-        print(f"[Tuya] 🚪 Đang ra lệnh MỞ thiết bị (Cửa cuốn/Đèn): {device_id}")
-        
-        # Lệnh mở cửa cuốn của Tuya
-        commands = {'commands': [{'code': 'control', 'value': 'open'}]}
-        response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
-        
-        return response.get('success', False)
+        return await self.set_mode(device_id, "open")
 
     async def turn_off(self, device_id: str) -> bool:
-        if not self.is_connected: return False
-        print(f"[Tuya] 🚪 Đang ra lệnh ĐÓNG thiết bị (Cửa cuốn/Đèn): {device_id}")
-        
-        # Lệnh đóng cửa cuốn của Tuya
-        commands = {'commands': [{'code': 'control', 'value': 'close'}]}
-        response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
-        
-        return response.get('success', False)
-    
+        return await self.set_mode(device_id, "close")
+
     async def set_mode(self, device_id: str, mode: str) -> bool:
         if not self.is_connected: return False
+        mode = mode.lower()
+        print(f"[Tuya] 🚪 Đang gọi API {mode} cửa cuốn...")
         
-        mode = mode.lower() # Nhận lệnh: open, close, stop
-        print(f"[Tuya] 🚪 Đang ra lệnh {mode} cho cửa cuốn...")
-        
+        # Mã lệnh chuẩn xác từ ảnh Debug của bạn
         commands = {'commands': [{'code': 'control', 'value': mode}]}
+        response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
         
-        # ĐÃ SỬA URL THEO ĐÚNG API DOCS TRONG ẢNH CỦA BẠN
-        response = self.openapi.post(f'/v1.0/devices/{device_id}/commands', commands)
+        # IN RA LOG ĐỂ XEM TUYA TRẢ LỜI GÌ
+        print(f"[Tuya Phản hồi từ Tuya]: {response}")
         
         return response.get('success', False)

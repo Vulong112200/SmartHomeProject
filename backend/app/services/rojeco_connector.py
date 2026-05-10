@@ -10,7 +10,7 @@ class RojecoConnector(DeviceConnector):
         self.ACCESS_ID = "vucjttuxyjnvq9drt4j9"      # Vd: vuqttuxyj...
         self.ACCESS_KEY = "dffb86f14ef34d87a14d38c0f30314ce" # Vd: dffb86f...
         
-        # Server cho khu vực Singapore
+        # Endpoint chuẩn cho Singapore Data Center
         self.API_ENDPOINT = "https://openapi.tuyain.com" 
         
         self.openapi = TuyaOpenAPI(self.API_ENDPOINT, self.ACCESS_ID, self.ACCESS_KEY)
@@ -22,34 +22,31 @@ class RojecoConnector(DeviceConnector):
             print("[Rojeco] ✅ Đã kết nối Tuya Cloud!")
             return True
         except Exception as e:
+            print(f"[Rojeco] ❌ Lỗi kết nối mây: {e}")
             return False
 
     async def get_device_state(self, device_id: str) -> Dict[str, Any]:
         return {"device_id": device_id, "status": "ON"}
 
     async def turn_on(self, device_id: str) -> bool:
-        return await self.set_mode(device_id, "1") # Bật công tắc = Nhả 1 phần
+        return await self.set_mode(device_id, "1")
 
     async def turn_off(self, device_id: str) -> bool:
         return True
 
-    # Hàm mới: Hỗ trợ nhả số lượng hạt tùy ý từ nút bấm trên App
     async def set_mode(self, device_id: str, mode: str) -> bool:
         try:
             portions = int(mode)
-            print(f"[Rojeco] 🐈 Đang nhả {portions} phần thức ăn...")
+            print(f"[Rojeco] 🐈 Đang gọi API nhả {portions} phần...")
             
-            # Gửi lệnh nhả hạt (Thử 'manual_feed', nếu sau này không chạy thì đổi chữ này thành 'feed_portion')
+            # Mã lệnh chuẩn xác từ ảnh Debug của bạn
             commands = {'commands': [{'code': 'manual_feed', 'value': portions}]}
+            response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
             
-            # ĐÃ SỬA URL THEO ĐÚNG API DOCS TRONG ẢNH CỦA BẠN
-            response = self.openapi.post(f'/v1.0/devices/{device_id}/commands', commands)
+            # IN RA LOG ĐỂ XEM TUYA TRẢ LỜI GÌ
+            print(f"[Rojeco Phản hồi từ Tuya]: {response}") 
             
-            if response.get('success', False):
-                print("[Rojeco] ✅ Thành công!")
-                return True
-            else:
-                print(f"[Rojeco] ❌ Lỗi: {response}")
-                return False
+            return response.get('success', False)
         except Exception as e:
-            print(f"[Rojeco] Lỗi code: {e}")
+            print(f"[Rojeco Lỗi Code]: {e}")
+            return False
