@@ -21,7 +21,7 @@ from app.services.automation_engine import (
     automation_engine,
     AutomationRule
 )
-
+from app.core.database import SessionLocal
 from app.core.database import engine, Base, get_db
 from app.models.device import DeviceModel
 
@@ -55,12 +55,11 @@ app = FastAPI(title="Smart Home System API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # Cho phép mọi thiết bị, mọi trình duyệt gọi tới
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # =========================================================
 # Startup Event

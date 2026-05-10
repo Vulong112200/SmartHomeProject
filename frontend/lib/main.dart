@@ -110,15 +110,22 @@ class _DevicesTabState extends State<DevicesTab> {
       backgroundColor: Colors.blueAccent.withValues(alpha: 0.1),
       side: const BorderSide(color: Colors.blueAccent, width: 0.5),
       onPressed: () async {
-        final brand = device['brand'];
+        final brand = device['brand'].toString().toLowerCase();
         final deviceId = device['id'];
         try {
           final url = Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$modeValue');
-          await http.get(url);
-          // Tùy chọn: Thể hiện thông báo nhỏ trên màn hình
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Đã chọn chế độ: $label'), duration: const Duration(seconds: 1)),
-          );
+          debugPrint("Đang gọi API: $url");
+          // await http.get(url);
+          
+          final response = await http.get(url);
+          
+          if (response.statusCode == 200) {// Tùy chọn: Thể hiện thông báo nhỏ trên màn hình
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Đã chọn chế độ: $label'), duration: const Duration(seconds: 1)),
+            );
+          } else {
+            debugPrint("Server báo lỗi: ${response.body}");
+          }
         } catch (e) {
           debugPrint("Lỗi đổi chế độ: $e");
         }
