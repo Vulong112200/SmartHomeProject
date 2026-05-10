@@ -18,6 +18,7 @@ class TuyaConnector(DeviceConnector):
     async def connect(self) -> bool:
         try:
             self.openapi.connect()
+            print("[Tuya Token Response]", result)
             self.is_connected = True
             print("[Tuya] ✅ Đã kết nối Tuya Cloud!")
             return True
