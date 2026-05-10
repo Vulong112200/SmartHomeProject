@@ -34,7 +34,7 @@ class TuyaConnector(DeviceConnector):
     async def turn_off(self, device_id: str) -> bool:
         return await self.set_mode(device_id, "close")
 
-    aasync def set_mode(self, device_id: str, mode: str) -> bool:
+    async def set_mode(self, device_id: str, mode: str) -> bool:
         try:
             if not self.is_connected: self.openapi.connect()
             
