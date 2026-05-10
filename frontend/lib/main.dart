@@ -76,8 +76,8 @@ class DevicesTab extends StatefulWidget {
 
 class _DevicesTabState extends State<DevicesTab> {
   // THAY ĐỊA CHỈ IP NÀY BẰNG IP IPv4 CỦA MÁY TÍNH
-  final String serverIp = '192.168.1.62'; 
-  
+  // final String serverIp = '192.168.1.62'; 
+  final String baseUrl = 'https://vuhp-smarthome.onrender.com';
   List<dynamic> devices = [];
   bool isLoading = true;
 
@@ -89,7 +89,7 @@ class _DevicesTabState extends State<DevicesTab> {
 
   Future<void> fetchDevices() async {
     try {
-      final response = await http.get(Uri.parse('http://$serverIp:8000/api/devices'));
+      final response = await http.get(Uri.parse('$baseUrl/api/devices'));      
       if (response.statusCode == 200) {
         final data = json.decode(utf8.decode(response.bodyBytes));
         setState(() {
@@ -113,7 +113,7 @@ class _DevicesTabState extends State<DevicesTab> {
         final brand = device['brand'];
         final deviceId = device['id'];
         try {
-          final url = Uri.parse('http://$serverIp:8000/api/test-control/$brand/$deviceId/mode?mode=$modeValue');
+          final url = Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$modeValue');
           await http.get(url);
           // Tùy chọn: Thể hiện thông báo nhỏ trên màn hình
           ScaffoldMessenger.of(context).showSnackBar(
@@ -172,7 +172,7 @@ class _DevicesTabState extends State<DevicesTab> {
                             final deviceId = device['id'];
                             
                             try {
-                              final url = Uri.parse('http://$serverIp:8000/api/test-control/$brand/$deviceId?action=$action');
+                              final url = Uri.parse('$baseUrl/api/test-control/$brand/$deviceId?action=$action');
                               final response = await http.get(url);
                               if (response.statusCode != 200) {
                                 setState(() => device['is_active'] = !value);
