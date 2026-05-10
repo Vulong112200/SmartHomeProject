@@ -17,7 +17,7 @@ class RojecoConnector(DeviceConnector):
 
     async def connect(self) -> bool:
         try:
-            self.openapi.connect()
+            result = self.openapi.connect()
             print("[Tuya Token Response]", result)
             self.is_connected = True
             print("[Rojeco] ✅ Đã kết nối Tuya Cloud!")
