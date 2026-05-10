@@ -11,7 +11,7 @@ class TuyaConnector(DeviceConnector):
         self.ACCESS_KEY = "dffb86f14ef34d87a14d38c0f30314ce" # Vd: dffb86f...
         
         # Vì bạn chọn Data Center Singapore, Tuya thường dùng server Ấn Độ (tuyain) hoặc Châu Âu (tuyaeu)
-        self.API_ENDPOINT = "https://openapi.tuyain.com" 
+        self.API_ENDPOINT = "https://openapi.tuyaus.com" 
         
         self.openapi = TuyaOpenAPI(self.API_ENDPOINT, self.ACCESS_ID, self.ACCESS_KEY)
 
