@@ -11,7 +11,7 @@ class RojecoConnector(DeviceConnector):
         self.ACCESS_KEY = "dffb86f14ef34d87a14d38c0f30314ce" # Vd: dffb86f...
         
         # Endpoint chuẩn cho Singapore Data Center
-        self.API_ENDPOINT = "https://openapi.tuyaus.com" 
+        self.API_ENDPOINT = "https://openapi.tuyain.com" 
         
         self.openapi = TuyaOpenAPI(self.API_ENDPOINT, self.ACCESS_ID, self.ACCESS_KEY)
 
