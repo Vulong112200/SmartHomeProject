@@ -40,7 +40,7 @@ class TuyaConnector(DeviceConnector):
         
         # Mã lệnh chuẩn xác từ ảnh Debug của bạn
         commands = {'commands': [{'code': 'control', 'value': mode}]}
-        response = self.openapi.post(f'/v1.0/devices/{device_id}/commands', commands)
+        response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
         
         # IN RA LOG ĐỂ XEM TUYA TRẢ LỜI GÌ
         print(f"[Tuya Phản hồi từ Tuya]: {response}")
