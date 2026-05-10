@@ -142,18 +142,25 @@ class _DevicesTabState extends State<DevicesTab> {
               itemCount: devices.length,
               itemBuilder: (context, index) {
                 final device = devices[index];
+                final name = device['name'].toString().toLowerCase();
+                final brand = device['brand'].toString().toLowerCase();
                 
-                // Nhận diện loại thiết bị để vẽ Icon và Nút
-                bool isAirPurifier = device['name'].toString().toLowerCase().contains('lọc');
+                // Phân loại thiết bị
+                bool isAirPurifier = name.contains('lọc');
+                bool isFeeder = name.contains('mèo') || name.contains('ăn');
+                bool isCurtain = name.contains('cửa');
+
+                // Chọn Icon phù hợp
                 IconData icon = Icons.device_hub;
-                if (device['name'].toString().toLowerCase().contains('mèo')) icon = Icons.pets;
+                if (isFeeder) icon = Icons.pets;
+                if (isCurtain) icon = Icons.blinds;
                 if (isAirPurifier) icon = Icons.air;
 
                 return Card(
                   color: Colors.white10,
                   margin: const EdgeInsets.only(bottom: 16),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  child: Column( // Dùng Column để chứa ListTile và phần Nút bấm bên dưới
+                  child: Column(
                     children: [
                       ListTile(
                         contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
@@ -163,20 +170,16 @@ class _DevicesTabState extends State<DevicesTab> {
                         ),
                         title: Text(device['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
                         subtitle: Text("Hãng: ${device['brand']}"),
-                        trailing: Switch(
+                        // Tắt Switch ON/OFF đối với máy cho mèo ăn vì nó chỉ có nút nhả hạt
+                        trailing: isFeeder ? null : Switch(
                           value: device['is_active'],
                           onChanged: (bool value) async {
                             setState(() => device['is_active'] = value);
                             final action = value ? "on" : "off";
-                            final brand = device['brand'];
-                            final deviceId = device['id'];
-                            
+                            final dBrand = device['brand'];
+                            final dId = device['id'];
                             try {
-                              final url = Uri.parse('$baseUrl/api/test-control/$brand/$deviceId?action=$action');
-                              final response = await http.get(url);
-                              if (response.statusCode != 200) {
-                                setState(() => device['is_active'] = !value);
-                              }
+                              await http.get(Uri.parse('$baseUrl/api/test-control/$dBrand/$dId?action=$action'));
                             } catch (e) {
                               setState(() => device['is_active'] = !value);
                             }
@@ -184,20 +187,46 @@ class _DevicesTabState extends State<DevicesTab> {
                         ),
                       ),
                       
-                      // Hiển thị dải nút điều khiển NẾU là máy lọc và đang BẬT
+                      // 1. NÚT BẤM CHO MÁY LỌC KHÔNG KHÍ
                       if (isAirPurifier && device['is_active'])
                         Padding(
                           padding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
                           child: Wrap(
-                            spacing: 8.0, // Khoảng cách ngang giữa các nút
-                            runSpacing: 8.0, // Khoảng cách dọc khi nút rớt dòng
-                            alignment: WrapAlignment.center,
+                            spacing: 8.0, runSpacing: 8.0, alignment: WrapAlignment.center,
                             children: [
                               _buildModeButton(device, 'Thấp', '1'),
                               _buildModeButton(device, 'Trung bình', '2'),
                               _buildModeButton(device, 'Cao', '3'),
                               _buildModeButton(device, 'Auto', 'auto'),
                               _buildModeButton(device, 'Ngủ', 'sleep'),
+                            ],
+                          ),
+                        ),
+
+                      // 2. NÚT BẤM CHO MÁY CHO MÈO ĂN (Luôn hiện)
+                      if (isFeeder)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
+                          child: Wrap(
+                            spacing: 8.0, alignment: WrapAlignment.center,
+                            children: [
+                              _buildModeButton(device, 'Nhả 1 phần', '1'),
+                              _buildModeButton(device, 'Nhả 2 phần', '2'),
+                              _buildModeButton(device, 'Nhả 3 phần', '3'),
+                            ],
+                          ),
+                        ),
+
+                      // 3. NÚT BẤM CHO CỬA CUỐN
+                      if (isCurtain)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
+                          child: Wrap(
+                            spacing: 8.0, alignment: WrapAlignment.center,
+                            children: [
+                              _buildModeButton(device, 'Mở cửa', 'open'),
+                              _buildModeButton(device, 'Dừng', 'stop'),
+                              _buildModeButton(device, 'Đóng cửa', 'close'),
                             ],
                           ),
                         ),

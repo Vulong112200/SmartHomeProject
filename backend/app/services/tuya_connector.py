@@ -47,3 +47,16 @@ class TuyaConnector(DeviceConnector):
         response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
         
         return response.get('success', False)
+    
+    async def set_mode(self, device_id: str, mode: str) -> bool:
+        if not self.is_connected: return False
+        
+        mode = mode.lower() # Nhận lệnh: open, close, stop
+        print(f"[Tuya] 🚪 Đang ra lệnh {mode} cho cửa cuốn...")
+        
+        commands = {'commands': [{'code': 'control', 'value': mode}]}
+        
+        # ĐÃ SỬA URL THEO ĐÚNG API DOCS TRONG ẢNH CỦA BẠN
+        response = self.openapi.post(f'/v1.0/devices/{device_id}/commands', commands)
+        
+        return response.get('success', False)

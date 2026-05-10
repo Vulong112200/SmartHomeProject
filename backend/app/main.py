@@ -132,26 +132,26 @@ async def startup_event():
 
     # ---------- RULES ----------
 
-    rule1 = AutomationRule(
-        name="Bật đèn vào đầu phút",
-        condition=is_second_0,
-        action=auto_turn_on
-    )
+    # rule1 = AutomationRule(
+    #     name="Bật đèn vào đầu phút",
+    #     condition=is_second_0,
+    #     action=auto_turn_on
+    # )
 
-    rule2 = AutomationRule(
-        name="Tắt đèn vào giữa phút",
-        condition=is_second_30,
-        action=auto_turn_off
-    )
+    # rule2 = AutomationRule(
+    #     name="Tắt đèn vào giữa phút",
+    #     condition=is_second_30,
+    #     action=auto_turn_off
+    # )
 
-    automation_engine.add_rule(rule1)
-    automation_engine.add_rule(rule2)
+    # automation_engine.add_rule(rule1)
+    # automation_engine.add_rule(rule2)
 
-    # Chạy automation engine background
+    # # Chạy automation engine background
 
-    asyncio.create_task(
-        automation_engine.start_engine()
-    )
+    # asyncio.create_task(
+    #     automation_engine.start_engine()
+    # )
 
 
 # =========================================================

@@ -18,32 +18,38 @@ class RojecoConnector(DeviceConnector):
     async def connect(self) -> bool:
         try:
             self.openapi.connect()
-            print("[Rojeco] ✅ Đã kết nối thành công với Tuya Cloud!")
             self.is_connected = True
+            print("[Rojeco] ✅ Đã kết nối Tuya Cloud!")
             return True
         except Exception as e:
-            print(f"[Rojeco] ❌ Lỗi kết nối Tuya: {e}")
             return False
 
     async def get_device_state(self, device_id: str) -> Dict[str, Any]:
         return {"device_id": device_id, "status": "ON"}
 
     async def turn_on(self, device_id: str) -> bool:
-        if not self.is_connected: 
-            return False
-        print(f"[Rojeco] 🐈 Đang ra lệnh nhả 1 phần thức ăn...")
-        
-        # Lệnh nhả hạt chuẩn của Tuya cho Smart Feeder
-        commands = {'commands': [{'code': 'manual_feed', 'value': 1}]}
-        response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
-        
-        if response.get('success', False):
-            print("[Rojeco] ✅ Đã nhả thức ăn thành công!")
-            return True
-        else:
-            print(f"[Rojeco] ❌ Lỗi: {response}")
-            return False
+        return await self.set_mode(device_id, "1") # Bật công tắc = Nhả 1 phần
 
     async def turn_off(self, device_id: str) -> bool:
-        print("[Rojeco] Nút TẮT không có tác dụng với máy cho ăn.")
         return True
+
+    # Hàm mới: Hỗ trợ nhả số lượng hạt tùy ý từ nút bấm trên App
+    async def set_mode(self, device_id: str, mode: str) -> bool:
+        try:
+            portions = int(mode)
+            print(f"[Rojeco] 🐈 Đang nhả {portions} phần thức ăn...")
+            
+            # Gửi lệnh nhả hạt (Thử 'manual_feed', nếu sau này không chạy thì đổi chữ này thành 'feed_portion')
+            commands = {'commands': [{'code': 'manual_feed', 'value': portions}]}
+            
+            # ĐÃ SỬA URL THEO ĐÚNG API DOCS TRONG ẢNH CỦA BẠN
+            response = self.openapi.post(f'/v1.0/devices/{device_id}/commands', commands)
+            
+            if response.get('success', False):
+                print("[Rojeco] ✅ Thành công!")
+                return True
+            else:
+                print(f"[Rojeco] ❌ Lỗi: {response}")
+                return False
+        except Exception as e:
+            print(f"[Rojeco] Lỗi code: {e}")
