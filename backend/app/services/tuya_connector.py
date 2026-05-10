@@ -11,7 +11,7 @@ class TuyaConnector(DeviceConnector):
         self.ACCESS_KEY = "dffb86f14ef34d87a14d38c0f30314ce" # Vd: dffb86f...
         
         # Vì bạn chọn Data Center Singapore, Tuya thường dùng server Ấn Độ (tuyain) hoặc Châu Âu (tuyaeu)
-        self.API_ENDPOINT = "https://openapi.tuyain.com" 
+        self.API_ENDPOINT = "https://openapi.tuyaus.com" 
         
         self.openapi = TuyaOpenAPI(self.API_ENDPOINT, self.ACCESS_ID, self.ACCESS_KEY)
 
@@ -40,7 +40,7 @@ class TuyaConnector(DeviceConnector):
         
         # Mã lệnh chuẩn xác từ ảnh Debug của bạn
         commands = {'commands': [{'code': 'control', 'value': mode}]}
-        response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
+        response = self.openapi.post(f'/v1.0/devices/{device_id}/commands', commands)
         
         # IN RA LOG ĐỂ XEM TUYA TRẢ LỜI GÌ
         print(f"[Tuya Phản hồi từ Tuya]: {response}")

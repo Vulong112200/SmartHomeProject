@@ -11,7 +11,7 @@ class RojecoConnector(DeviceConnector):
         self.ACCESS_KEY = "dffb86f14ef34d87a14d38c0f30314ce" # Vd: dffb86f...
         
         # Endpoint chuẩn cho Singapore Data Center
-        self.API_ENDPOINT = "https://openapi.tuyain.com" 
+        self.API_ENDPOINT = "https://openapi.tuyaus.com" 
         
         self.openapi = TuyaOpenAPI(self.API_ENDPOINT, self.ACCESS_ID, self.ACCESS_KEY)
 
@@ -41,7 +41,7 @@ class RojecoConnector(DeviceConnector):
             
             # Mã lệnh chuẩn xác từ ảnh Debug của bạn
             commands = {'commands': [{'code': 'manual_feed', 'value': portions}]}
-            response = self.openapi.post(f'/v1.0/iot-03/devices/{device_id}/commands', commands)
+            response = self.openapi.post(f'/v1.0/devices/{device_id}/commands', commands)
             
             # IN RA LOG ĐỂ XEM TUYA TRẢ LỜI GÌ
             print(f"[Rojeco Phản hồi từ Tuya]: {response}") 
