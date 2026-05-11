@@ -40,45 +40,70 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
 
   void _listen() async {
     if (!_isListening) {
-      bool available = await _speech.initialize();
-      if (available) {
-        _hasGreetedThisSession = false; // RESET BIẾN NÀY MỖI LẦN BẬT MIC
+      bool available = await _speech.initialize(
+        onStatus: (status) {
+          // Nếu engine tự ngắt do im lặng, ta chốt gửi lệnh luôn
+          if (status == 'notListening' && _isListening) {
+            setState(() => _isListening = false);
+            _sendCommand();
+          }
+        },
+      );
 
+      if (available) {
+        _hasGreetedThisSession = false;
         setState(() => _isListening = true);
+
         _speech.listen(
           onResult: (val) {
-            String currentWords = val.recognizedWords.toLowerCase();
+            // Chuyển về lowercase và trim để so sánh chính xác hơn
+            String currentWords = val.recognizedWords.toLowerCase().trim();
 
-            // Tính năng 1: Wake word (Đã sửa logic)
+            // 1. Wake word "Tom có nghe không"
             if (currentWords.contains("tom có nghe không") && !_hasGreetedThisSession) {
-              _hasGreetedThisSession = true; // Đánh dấu là lần nghe này đã chào rồi
+              _hasGreetedThisSession = true;
               setState(() {
                 messages.add({"isUser": false, "text": "Tom đang nghe đây 🎙️", "actions": []});
                 _scrollToBottom();
               });
             }
 
-            // Tính năng 2: Chốt lệnh nhanh bằng từ "over"
-            if (currentWords.endsWith("over")) {
-              _speech.stop();
+            // 2. CẢI TIẾN NHẬN DIỆN "OVER" (Thêm các biến thể tiếng Việt)
+            // Đôi khi AI nghe "over" thành "ô vờ", "ô vơ" hoặc "ok"
+            bool detectedOver = currentWords.endsWith("over") || 
+                               currentWords.endsWith("ô vờ") || 
+                               currentWords.endsWith("ô vơ");
+
+            if (detectedOver) {
+              _speech.stop(); // Ngắt mic ngay lập tức
               setState(() {
                 _isListening = false;
-                _commandController.text = val.recognizedWords.replaceAll(RegExp(r'(?i)over'), '').trim();
+                // Xóa từ khóa kết thúc khỏi nội dung gửi đi
+                _commandController.text = val.recognizedWords
+                    .replaceAll(RegExp(r'(?i)over|ô vờ|ô vơ'), '')
+                    .trim();
               });
+              
+              // Gửi lệnh ngay lập tức, không delay 1ms nào
               _sendCommand(); 
               return;
             }
 
             setState(() {
               _commandController.text = val.recognizedWords;
+              // Nếu engine báo đã kết thúc câu nói (theo pauseFor)
               if (val.finalResult) {
-                _isListening = false;
+                setState(() => _isListening = false);
                 _sendCommand();
               }
             });
           },
           localeId: 'vi_VN',
-          pauseFor: const Duration(seconds: 4),
+          // --- THAY ĐỔI QUAN TRỌNG: GIẢM THỜI GIAN NGẮT ---
+          // Chỉ chờ 1.5 giây im lặng là engine sẽ tự động chốt finalResult
+          pauseFor: const Duration(milliseconds: 1500), 
+          listenMode: stt.ListenMode.deviceDefault,
+          partialResults: true, // Đảm bảo nhận diện liên tục để bắt chữ "over" kịp thời
         );
       }
     } else {
