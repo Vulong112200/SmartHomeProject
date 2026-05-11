@@ -1,11 +1,19 @@
 import google.generativeai as genai
 import json
+import os
+from dotenv import load_dotenv
 
-# Điền API Key của bạn vào đây
-GEMINI_API_KEY = "AIzaSyCXp7KlCTkM8fsqXFilu0QhKnWVxTvveJk"
-genai.configure(api_key=GEMINI_API_KEY)
+# Tự động tìm file .env (nếu có ở local)
+load_dotenv()
 
-# Sử dụng model Gemini 1.5 Flash (Xử lý cực nhanh cho lệnh giọng nói)
+# Lấy Key từ Environment của Render hoặc file .env
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    print("[AI Error] ⚠️ Không tìm thấy GEMINI_API_KEY! Hãy kiểm tra lại Settings trên Render.")
+else:
+    genai.configure(api_key=GEMINI_API_KEY)
+
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 async def parse_command_with_gemini(command_text: str, devices_list: list) -> list:

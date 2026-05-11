@@ -6,14 +6,13 @@ import asyncio
 from datetime import datetime
 
 from pydantic import BaseModel
-from app.services.ai_parser import parse_command_with_gemini
 
 from fastapi import FastAPI, WebSocket, Depends
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy.orm import Session
-
+from app.services.ai_parser import parse_command_with_gemini
 from app.services.connector_manager import device_manager
 from app.services.tuya_connector import TuyaConnector
 from app.services.vesync_connector import VeSyncConnector
