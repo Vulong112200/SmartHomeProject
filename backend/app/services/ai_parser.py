@@ -2,7 +2,7 @@ import google.generativeai as genai
 import json
 
 # Điền API Key của bạn vào đây
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
+GEMINI_API_KEY = "AIzaSyCXp7KlCTkM8fsqXFilu0QhKnWVxTvveJk"
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Sử dụng model Gemini 1.5 Flash (Xử lý cực nhanh cho lệnh giọng nói)
