@@ -49,7 +49,8 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
     3. Trả về DUY NHẤT JSON.
     
     Ví dụ:
-    - "Bật máy lọc": [{{ "brand": "vesync", "id": "<id>", "action": "turn_on", "mode": None }}]
+    - "Bật máy lọc": [{{ "brand": "vesync", "id": "<id>", "action": "on", "mode": None }}]
+    - "Đóng cửa": [{{ "brand": "tuya", "id": "<id>", "action": "set_mode", "mode": "close" }}]
     - "Cho mèo ăn": [{{ "brand": "rojeco", "id": "<id>", "action": "set_mode", "mode": "1" }}]
     - "Làm bậy bạ đi": []
     
