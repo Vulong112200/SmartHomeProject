@@ -101,7 +101,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
           localeId: 'vi_VN',
           // --- THAY ĐỔI QUAN TRỌNG: GIẢM THỜI GIAN NGẮT ---
           // Chỉ chờ 1.5 giây im lặng là engine sẽ tự động chốt finalResult
-          pauseFor: const Duration(milliseconds: 1500), 
+          pauseFor: const Duration(milliseconds: 4500), 
           listenMode: stt.ListenMode.deviceDefault,
           partialResults: true, // Đảm bảo nhận diện liên tục để bắt chữ "over" kịp thời
         );
