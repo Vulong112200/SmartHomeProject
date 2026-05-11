@@ -3,6 +3,7 @@
 import sys
 import os
 import asyncio
+import logging
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -18,8 +19,8 @@ from app.services.tuya_connector import TuyaConnector
 from app.services.vesync_connector import VeSyncConnector
 from app.services.rojeco_connector import RojecoConnector
 
-# Import Gemini AI
-from app.services.ai_parser import parse_command_with_gemini
+# Import AI Parser (Đã đổi thành AI dùng cho OpenRouter)
+from app.services.ai_parser import parse_command_with_ai
 
 # Tạm thời comment Automation Engine để tránh lỗi chưa hoàn thiện
 # from app.services.automation_engine import automation_engine, AutomationRule
@@ -27,6 +28,19 @@ from app.services.ai_parser import parse_command_with_gemini
 # Import Database
 from app.core.database import SessionLocal, engine, Base, get_db
 from app.models.device import DeviceModel
+
+# =========================================================
+# CẤU HÌNH HỆ THỐNG GHI LOG CHUYÊN NGHIỆP
+# =========================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger("SmartHome.Main")
 
 # =========================================================
 # FIX UTF-8 tiếng Việt trên Windows terminal
@@ -40,7 +54,7 @@ if hasattr(sys.stderr, "reconfigure"):
 # =========================================================
 # Tạo Database
 # =========================================================
-print("Tạo Database...")
+logger.info("Đang khởi tạo Database...")
 Base.metadata.create_all(bind=engine)
 
 # =========================================================
@@ -61,7 +75,7 @@ app.add_middleware(
 # =========================================================
 @app.on_event("startup")
 async def startup_event():
-    print("Khởi động các connector...")
+    logger.info("Bắt đầu khởi động các connector...")
 
     # --- Tuya ---
     tuya_plugin = TuyaConnector()
@@ -112,25 +126,28 @@ async def add_device(id: str, name: str, brand: str, db: Session = Depends(get_d
         db.add(new_device)
         db.commit()
         db.refresh(new_device)
+        logger.info(f"Đã thêm thiết bị mới: {name} ({brand})")
         return {"status": "success", "message": f"Đã thêm: {name}"}
     except Exception as e:
         db.rollback()
+        logger.error(f"Lỗi thêm thiết bị: {e}")
         return {"status": "error", "message": f"Lỗi: {str(e)}"}
 
 @app.delete("/api/devices/{device_id}")
 async def delete_device(device_id: str):
     try:
         db = SessionLocal()
-        # Đã sửa lỗi Device -> DeviceModel
         device = db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
         if device:
             db.delete(device)
             db.commit()
             db.close()
+            logger.info(f"Đã xóa thiết bị {device_id}")
             return {"status": "success", "message": f"Đã xóa thiết bị {device_id}"}
         db.close()
         return {"status": "error", "message": "Không tìm thấy thiết bị để xóa."}
     except Exception as e:
+        logger.error(f"Lỗi xóa thiết bị: {e}")
         return {"status": "error", "message": str(e)}
 
 # =========================================================
@@ -144,8 +161,10 @@ async def test_control(brand: str, device_id: str, action: str = "on"):
             await connector.turn_on(device_id)
         else:
             await connector.turn_off(device_id)
+        logger.info(f"Đã thực hiện lệnh {action} cho thiết bị {device_id} qua {brand}")
         return {"status": "success", "message": f"Đã {action} thiết bị {device_id} ({brand})"}
     except Exception as e:
+        logger.error(f"Lỗi điều khiển {brand}: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/test-control/{brand}/{device_id}/mode")
@@ -154,14 +173,16 @@ async def test_control_mode(brand: str, device_id: str, mode: str):
         connector = device_manager.get_connector(brand)
         if hasattr(connector, 'set_mode'):
             await connector.set_mode(device_id, mode)
+            logger.info(f"Đã chuyển chế độ {mode} cho thiết bị {device_id} qua {brand}")
             return {"status": "success", "message": f"Đã chuyển sang chế độ {mode}"}
         else:
             return {"status": "error", "message": "Thiết bị không hỗ trợ đổi chế độ"}
     except Exception as e:
+        logger.error(f"Lỗi đổi chế độ {brand}: {e}")
         return {"status": "error", "message": str(e)}
 
 # =========================================================
-# API - Nhận Lệnh Giọng Nói (Gemini AI)
+# API - Nhận Lệnh Giọng Nói (AI OpenRouter)
 # =========================================================
 class VoiceCommand(BaseModel):
     text: str
@@ -169,12 +190,13 @@ class VoiceCommand(BaseModel):
 @app.post("/api/ai/parse")
 async def parse_voice_command(command: VoiceCommand):
     db = SessionLocal()
-    # Đã sửa lỗi Device -> DeviceModel
     devices = db.query(DeviceModel).all()
     db.close()
     
-    # 1. Nhờ Gemini phân tích câu nói
-    actions = await parse_command_with_gemini(command.text, devices)
+    logger.info(f"Nhận lệnh giọng nói: '{command.text}'")
+    
+    # 1. Nhờ AI phân tích câu nói
+    actions = await parse_command_with_ai(command.text, devices)
     
     # 2. Thực thi lệnh một cách an toàn qua device_manager
     results = []
@@ -195,32 +217,33 @@ async def parse_voice_command(command: VoiceCommand):
                 elif act_type == "off" and hasattr(connector, 'turn_off'):
                     success = await connector.turn_off(dev_id)
         except Exception as e:
-            print(f"[AI Execution Error] {e}")
+            logger.error(f"[AI Execution Error] Lỗi thực thi thiết bị {dev_id}: {e}")
 
         results.append({"device": dev_id, "action": act_type or mode, "success": success})
 
     return {"status": "success", "ai_understood": actions, "execution_results": results}
 
 # =========================================================
-# WebSocket (Giữ kết nối cho App, tạm thời không xử lý logic)
+# WebSocket (Giữ kết nối cho App)
 # =========================================================
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    logger.info("Client WebSocket mới đã kết nối.")
     try:
         while True:
             user_text = await websocket.receive_text()
-            # Logic AI đã chuyển sang REST API (/api/ai/parse)
-            # Tạm thời WS dùng để xác nhận kết nối mạng
             await websocket.send_text("📡 Server đã nhận lệnh, đang xử lý qua AI...")
     except Exception as e:
-        print(f"WebSocket ngắt kết nối: {e}")
+        logger.warning(f"WebSocket ngắt kết nối: {e}")
 
 # =========================================================
 # Root & Favicon
 # =========================================================
 @app.get("/")
-async def root(): return {"message": "Hệ thống Smart Home Backend đang hoạt động!"}
+async def root(): 
+    return {"message": "Hệ thống Smart Home Backend đang hoạt động!"}
 
 @app.get("/favicon.ico", include_in_schema=False)
-async def favicon(): return Response(content="", media_type="image/x-icon")
+async def favicon(): 
+    return Response(content="", media_type="image/x-icon")
