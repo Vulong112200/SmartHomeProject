@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime
 
 from pydantic import BaseModel
-from services.ai_parser import parse_command_with_gemini
+from app.services.ai_parser import parse_command_with_gemini
 
 from fastapi import FastAPI, WebSocket, Depends
 from fastapi.responses import Response
