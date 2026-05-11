@@ -1,2 +1,4 @@
 backend/app/__pycache__/main.cpython-313.pyc
 backend/app/__pycache__/main.cpython-313.pyc
+backend/app/services/__pycache__/rojeco_connector.cpython-313.pyc
+backend/app/services/__pycache__/tuya_connector.cpython-313.pyc
