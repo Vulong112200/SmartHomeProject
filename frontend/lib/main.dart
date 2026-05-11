@@ -1,5 +1,6 @@
 // frontend/lib/main.dart
 import 'dart:convert';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -27,6 +28,7 @@ class SmartHomeApp extends StatelessWidget {
     );
   }
 }
+
 
 // Màn hình chính chứa thanh điều hướng (Bottom Nav)
 class MainScreen extends StatefulWidget {
@@ -249,6 +251,59 @@ class _DevicesTabState extends State<DevicesTab> {
 // ==========================================
 // TAB 2: TRỢ LÝ AI (KẾT NỐI WEBSOCKET)
 // ==========================================
+class _AiTabState extends State<AiTab> {
+  stt.SpeechToText _speech = stt.SpeechToText();
+  bool _isListening = false;
+  String _text = "Bấm mic và nói lệnh của bạn...";
+
+  void _listen() async {
+    if (!_isListening) {
+      bool available = await _speech.initialize();
+      if (available) {
+        setState(() => _isListening = true);
+        _speech.listen(
+          onResult: (val) => setState(() {
+            _text = val.recognizedWords;
+            if (val.finalResult) {
+              _isListening = false;
+              _sendToAI(_text); // Gửi chữ về Cloud khi nói xong
+            }
+          }),
+          localeId: 'vi_VN', // Bắt tiếng Việt
+        );
+      }
+    } else {
+      setState(() => _isListening = false);
+      _speech.stop();
+    }
+  }
+
+  // Hàm gửi lệnh lên Server AI
+  Future<void> _sendToAI(String command) async {
+     // Gọi API POST /api/ai/parse mà chúng ta sẽ viết ở Bước 3
+     final response = await http.post(
+       Uri.parse('$baseUrl/api/ai/parse'),
+       headers: {"Content-Type": "application/json"},
+       body: jsonEncode({"text": command}),
+     );
+     // Hiển thị phản hồi của AI lên màn hình...
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Expanded(child: Center(child: Text(_text))),
+        FloatingActionButton(
+          onPressed: _listen,
+          child: Icon(_isListening ? Icons.mic : Icons.mic_none),
+          backgroundColor: _isListening ? Colors.red : Colors.blue,
+        ),
+      ],
+    );
+  }
+}
+
 class AIAssistantTab extends ConsumerStatefulWidget {
   const AIAssistantTab({super.key});
 

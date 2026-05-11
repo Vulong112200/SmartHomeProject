@@ -5,6 +5,9 @@ import os
 import asyncio
 from datetime import datetime
 
+from pydantic import BaseModel
+from services.ai_parser import parse_command_with_gemini
+
 from fastapi import FastAPI, WebSocket, Depends
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -382,3 +385,38 @@ async def delete_device(device_id: str):
         return {"status": "error", "message": "Không tìm thấy thiết bị để xóa."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+class VoiceCommand(BaseModel):
+    text: str
+
+@app.post("/api/ai/parse")
+async def parse_voice_command(command: VoiceCommand):
+    db = SessionLocal()
+    devices = db.query(Device).all()
+    db.close()
+    
+    # 1. Nhờ Gemini phân tích câu nói
+    actions = await parse_command_with_gemini(command.text, devices)
+    
+    # 2. Thực thi lệnh mà Gemini trả về
+    results = []
+    for action in actions:
+        brand = action.get("brand")
+        dev_id = action.get("id")
+        act_type = action.get("action")
+        mode = action.get("mode")
+        
+        # Trỏ tới đúng hàm connector giống như test-control
+        success = False
+        if brand == "rojeco":
+            if mode: success = await rojeco.set_mode(dev_id, mode)
+        elif brand == "tuya":
+            if mode: success = await tuya.set_mode(dev_id, mode)
+        elif brand == "vesync":
+            if act_type == "on": success = await vesync.turn_on(dev_id)
+            elif act_type == "off": success = await vesync.turn_off(dev_id)
+            elif mode: success = await vesync.set_mode(dev_id, mode)
+            
+        results.append({"device": dev_id, "action": act_type or mode, "success": success})
+
+    return {"status": "success", "ai_understood": actions, "execution_results": results}
