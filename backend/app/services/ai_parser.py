@@ -82,10 +82,17 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
         if result_text.endswith("```"):
             result_text = result_text[:-3]
             
-        # 5. CHUYỂN ĐỔI SANG MẢNG PYTHON
-        actions = json.loads(result_text.strip())
-        logger.info(f"Phân tích thành công: {actions}")
-        return actions
+        try:
+            # Nếu OpenRouter trả về rỗng, trả về mảng rỗng
+            if not result_text:
+                return []
+                
+            actions = json.loads(result_text.strip())
+            logger.info(f"Phân tích thành công: {actions}")
+            return actions
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ AI trả về định dạng JSON sai: {result_text}")
+            return [] # Trả về mảng rỗng thay vì làm sập server
         
     except Exception as e:
         # exc_info=True sẽ in ra chi tiết lỗi để dễ debug

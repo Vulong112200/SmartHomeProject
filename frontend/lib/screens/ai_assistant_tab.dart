@@ -23,6 +23,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
   
   bool _isListening = false;
   bool _isTyping = false;
+  bool _hasGreetedThisSession = false;
   final String baseUrl = 'https://vuhp-smarthome.onrender.com';
 
   List<Map<String, dynamic>> messages = [
@@ -41,18 +42,20 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
     if (!_isListening) {
       bool available = await _speech.initialize();
       if (available) {
+        _hasGreetedThisSession = false; // RESET BIẾN NÀY MỖI LẦN BẬT MIC
+
         setState(() => _isListening = true);
         _speech.listen(
           onResult: (val) {
             String currentWords = val.recognizedWords.toLowerCase();
 
-            // Tính năng 1: Wake word "Tom có nghe không"
-            if (currentWords.contains("tom có nghe không") && !messages.any((m) => m["text"] == "Tom đang nghe đây 🎙️")) {
+            // Tính năng 1: Wake word (Đã sửa logic)
+            if (currentWords.contains("tom có nghe không") && !_hasGreetedThisSession) {
+              _hasGreetedThisSession = true; // Đánh dấu là lần nghe này đã chào rồi
               setState(() {
                 messages.add({"isUser": false, "text": "Tom đang nghe đây 🎙️", "actions": []});
                 _scrollToBottom();
               });
-              // Không stop, vẫn tiếp tục nghe lệnh tiếp theo
             }
 
             // Tính năng 2: Chốt lệnh nhanh bằng từ "over"
@@ -60,14 +63,12 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
               _speech.stop();
               setState(() {
                 _isListening = false;
-                // Cắt chữ "over" ra khỏi câu lệnh
                 _commandController.text = val.recognizedWords.replaceAll(RegExp(r'(?i)over'), '').trim();
               });
-              _sendCommand(); // Gửi thẳng lên Server
+              _sendCommand(); 
               return;
             }
 
-            // Update UI thông thường
             setState(() {
               _commandController.text = val.recognizedWords;
               if (val.finalResult) {
@@ -77,7 +78,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
             });
           },
           localeId: 'vi_VN',
-          pauseFor: const Duration(seconds: 4), // Tăng thời gian chờ người dùng suy nghĩ
+          pauseFor: const Duration(seconds: 4),
         );
       }
     } else {

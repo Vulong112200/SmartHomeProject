@@ -198,21 +198,30 @@ async def parse_voice_command(command: VoiceCommand):
     logger.info(f"Nhận lệnh giọng nói: '{command.text}'")
     actions = []
     
-    # KIỂM TRA CÂU PHỨC: Nếu có các từ nối, bypass Local và chuyển thẳng cho AI
+    # ---------------------------------------------------------
+    # BỨC TƯỜNG LỬA: KIỂM TRA TỪ KHÓA THIẾT BỊ
+    # ---------------------------------------------------------
+    # Danh sách các từ khóa liên quan đến thiết bị trong nhà
+    device_keywords = ["quạt", "lọc", "không khí", "mèo", "ăn", "hạt", "cửa", "cuốn", "đèn", "tất cả"]
+    
+    # Nếu câu nói KHÔNG chứa bất kỳ từ khóa nào ở trên -> Chặn luôn
+    if not any(kw in text_lower for kw in device_keywords):
+        logger.info("❌ Câu lệnh không chứa thiết bị. Bỏ qua AI.")
+        return {"status": "success", "ai_understood": [], "execution_results": []}
+    
+    # KIỂM TRA CÂU PHỨC
     complex_keywords = [" và ", " rồi ", " với ", " nhưng "]
     is_complex_sentence = any(kw in text_lower for kw in complex_keywords)
 
     if not is_complex_sentence:
-        # 1. Thử dùng não bộ Local (siêu nhanh) cho câu đơn giản
         actions = parse_command_locally(text_lower, devices)
     
     if actions:
         logger.info(f"⚡ Local Parser đã hiểu lệnh: {actions}")
     else:
-        # 2. Nếu là câu phức hoặc Local không hiểu, gọi AI (OpenRouter)
         logger.info("🤖 Chuyển cho AI phân tích câu nói...")
         actions = await parse_command_with_ai(command.text, devices)
-    
+
     # 3. Thực thi lệnh
     results = []
     for action in actions:
