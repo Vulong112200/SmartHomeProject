@@ -39,26 +39,26 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
 
     # 2. PROMPT THIẾT QUÂN LUẬT
     prompt = f"""
-    Bạn là hệ thống điều khiển nhà thông minh.
-    Danh sách thiết bị hiện có:
+    Bạn là hệ thống chuyển đổi câu nói thành JSON cho nhà thông minh.
+    Danh sách thiết bị:
     {devices_str}
     
-    Lệnh của người dùng: "{command_text}"
+    Quy tắc TỐI THƯỢNG:
+    - CHỈ trả về thiết bị có liên quan trực tiếp đến câu nói.
+    - KHÔNG được tự ý điều khiển các thiết bị khác.
+    - Chỉ trả về DUY NHẤT mảng JSON, không nói thêm 1 chữ nào khác.
     
-    Nhiệm vụ: Phân tích lệnh và trả về DUY NHẤT một mảng JSON (không giải thích, không trò chuyện).
-    Cấu trúc của mỗi phần tử:
-    {{
-        "brand": "tên hãng (ví dụ: rojeco, tuya, vesync)",
-        "id": "ID thiết bị",
-        "action": "turn_on, turn_off, hoặc set_mode",
-        "mode": "giá trị (ví dụ '1', '2' đối với rojeco/vesync, hoặc 'open', 'close', 'stop' đối với tuya)"
-    }}
+    Ví dụ 1: Người dùng nói "cho mèo ăn 2 phần"
+    Trả về: [{{"brand": "rojeco", "id": "<id_rojeco>", "action": "set_mode", "mode": "2"}}]
     
-    LƯU Ý CỰC KỲ QUAN TRỌNG: 
-    - CHỈ trả về thiết bị được người dùng nhắc đến một cách rõ ràng. 
-    - TUYỆT ĐỐI KHÔNG tự ý thêm các thiết bị khác vào JSON. 
-    - Quạt lọc/máy lọc thì ID là vsaq325492d4dce9e0f8eb348bb3be41. Trung bình = mode '2'.
-    - Nếu câu nói không khớp với thiết bị nào, trả về []
+    Ví dụ 2: Người dùng nói "bật máy lọc sương sương thôi"
+    Trả về: [{{"brand": "vesync", "id": "<id_vesync>", "action": "set_mode", "mode": "1"}}]
+    
+    Ví dụ 3: Người dùng nói "thời tiết hôm nay thế nào"
+    Trả về: []
+    
+    Lệnh của người dùng hiện tại: "{command_text}"
+    Trả về JSON:
     """
 
     try:

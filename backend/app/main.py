@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 # Import các Connector và Manager
+from app.services.local_parser import parse_command_locally
 from app.services.connector_manager import device_manager
 from app.services.tuya_connector import TuyaConnector
 from app.services.vesync_connector import VeSyncConnector
@@ -193,12 +194,26 @@ async def parse_voice_command(command: VoiceCommand):
     devices = db.query(DeviceModel).all()
     db.close()
     
+    text_lower = command.text.lower()
     logger.info(f"Nhận lệnh giọng nói: '{command.text}'")
+    actions = []
     
-    # 1. Nhờ AI phân tích câu nói
-    actions = await parse_command_with_ai(command.text, devices)
+    # KIỂM TRA CÂU PHỨC: Nếu có các từ nối, bypass Local và chuyển thẳng cho AI
+    complex_keywords = [" và ", " rồi ", " với ", " nhưng "]
+    is_complex_sentence = any(kw in text_lower for kw in complex_keywords)
+
+    if not is_complex_sentence:
+        # 1. Thử dùng não bộ Local (siêu nhanh) cho câu đơn giản
+        actions = parse_command_locally(text_lower, devices)
     
-    # 2. Thực thi lệnh một cách an toàn qua device_manager
+    if actions:
+        logger.info(f"⚡ Local Parser đã hiểu lệnh: {actions}")
+    else:
+        # 2. Nếu là câu phức hoặc Local không hiểu, gọi AI (OpenRouter)
+        logger.info("🤖 Chuyển cho AI phân tích câu nói...")
+        actions = await parse_command_with_ai(command.text, devices)
+    
+    # 3. Thực thi lệnh
     results = []
     for action in actions:
         brand = action.get("brand")
