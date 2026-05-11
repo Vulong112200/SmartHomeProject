@@ -55,7 +55,7 @@ class ChatBubble extends StatelessWidget {
                             children: [
                               Icon(act['success'] ? Icons.check_circle : Icons.error, color: act['success'] ? AppColors.success : Colors.redAccent, size: 16),
                               const SizedBox(width: 8),
-                              Expanded(child: Text("${act['device']} ➔ ${act['action']}", style: const TextStyle(fontSize: 13, color: AppColors.textSub))),
+                              Expanded(child: Text("${act['device_name']} ➔ ${act['action']}", style: const TextStyle(fontSize: 13, color: AppColors.textSub))),
                             ],
                           ),
                         )).toList(),

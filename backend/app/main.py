@@ -221,20 +221,41 @@ async def parse_voice_command(command: VoiceCommand):
         act_type = action.get("action")
         mode = action.get("mode")
         
+        # Lấy Tên thiết bị để hiển thị lên Chat đẹp hơn
+        device_obj = next((d for d in devices if d.id == dev_id), None)
+        dev_name = device_obj.name if device_obj else dev_id
+        
+        # Dịch Action sang Tiếng Việt cho người dùng dễ hiểu
+        action_ui = ""
+        if act_type == "on" or mode == "on": action_ui = "Bật"
+        elif act_type == "off" or mode == "off": action_ui = "Tắt"
+        elif mode:
+            if mode == "open": action_ui = "Mở cửa"
+            elif mode == "close": action_ui = "Đóng cửa"
+            elif mode == "stop": action_ui = "Dừng"
+            else: action_ui = f"Chế độ {mode}"
+        else: action_ui = "Thực thi"
+
         success = False
         try:
             connector = device_manager.get_connector(brand)
             if connector:
-                if mode and hasattr(connector, 'set_mode'):
-                    success = await connector.set_mode(dev_id, mode)
-                elif act_type == "on" and hasattr(connector, 'turn_on'):
-                    success = await connector.turn_on(dev_id)
-                elif act_type == "off" and hasattr(connector, 'turn_off'):
+                # Sửa lỗi tắt máy lọc: Tối ưu lại cấu trúc If/Else
+                if act_type == "off" or mode == "off":
                     success = await connector.turn_off(dev_id)
+                elif act_type == "on" or mode == "on":
+                    success = await connector.turn_on(dev_id)
+                elif mode and hasattr(connector, 'set_mode'):
+                    success = await connector.set_mode(dev_id, mode)
         except Exception as e:
-            logger.error(f"[AI Execution Error] Lỗi thực thi thiết bị {dev_id}: {e}")
+            logger.error(f"[AI Execution Error] {e}")
 
-        results.append({"device": dev_id, "action": act_type or mode, "success": success})
+        # Gửi Tên và Action tiếng Việt về cho App
+        results.append({
+            "device_name": dev_name, 
+            "action": action_ui, 
+            "success": success
+        })
 
     return {"status": "success", "ai_understood": actions, "execution_results": results}
 

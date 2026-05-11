@@ -44,6 +44,30 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
         setState(() => _isListening = true);
         _speech.listen(
           onResult: (val) {
+            String currentWords = val.recognizedWords.toLowerCase();
+
+            // Tính năng 1: Wake word "Tom có nghe không"
+            if (currentWords.contains("tom có nghe không") && !messages.any((m) => m["text"] == "Tom đang nghe đây 🎙️")) {
+              setState(() {
+                messages.add({"isUser": false, "text": "Tom đang nghe đây 🎙️", "actions": []});
+                _scrollToBottom();
+              });
+              // Không stop, vẫn tiếp tục nghe lệnh tiếp theo
+            }
+
+            // Tính năng 2: Chốt lệnh nhanh bằng từ "over"
+            if (currentWords.endsWith("over")) {
+              _speech.stop();
+              setState(() {
+                _isListening = false;
+                // Cắt chữ "over" ra khỏi câu lệnh
+                _commandController.text = val.recognizedWords.replaceAll(RegExp(r'(?i)over'), '').trim();
+              });
+              _sendCommand(); // Gửi thẳng lên Server
+              return;
+            }
+
+            // Update UI thông thường
             setState(() {
               _commandController.text = val.recognizedWords;
               if (val.finalResult) {
@@ -53,6 +77,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
             });
           },
           localeId: 'vi_VN',
+          pauseFor: const Duration(seconds: 4), // Tăng thời gian chờ người dùng suy nghĩ
         );
       }
     } else {

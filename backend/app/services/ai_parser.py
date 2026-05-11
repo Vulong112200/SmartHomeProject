@@ -39,32 +39,21 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
 
     # 2. PROMPT THIẾT QUÂN LUẬT
     prompt = f"""
-    Bạn là hệ thống chuyển đổi câu nói thành JSON cho nhà thông minh.
+    Bạn là hệ thống phân tích lệnh cho nhà thông minh.
     Danh sách thiết bị:
     {devices_str}
     
     Quy tắc TỐI THƯỢNG:
-    - CHỈ trả về thiết bị có liên quan trực tiếp đến câu nói.
-    - KHÔNG được tự ý điều khiển các thiết bị khác.
-    - Chỉ trả về DUY NHẤT mảng JSON, không nói thêm 1 chữ nào khác.
+    1. CHỈ điều khiển thiết bị được người dùng nhắc đến đích danh.
+    2. NẾU câu nói không có nghĩa, hoặc KHÔNG nhắc đến bất kỳ thiết bị nào (ví dụ: 'bận nó không thấy mất tự động', 'hôm nay trời đẹp', v.v.), BẮT BUỘC trả về mảng rỗng: []
+    3. Trả về DUY NHẤT JSON.
     
-    Ví dụ 1: Người dùng nói "cho mèo ăn 2 phần"
-    Trả về: [{{"brand": "rojeco", "id": "<id_rojeco>", "action": "set_mode", "mode": "2"}}]
+    Ví dụ:
+    - "Bật máy lọc": [{{ "brand": "vesync", "id": "<id>", "action": "turn_on", "mode": None }}]
+    - "Cho mèo ăn": [{{ "brand": "rojeco", "id": "<id>", "action": "set_mode", "mode": "1" }}]
+    - "Làm bậy bạ đi": []
     
-    Ví dụ 2: Người dùng nói "bật máy lọc sương sương thôi"
-    Trả về: [{{"brand": "vesync", "id": "<id_vesync>", "action": "set_mode", "mode": "1"}}]
-    
-    Ví dụ 3: Người dùng nói "thời tiết hôm nay thế nào"
-    Trả về: []
-    
-    # THÊM VÍ DỤ NÀY ĐỂ DẠY AI XỬ LÝ NHIỀU THIẾT BỊ
-    Ví dụ 4: Người dùng nói "đóng cửa cuốn và cho mèo ăn"
-    Trả về: [
-        {{"brand": "tuya", "id": "<id_tuya>", "action": "set_mode", "mode": "close"}},
-        {{"brand": "rojeco", "id": "<id_rojeco>", "action": "set_mode", "mode": "1"}}
-    ]
-    
-    Lệnh của người dùng hiện tại: "{command_text}"
+    Lệnh hiện tại: "{command_text}"
     Trả về JSON:
     """
 
