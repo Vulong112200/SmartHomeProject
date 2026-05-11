@@ -21,7 +21,7 @@ for model in models:
         print("METHODS:", model.supported_generation_methods) 
         print("-" * 50)
 
-model = genai.GenerativeModel('gemini-1.5-flash-latest')
+model = genai.GenerativeModel('gemini-2.0-flash')
 
 async def parse_command_with_gemini(command_text: str, devices_list: list) -> list:
     """
