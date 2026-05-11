@@ -46,14 +46,19 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
     Lệnh của người dùng: "{command_text}"
     
     Nhiệm vụ: Phân tích lệnh và trả về DUY NHẤT một mảng JSON (không giải thích, không trò chuyện).
-    Cấu trúc của mỗi phần tử trong mảng JSON:
+    Cấu trúc của mỗi phần tử:
     {{
         "brand": "tên hãng (ví dụ: rojeco, tuya, vesync)",
         "id": "ID thiết bị",
         "action": "turn_on, turn_off, hoặc set_mode",
         "mode": "giá trị (ví dụ '1', '2' đối với rojeco/vesync, hoặc 'open', 'close', 'stop' đối với tuya)"
     }}
-    Nếu câu nói không khớp với thiết bị nào, trả về mảng rỗng: []
+    
+    LƯU Ý CỰC KỲ QUAN TRỌNG: 
+    - CHỈ trả về thiết bị được người dùng nhắc đến một cách rõ ràng. 
+    - TUYỆT ĐỐI KHÔNG tự ý thêm các thiết bị khác vào JSON. 
+    - Quạt lọc/máy lọc thì ID là vsaq325492d4dce9e0f8eb348bb3be41. Trung bình = mode '2'.
+    - Nếu câu nói không khớp với thiết bị nào, trả về []
     """
 
     try:
