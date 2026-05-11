@@ -18,12 +18,12 @@ dependencies:
   http: ^1.1.0
   
   # Thư viện giao tiếp thời gian thực
-  web_socket_channel: ^2.4.1
+  web_socket_channel: ^3.0.3
 
   # Cung cấp các icon Material Design
   cupertino_icons: ^1.0.2
 
-  speech_to_text: ^6.6.2
+  speech_to_text: ^7.3.0
   
   permission_handler: ^11.3.1
 
