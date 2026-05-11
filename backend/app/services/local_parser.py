@@ -13,7 +13,7 @@ def parse_command_locally(text: str, devices_list: list) -> list:
         vesync_id = next((d.id for d in devices_list if d.brand == "vesync"), None)
         if vesync_id:
             if "tắt" in text:
-                actions.append({"brand": "vesync", "id": vesync_id, "action": "turn_off", "mode": None})
+                actions.append({"brand": "vesync", "id": vesync_id, "action": "off", "mode": None})
             elif "thấp" in text or "1" in text:
                 actions.append({"brand": "vesync", "id": vesync_id, "action": "set_mode", "mode": "1"})
             elif "trung bình" in text or "2" in text:
@@ -25,7 +25,7 @@ def parse_command_locally(text: str, devices_list: list) -> list:
             elif "ngủ" in text or "sleep" in text:
                 actions.append({"brand": "vesync", "id": vesync_id, "action": "set_mode", "mode": "sleep"})
             elif "bật" in text or "mở" in text:
-                actions.append({"brand": "vesync", "id": vesync_id, "action": "turn_on", "mode": None})
+                actions.append({"brand": "vesync", "id": vesync_id, "action": "on", "mode": None})
 
     # 2. BẮT LỆNH MÁY CHO MÈO ĂN (Rojeco)
     if "mèo" in text or "ăn" in text or "hạt" in text:
