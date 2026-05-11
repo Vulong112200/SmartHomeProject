@@ -13,6 +13,13 @@ if not GEMINI_API_KEY:
     print("[AI Error] ⚠️ Không tìm thấy GEMINI_API_KEY! Hãy kiểm tra lại Settings trên Render.")
 else:
     genai.configure(api_key=GEMINI_API_KEY)
+    
+models = genai.list_models() 
+for model in models: 
+    print("MODEL:", model.name) 
+    if hasattr(model, "supported_generation_methods"): 
+        print("METHODS:", model.supported_generation_methods) 
+        print("-" * 50)
 
 model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
