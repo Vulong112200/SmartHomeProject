@@ -57,6 +57,13 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
     Ví dụ 3: Người dùng nói "thời tiết hôm nay thế nào"
     Trả về: []
     
+    # THÊM VÍ DỤ NÀY ĐỂ DẠY AI XỬ LÝ NHIỀU THIẾT BỊ
+    Ví dụ 4: Người dùng nói "đóng cửa cuốn và cho mèo ăn"
+    Trả về: [
+        {{"brand": "tuya", "id": "<id_tuya>", "action": "set_mode", "mode": "close"}},
+        {{"brand": "rojeco", "id": "<id_rojeco>", "action": "set_mode", "mode": "1"}}
+    ]
+    
     Lệnh của người dùng hiện tại: "{command_text}"
     Trả về JSON:
     """

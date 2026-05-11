@@ -8,6 +8,9 @@ environment:
   sdk: '>=3.2.3 <4.0.0'
 
 dependencies:
+  flutter_animate: ^4.5.0 # Tạo animation mượt như lụa cực kỳ dễ
+  google_fonts: ^6.2.1
+  
   flutter:
     sdk: flutter
   
