@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,12 +25,25 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
   bool _isListening = false;
   bool _isTyping = false;
   bool _hasGreetedThisSession = false;
+
+  Timer? _silenceTimer; 
+  bool _commandSentThisSession = false;
+
   final String baseUrl = 'https://vuhp-smarthome.onrender.com';
 
   List<Map<String, dynamic>> messages = [
     {"isUser": false, "text": "Chào Vũ! Tôi là trợ lý AI. Bạn muốn điều khiển thiết bị nào?", "actions": []}
   ];
 
+  void _executeSend() {
+    if (_commandSentThisSession) return; // Nếu đã gửi rồi -> Bỏ qua ngay
+    _commandSentThisSession = true;      // Đánh dấu là đã gửi
+    
+    setState(() => _isListening = false);
+    _silenceTimer?.cancel();             // Tắt bộ đếm giờ
+    _sendCommand();                      // Gọi hàm gửi lệnh của bạn
+  }
+  
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {
       if (_scrollCtrl.hasClients) {
@@ -42,21 +56,22 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
     if (!_isListening) {
       bool available = await _speech.initialize(
         onStatus: (status) {
-          // Nếu engine tự ngắt do im lặng, ta chốt gửi lệnh luôn
+          // Bỏ hàm gửi tự động ở đây để tránh bị duplicate lệnh
           if (status == 'notListening' && _isListening) {
             setState(() => _isListening = false);
-            _sendCommand();
+            _silenceTimer?.cancel();
           }
         },
       );
 
       if (available) {
+        // RESET CÁC BIẾN KHI BẮT ĐẦU NGHE MỚI
         _hasGreetedThisSession = false;
+        _commandSentThisSession = false; 
         setState(() => _isListening = true);
 
         _speech.listen(
           onResult: (val) {
-            // Chuyển về lowercase và trim để so sánh chính xác hơn
             String currentWords = val.recognizedWords.toLowerCase().trim();
 
             // 1. Wake word "Tom có nghe không"
@@ -68,45 +83,46 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
               });
             }
 
-            // 2. CẢI TIẾN NHẬN DIỆN "OVER" (Thêm các biến thể tiếng Việt)
-            // Đôi khi AI nghe "over" thành "ô vờ", "ô vơ" hoặc "ok"
+            // 2. Chốt bằng từ khóa "over"
             bool detectedOver = currentWords.endsWith("over") || 
                                currentWords.endsWith("ô vờ") || 
                                currentWords.endsWith("ô vơ");
-
             if (detectedOver) {
-              _speech.stop(); // Ngắt mic ngay lập tức
+              _speech.stop();
               setState(() {
-                _isListening = false;
-                // Xóa từ khóa kết thúc khỏi nội dung gửi đi
                 _commandController.text = val.recognizedWords
-                    .replaceAll(RegExp(r'(?i)over|ô vờ|ô vơ'), '')
-                    .trim();
+                    .replaceAll(RegExp(r'(?i)over|ô vờ|ô vơ'), '').trim();
               });
-              
-              // Gửi lệnh ngay lập tức, không delay 1ms nào
-              _sendCommand(); 
+              _executeSend(); // GỌI HÀM CHỐT CHẶN
               return;
             }
 
-            setState(() {
-              _commandController.text = val.recognizedWords;
-              // Nếu engine báo đã kết thúc câu nói (theo pauseFor)
-              if (val.finalResult) {
-                setState(() => _isListening = false);
-                _sendCommand();
+            // --- LÕI ĐẾM THỜI GIAN IM LẶNG THỰC SỰ ---
+            // Cứ mỗi lần bạn nói 1 từ mới, nó hủy giờ cũ và đếm lại 1.5s từ đầu
+            setState(() => _commandController.text = val.recognizedWords);
+            
+            _silenceTimer?.cancel();
+            _silenceTimer = Timer(const Duration(milliseconds: 1500), () {
+              // Nếu bạn im lặng đúng 1.5s sau từ cuối cùng -> Tự động chốt
+              if (_isListening) {
+                _speech.stop();
+                _executeSend(); // GỌI HÀM CHỐT CHẶN
               }
             });
+
+            // 3. Fallback của hệ thống
+            if (val.finalResult) {
+              _executeSend(); // GỌI HÀM CHỐT CHẶN
+            }
           },
           localeId: 'vi_VN',
-          // --- THAY ĐỔI QUAN TRỌNG: GIẢM THỜI GIAN NGẮT ---
-          // Chỉ chờ 1.5 giây im lặng là engine sẽ tự động chốt finalResult
-          pauseFor: const Duration(milliseconds: 4500), 
-          listenMode: stt.ListenMode.deviceDefault,
-          partialResults: true, // Đảm bảo nhận diện liên tục để bắt chữ "over" kịp thời
+          partialResults: true,
+          // Đã XÓA pauseFor cũ để dùng Timer nội bộ siêu chuẩn xác ở trên
         );
       }
     } else {
+      // Khi người dùng tự bấm nút Tắt Mic
+      _silenceTimer?.cancel();
       setState(() => _isListening = false);
       _speech.stop();
     }
@@ -172,12 +188,21 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Row(
-                children: [
-                  Icon(Icons.auto_awesome, color: AppColors.primary),
-                  SizedBox(width: 8),
-                  Text("Trợ lý Smart Home", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                ],
+              Expanded( // <--- BỌC EXPANDED Ở ĐÂY
+                child: Row(
+                  children: [
+                    const Icon(Icons.auto_awesome, color: AppColors.primary),
+                    const SizedBox(width: 8),
+                    // Thêm Flexible và TextOverflow để chống tràn chữ
+                    const Flexible(
+                      child: Text(
+                        "Trợ lý Smart Home", 
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
               ),
               GestureDetector(
                 onTap: () {
