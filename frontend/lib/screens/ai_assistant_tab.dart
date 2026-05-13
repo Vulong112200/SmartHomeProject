@@ -91,7 +91,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
               _speech.stop();
               setState(() {
                 _commandController.text = val.recognizedWords
-                    .replaceAll(RegExp(r'(?i)over|ô vờ|ô vơ'), '').trim();
+                .replaceAll(RegExp(r'over|ô vờ|ô vơ', caseSensitive: false), '').trim();
               });
               _executeSend(); // GỌI HÀM CHỐT CHẶN
               return;
@@ -116,7 +116,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
             }
           },
           localeId: 'vi_VN',
-          partialResults: true,
+          listenOptions: stt.SpeechListenOptions(partialResults: true, cancelOnError: true),
           // Đã XÓA pauseFor cũ để dùng Timer nội bộ siêu chuẩn xác ở trên
         );
       }
@@ -188,13 +188,13 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Expanded( // <--- BỌC EXPANDED Ở ĐÂY
+              const Expanded( // <--- BỌC EXPANDED Ở ĐÂY
                 child: Row(
                   children: [
-                    const Icon(Icons.auto_awesome, color: AppColors.primary),
-                    const SizedBox(width: 8),
+                    Icon(Icons.auto_awesome, color: AppColors.primary),
+                    SizedBox(width: 8),
                     // Thêm Flexible và TextOverflow để chống tràn chữ
-                    const Flexible(
+                    Flexible(
                       child: Text(
                         "Trợ lý Smart Home", 
                         style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),

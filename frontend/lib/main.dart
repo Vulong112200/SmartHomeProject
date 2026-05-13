@@ -35,29 +35,15 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
 
-  // Tạm thời dùng Mock Data để test UI (Sau này bạn map với Riverpod/API sau)
-  final List<dynamic> _mockDevices = [
-    {"id": "den_01", "name": "Đèn phòng khách", "brand": "tuya", "is_active": true},
-    {"id": "loc_01", "name": "Máy lọc không khí", "brand": "vesync", "is_active": false},
-    {"id": "meo_01", "name": "Máy cho mèo ăn", "brand": "rojeco", "is_active": true},
-  ];
-
-  void _toggleDevice(String id, bool val) {
-    setState(() {
-      final device = _mockDevices.firstWhere((d) => d['id'] == id);
-      device['is_active'] = val;
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       // Hiển thị nội dung dựa theo tab đang chọn
       body: IndexedStack(
         index: _currentIndex,
-        children: [
-          const DashboardTab(),
-          const AIAssistantTab(),
+        children: const [
+          DashboardTab(),
+          AIAssistantTab(),
         ],
       ),
       
