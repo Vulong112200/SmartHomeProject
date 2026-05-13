@@ -30,6 +30,9 @@ from app.services.ai_parser import parse_command_with_ai
 from app.core.database import SessionLocal, engine, Base, get_db
 from app.models.device import DeviceModel
 
+import time
+from fastapi import Request
+
 # =========================================================
 # CẤU HÌNH HỆ THỐNG GHI LOG CHUYÊN NGHIỆP
 # =========================================================
@@ -349,3 +352,25 @@ async def health_check():
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon(): 
     return Response(content="", media_type="image/x-icon")
+
+# ==========================================
+# MIDDLEWARE ĐO THỜI GIAN PHẢN HỒI
+# ==========================================
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    # Ghi lại thời gian bắt đầu nhận request
+    start_time = time.time()
+    
+    # Tiếp tục xử lý các logic của API
+    response = await call_next(request)
+    
+    # Tính toán tổng thời gian xử lý (giây)
+    process_time = time.time() - start_time
+    
+    # Thêm thông tin thời gian xử lý vào Header của phản hồi
+    response.headers["X-Process-Time"] = str(process_time)
+    
+    # In ra log để bạn theo dõi trực tiếp trên Render Logs
+    print(f"Path: {request.url.path} | Time: {process_time:.4f}s")
+    
+    return response
