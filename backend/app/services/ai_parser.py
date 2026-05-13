@@ -64,7 +64,7 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
         # Có thể thử "meta-llama/llama-3.3-70b-instruct:free" nếu muốn.
         response = await client.chat.completions.create(
             # model=" google/gemini-2.5-flash:free",
-            model="openrouter/auto:free",
+            model="openrouter/free",
             messages=[
                 {"role": "user", "content": prompt}
             ],
