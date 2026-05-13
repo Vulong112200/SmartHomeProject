@@ -63,24 +63,24 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
         # Hậu tố :free đảm bảo không bao giờ tính tiền. 
         # Có thể thử "meta-llama/llama-3.3-70b-instruct:free" nếu muốn.
         response = await client.chat.completions.create(
-            # model=" google/gemini-2.5-flash:free",
-            model="openrouter/free",
+            # Sử dụng openrouter/auto để tính năng tự động định tuyến (routing) hoạt động tốt nhất
+            model="openrouter/auto", 
             messages=[
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1,
-            extra_body={
-                    # CHỈNH SỬA TẠI ĐÂY: Rút gọn xuống còn 3 mục theo giới hạn của OpenRouter
-                    # Mình ưu tiên Google (Gemini), DeepSeek (Thông minh) và Mistral (Nhanh)
-                    "models": [
-                        "google/*", 
-                        "deepseek/*", 
-                        "mistralai/*" 
-                    ],
-                    "provider": {
-                        "sort": "latency" # Ưu tiên mô hình nào phản hồi nhanh nhất trong nhóm trên
-                    }
-                }        )
+            temperature=0.1, # Nhiệt độ thấp giúp AI trả về JSON chính xác và ít sáng tạo lung tung
+            extra_body={ 
+                # CẬP NHẬT: Sử dụng ID chính xác thay vì ký tự '*'
+                "models": [ 
+                    "google/gemini-1.5-flash:free",        # Mô hình của Google (Rất tốt cho Tiếng Việt)
+                    "meta-llama/llama-3-8b-instruct:free", # Mô hình của Meta (Cực kỳ nhanh)
+                    "mistralai/mistral-7b-instruct:free"   # Mô hình của Mistral (Nhẹ và ổn định)
+                ], 
+                "provider": { 
+                    "sort": "latency" # Ưu tiên chọn mô hình nào đang có tốc độ phản hồi nhanh nhất
+                } 
+            }
+        )
         
         # 4. LẤY KẾT QUẢ VÀ LÀM SẠCH JSON
         result_text = response.choices[0].message.content.strip()
