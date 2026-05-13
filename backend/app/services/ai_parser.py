@@ -68,7 +68,8 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
             messages=[
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1
+            temperature=0.1,
+            extra_body={ "models": [ "google/*", "deepseek/*", "mistralai/*", "qwen/*" ], "provider": { "sort": "latency" } }
         )
         
         # 4. LẤY KẾT QUẢ VÀ LÀM SẠCH JSON
