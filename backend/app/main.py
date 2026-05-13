@@ -339,7 +339,7 @@ async def root():
     """
     return {"message": "Hệ thống Smart Home Backend đang hoạt động!"}
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"]) 
 async def health_check():
     """
     Endpoint chuyên biệt cho việc kiểm tra trạng thái hệ thống.
