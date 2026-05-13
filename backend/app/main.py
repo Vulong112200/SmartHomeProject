@@ -331,9 +331,20 @@ async def websocket_endpoint(websocket: WebSocket):
 # =========================================================
 # Root & Favicon
 # =========================================================
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root(): 
+    """
+    Xử lý yêu cầu từ trình duyệt (GET) và UptimeRobot (HEAD).
+    Việc hỗ trợ HEAD giúp giảm băng thông và tăng tốc độ phản hồi.
+    """
     return {"message": "Hệ thống Smart Home Backend đang hoạt động!"}
+
+@app.get("/health")
+async def health_check():
+    """
+    Endpoint chuyên biệt cho việc kiểm tra trạng thái hệ thống.
+    """
+    return {"status": "online"}
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon(): 
