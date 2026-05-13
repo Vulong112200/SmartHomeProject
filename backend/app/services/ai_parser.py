@@ -69,8 +69,18 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            extra_body={ "models": [ "google/*", "deepseek/*", "mistralai/*", "qwen/*" ], "provider": { "sort": "latency" } }
-        )
+            extra_body={
+                    # CHỈNH SỬA TẠI ĐÂY: Rút gọn xuống còn 3 mục theo giới hạn của OpenRouter
+                    # Mình ưu tiên Google (Gemini), DeepSeek (Thông minh) và Mistral (Nhanh)
+                    "models": [
+                        "google/*", 
+                        "deepseek/*", 
+                        "mistralai/*" 
+                    ],
+                    "provider": {
+                        "sort": "latency" # Ưu tiên mô hình nào phản hồi nhanh nhất trong nhóm trên
+                    }
+                }        )
         
         # 4. LẤY KẾT QUẢ VÀ LÀM SẠCH JSON
         result_text = response.choices[0].message.content.strip()
