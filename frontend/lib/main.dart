@@ -6,9 +6,13 @@ import 'theme/app_theme.dart';
 import 'theme/app_colors.dart';
 import 'screens/dashboard_tab.dart';
 import 'screens/ai_assistant_tab.dart';
+import 'core/shortcut_handler.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProviderScope(child: SmartHomeApp()));
+  // Lắng nghe khi người dùng bấm icon shortcut trên home screen.
+  ShortcutHandler.register();
 }
 
 class SmartHomeApp extends StatelessWidget {
@@ -19,6 +23,7 @@ class SmartHomeApp extends StatelessWidget {
     return MaterialApp(
       title: 'Smart Home Premium',
       debugShowCheckedModeBanner: false,
+      navigatorKey: appNavigatorKey, // Cho phép shortcut hiện dialog/snackbar
       theme: AppTheme.darkTheme, // Áp dụng theme mới
       home: const MainScreen(),
     );

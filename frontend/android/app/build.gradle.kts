@@ -42,3 +42,8 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // Cần cho ShortcutManagerCompat / ShortcutInfoCompat (pinned shortcut).
+    implementation("androidx.core:core-ktx:1.13.1")
+}

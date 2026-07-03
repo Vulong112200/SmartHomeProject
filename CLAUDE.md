@@ -1,0 +1,77 @@
+# CLAUDE.md — SmartHomeProject
+
+> Tài liệu điều hướng cho Claude Code. Giữ khớp code thật qua `/sync-docs`.
+> Chi tiết: `.claude/docs/{structure,features,callflows}.md`.
+
+## Tổng quan
+
+Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Python 3.13)** làm gateway điều khiển thiết bị qua các connector (Tuya / VeSync / Rojeco), **frontend Flutter** (Android chính) với dashboard, trợ lý giọng nói (AI), và shortcut ra màn hình chính.
+
+- Backend: `backend/app/` — chạy `uvicorn app.main:app` (deploy Render). DB SQLite `backend/smarthome.db`.
+- Frontend: `frontend/lib/` — Flutter + Riverpod-less (dùng `StatefulWidget`/`http` trực tiếp). Android native shortcut qua MethodChannel.
+
+## Key Features Registry
+
+| Feature | Status | Vị trí chính |
+|---|---|---|
+| Quản lý thiết bị (CRUD) | ✅ | `main.py` `/api/devices`, `models/device.py` |
+| Điều khiển bật/tắt & mode | ✅ | `main.py` `/api/test-control/...`, connectors |
+| Lấy trạng thái thật thiết bị | ✅ | `main.py` `/api/devices/{brand}/{id}/status` |
+| Trợ lý giọng nói (AI + local parse) | ✅ | `main.py` `/api/ai/parse`, `services/ai_parser.py`, `services/local_parser.py`, `screens/ai_assistant_tab.dart` |
+| Dashboard điều khiển | ✅ | `screens/dashboard_tab.dart` |
+| Home-screen Shortcut (icon xử lý nhanh) | ✅ | `core/shortcut_service.dart`, `core/shortcut_handler.dart`, `MainActivity.kt`, `res/drawable/ic_*` |
+| Automation engine | 📋 (đóng băng) | `services/automation_engine.py` (comment trong `main.py`) |
+
+## API Endpoints Summary (`backend/app/main.py`)
+
+| Method | Path | Mô tả |
+|---|---|---|
+| GET | `/api/devices` | Liệt kê thiết bị (DB) |
+| POST | `/api/devices` | Thêm thiết bị (query: id, name, brand) |
+| DELETE | `/api/devices/{device_id}` | Xóa thiết bị |
+| GET | `/api/test-control/{brand}/{device_id}?action=on\|off` | Bật/tắt |
+| GET | `/api/test-control/{brand}/{device_id}/mode?mode=...` | Đổi chế độ (open/close/stop/low/high...) |
+| GET | `/api/devices/{brand}/{device_id}/status` | **Trạng thái sống** → `{data:{status:ON\|OFF\|offline, door_state, position,...}}` |
+| POST | `/api/ai/parse` | Parse + thực thi lệnh NL (body `{text}`) |
+| WS | `/ws` | WebSocket (hiện chỉ echo) |
+| GET/HEAD | `/`, `/health` | Health check |
+
+## Database Models (`backend/app/models/device.py`)
+
+- **DeviceModel** (`devices`): `id` (PK, vd `den_phong_khach`), `name`, `brand` (`tuya`\|`vesync`\|`rojeco`), `is_active`.
+  - ⚠️ Không có cột `icon`/`category`/`type`. Loại thiết bị suy từ `brand` (+ id/name) phía client.
+
+## Connectors (`backend/app/services/`)
+
+| Brand | Thiết bị | File | Ghi chú |
+|---|---|---|---|
+| tuya | Cửa cuốn/rèm | `tuya_connector.py` | state: `door_state` (open/closed/...), `position` 0–100 |
+| vesync | Máy lọc khí | `vesync_connector.py` | state: `mode`, `speed` |
+| rojeco | Máy cho ăn thú cưng | `rojeco_connector.py` | ⚠️ `get_device_state` là **stub** luôn trả `"ON"` |
+
+Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py` (`device_manager`) lúc startup.
+
+## File quan trọng nhất
+
+- `backend/app/main.py` — toàn bộ endpoint + luồng AI parse + startup connectors.
+- `frontend/lib/core/shortcut_handler.dart` — điều phối hành vi shortcut + `ShortcutIcons` (map trạng thái → tên drawable).
+- `frontend/lib/core/shortcut_service.dart` — MethodChannel `smarthome/shortcuts` ↔ native, quick_actions iOS.
+- `frontend/android/.../MainActivity.kt` — build/pin/update shortcut, `resolveIcon()`.
+- `frontend/lib/screens/dashboard_tab.dart` — UI thiết bị + nút tạo shortcut.
+
+## Lưu ý an toàn / kỹ thuật
+
+- ⚠️ **Credential hardcode** trong `main.py:91-92` (email/password VeSync) và có thể trong `tuya_connector.py`/`ai_parser.py` — nên chuyển sang biến môi trường `.env`.
+- Pinned shortcut Android là ảnh tĩnh: trạng thái phản ánh qua **icon** (đổi khi bấm), không có badge/text sống. Muốn trạng thái sống cần Home Screen Widget (chưa làm).
+- Tên drawable icon shortcut phải khớp CHÍNH XÁC với `ShortcutIcons` (`shortcut_handler.dart`), nếu thiếu → native fallback về `launcher_icon` (logo app).
+
+## Lệnh hay dùng
+
+```bash
+# Backend
+cd backend && uvicorn app.main:app --reload
+# Frontend
+cd frontend && flutter pub get && flutter run
+cd frontend && dart analyze
+cd frontend && flutter build apk --debug
+```

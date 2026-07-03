@@ -186,6 +186,21 @@ async def test_control_mode(brand: str, device_id: str, mode: str):
         return {"status": "error", "message": str(e)}
 
 # =========================================================
+# API - Lấy trạng thái THẬT của thiết bị (query từ phần cứng)
+# =========================================================
+@app.get("/api/devices/{brand}/{device_id}/status")
+async def get_device_status(brand: str, device_id: str):
+    try:
+        connector = device_manager.get_connector(brand)
+        if not connector:
+            return {"status": "error", "message": f"Không tìm thấy connector cho {brand}"}
+        state = await connector.get_device_state(device_id)
+        return {"status": "success", "data": state}
+    except Exception as e:
+        logger.error(f"Lỗi lấy trạng thái {brand}/{device_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
+# =========================================================
 # API - Nhận Lệnh Giọng Nói (AI OpenRouter)
 # =========================================================
 class VoiceCommand(BaseModel):

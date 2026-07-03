@@ -27,8 +27,11 @@ dependencies:
   cupertino_icons: ^1.0.2
 
   speech_to_text: ^7.3.0
-  
+
   permission_handler: ^11.3.1
+
+  # Tạo Home Screen Quick Actions (iOS + fallback Android long-press)
+  quick_actions: ^1.0.7
 
 dev_dependencies:
   flutter_test:

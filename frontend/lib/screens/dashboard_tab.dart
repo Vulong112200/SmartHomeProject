@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:http/http.dart' as http;
 import '../theme/app_colors.dart';
+import '../core/device_api.dart';
+import '../core/shortcut_service.dart';
+import '../core/shortcut_handler.dart';
 
 class DashboardTab extends StatefulWidget {
   const DashboardTab({super.key});
@@ -36,8 +39,8 @@ class _DashboardTabState extends State<DashboardTab> {
     try {
       // Ép thời gian chờ là 5 giây, nếu server đơ thì báo lỗi ngay
       final response = await http.get(Uri.parse('$baseUrl/api/devices'))
-                                 .timeout(const Duration(seconds: 5));      
-      
+                                 .timeout(const Duration(seconds: 5));
+
       if (response.statusCode == 200) {
         final data = json.decode(utf8.decode(response.bodyBytes));
         setState(() {
@@ -61,7 +64,7 @@ class _DashboardTabState extends State<DashboardTab> {
       isLoading = false;
       isOffline = true;
     });
-    
+
     _retryTimer?.cancel();
     _retryTimer = Timer(const Duration(seconds: 5), () {
       debugPrint("Đang thử kết nối lại...");
@@ -80,7 +83,7 @@ class _DashboardTabState extends State<DashboardTab> {
     final action = value ? "on" : "off";
     final brand = device['brand'];
     final dId = device['id'];
-    
+
     try {
       final response = await http.get(Uri.parse('$baseUrl/api/test-control/$brand/$dId?action=$action'))
                                  .timeout(const Duration(seconds: 5));
@@ -176,7 +179,7 @@ class _DashboardTabState extends State<DashboardTab> {
                       ),
                     ),
                   ),
-                  
+
                   if (devices.isEmpty && !isLoading)
                     const SliverFillRemaining(
                       child: Center(child: Text("Không có dữ liệu thiết bị", style: TextStyle(color: AppColors.textSub))),
@@ -221,7 +224,7 @@ class _DashboardTabState extends State<DashboardTab> {
 }
 
 // COMPONENT: THẺ THIẾT BỊ
-class SmartDeviceCard extends StatelessWidget {
+class SmartDeviceCard extends StatefulWidget {
   final dynamic device;
   final String baseUrl;
   final bool isOffline;
@@ -229,59 +232,134 @@ class SmartDeviceCard extends StatelessWidget {
 
   const SmartDeviceCard({super.key, required this.device, required this.baseUrl, required this.isOffline, required this.onToggle});
 
-  Widget _buildModeButton(BuildContext context, String label, String modeValue, Color glowColor) {
-    return ActionChip(
-      label: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textMain)),
-      backgroundColor: AppColors.surface,
-      side: BorderSide(color: glowColor.withValues(alpha: 0.3), width: 1),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      onPressed: () async {
-        if (isOffline) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Không thể điều khiển khi mất kết nối!"), backgroundColor: Colors.redAccent));
-          return;
-        }
+  @override
+  State<SmartDeviceCard> createState() => _SmartDeviceCardState();
+}
 
-        final brand = device['brand'].toString().toLowerCase();
-        final deviceId = device['id'];
-        try {
-          final response = await http.get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$modeValue'))
-                                     .timeout(const Duration(seconds: 5));
-          if (response.statusCode == 200 && context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Đã chọn: $label'), backgroundColor: glowColor, duration: const Duration(seconds: 1)),
-            );
-          }
-        } catch (e) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Lỗi kết nối tới thiết bị!"), backgroundColor: Colors.redAccent));
-          }
-        }
-      },
+class _SmartDeviceCardState extends State<SmartDeviceCard> {
+  Map<String, dynamic>? _status; // trạng thái THẬT từ backend (nếu có)
+
+  String get _brand => widget.device['brand'].toString().toLowerCase();
+  String get _id => widget.device['id'].toString();
+  String get _name => widget.device['name'].toString();
+
+  bool get _isAirPurifier => _name.toLowerCase().contains('lọc');
+  bool get _isFeeder => _name.toLowerCase().contains('mèo') || _name.toLowerCase().contains('ăn');
+  bool get _isCurtain => _name.toLowerCase().contains('cửa');
+
+  @override
+  void initState() {
+    super.initState();
+    // Chỉ máy lọc & cửa mới cần lấy trạng thái thật để hiển thị đúng.
+    if (_isAirPurifier || _isCurtain) _refreshStatus();
+  }
+
+  Future<void> _refreshStatus() async {
+    if (widget.isOffline) return;
+    final s = await DeviceApi.fetchStatus(_brand, _id);
+    if (!mounted) return;
+    setState(() => _status = s);
+  }
+
+  void _snack(String msg, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: color, duration: const Duration(seconds: 2)),
+    );
+  }
+
+  Future<void> _sendMode(String label, String modeValue) async {
+    if (widget.isOffline) {
+      _snack("Không thể điều khiển khi mất kết nối!", Colors.redAccent);
+      return;
+    }
+    final ok = await DeviceApi.sendMode(_brand, _id, modeValue);
+    if (!mounted) return;
+    if (ok) {
+      _snack('Đã chọn: $label', AppColors.primary);
+      _refreshStatus(); // cập nhật lại highlight/icon theo trạng thái mới
+    } else {
+      _snack("Lỗi kết nối tới thiết bị!", Colors.redAccent);
+    }
+  }
+
+  // Tạo icon shortcut rời trên home screen cho thiết bị này.
+  Future<void> _createShortcut(String type, String label, String iconRes) async {
+    final action = ShortcutAction(type: type, brand: _brand, deviceId: _id, deviceName: _name);
+    final ok = await ShortcutService.instance.pinShortcut(action, label: label, iconRes: iconRes);
+    if (!mounted) return;
+    _snack(
+      ok ? 'Đã yêu cầu tạo icon "$label". Kiểm tra màn hình chính.' : 'Thiết bị/OS chưa hỗ trợ tạo icon rời.',
+      ok ? Colors.green : Colors.orangeAccent,
+    );
+  }
+
+  Widget _buildModeButton(String label, String modeValue, Color glowColor, {bool selected = false, bool enabled = true}) {
+    return ActionChip(
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: selected ? Colors.white : (enabled ? AppColors.textMain : AppColors.textSub),
+        ),
+      ),
+      backgroundColor: selected ? glowColor : AppColors.surface,
+      side: BorderSide(color: glowColor.withValues(alpha: selected ? 0.9 : 0.3), width: 1),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      onPressed: enabled ? () => _sendMode(label, modeValue) : null,
+    );
+  }
+
+  Widget _buildShortcutButton(String type, String label, String iconRes, Color glowColor) {
+    return ActionChip(
+      avatar: Icon(Icons.add_to_home_screen, size: 16, color: glowColor),
+      label: const Text('Tạo icon xử lý nhanh', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textMain)),
+      backgroundColor: AppColors.surface,
+      side: BorderSide(color: glowColor.withValues(alpha: 0.4), width: 1),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      onPressed: () => _createShortcut(type, label, iconRes),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    // ... (Phần logic màu sắc và giao diện Card GIỮ NGUYÊN HOÀN TOÀN như cũ) ...
-    // ... Bạn chỉ cần copy đè phần ruột của build() từ file cũ của bạn vào đây ...
-    // Để tiết kiệm không gian, tôi chỉ viết mẫu phần đầu, bạn dán phần ruột cũ vào nhé.
-    
-    bool isActive = device['is_active'];
-    String originalName = device['name'];
-    String nameLower = originalName.toLowerCase();
-    
-    bool isAirPurifier = nameLower.contains('lọc');
-    bool isFeeder = nameLower.contains('mèo') || nameLower.contains('ăn');
-    bool isCurtain = nameLower.contains('cửa');
+    // Trạng thái bật/tắt: ưu tiên trạng thái THẬT nếu đã lấy được.
+    bool isActive = _status != null
+        ? '${_status!['status']}'.toUpperCase() == 'ON'
+        : (widget.device['is_active'] == true);
 
     Color glowColor = AppColors.primary;
     IconData icon = Icons.device_hub;
-    
-    if (isAirPurifier) { glowColor = AppColors.cyan; icon = Icons.air; }
-    if (isFeeder) { glowColor = AppColors.purple; icon = Icons.pets; }
-    if (isCurtain) { glowColor = AppColors.success; icon = Icons.blinds; }
 
-    bool showSwitch = !isFeeder && !isCurtain;
+    if (_isAirPurifier) { glowColor = AppColors.cyan; icon = Icons.air; }
+    if (_isFeeder) { glowColor = AppColors.purple; icon = Icons.pets; }
+    if (_isCurtain) { glowColor = AppColors.success; icon = Icons.blinds; }
+
+    // ----- Trạng thái cửa (để đổi icon/nhãn + khóa nút) -----
+    final String doorState = '${_status?['door_state'] ?? 'unknown'}'.toLowerCase();
+    String? statusLabel;
+    if (_isCurtain && _status != null) {
+      icon = (doorState == 'closed' || doorState == 'closing') ? Icons.blinds_closed : Icons.blinds;
+      statusLabel = {
+        'open': 'Đang mở',
+        'opening': 'Đang mở...',
+        'closed': 'Đã đóng',
+        'closing': 'Đang đóng...',
+        'stopped': 'Đã dừng',
+        'partial': 'Mở một phần',
+      }[doorState];
+    }
+    // Interlock UI: đang mở dở thì khóa "Đóng cửa" tới khi mở hẳn/dừng; đang đóng
+    // dở thì khóa "Mở cửa".
+    final bool canClose = !(doorState == 'opening');
+    final bool canOpen = !(doorState == 'closing');
+
+    // ----- Máy lọc: xác định chip mode đang chạy để highlight -----
+    final int purifierIndex = _isAirPurifier ? PurifierCycle.indexFromStatus(_status) : 0;
+    final String purifierKey = PurifierCycle.steps[purifierIndex].key;
+
+    bool showSwitch = !_isFeeder && !_isCurtain;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
@@ -307,36 +385,59 @@ class SmartDeviceCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(originalName, style: const TextStyle(color: AppColors.textMain, fontWeight: FontWeight.bold, fontSize: 16)),
-                    Text(device['brand'].toString().toUpperCase(), style: const TextStyle(color: AppColors.textSub, fontSize: 12)),
+                    Text(_name, style: const TextStyle(color: AppColors.textMain, fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(
+                      statusLabel ?? widget.device['brand'].toString().toUpperCase(),
+                      style: TextStyle(color: statusLabel != null ? glowColor : AppColors.textSub, fontSize: 12),
+                    ),
                   ],
                 ),
               ),
               if (showSwitch)
-                Switch.adaptive(value: isActive, activeTrackColor: glowColor, onChanged: onToggle),
+                Switch.adaptive(
+                  value: isActive,
+                  activeTrackColor: glowColor,
+                  onChanged: widget.isOffline
+                      ? null
+                      : (v) {
+                          widget.onToggle(v);
+                          Future.delayed(const Duration(seconds: 1), _refreshStatus);
+                        },
+                ),
             ],
           ),
           const SizedBox(height: 16),
-          if (isAirPurifier)
+          if (_isAirPurifier)
             Wrap(spacing: 8.0, runSpacing: 8.0, children: [
-              _buildModeButton(context, 'Thấp', '1', glowColor),
-              _buildModeButton(context, 'TB', '2', glowColor),
-              _buildModeButton(context, 'Cao', '3', glowColor),
-              _buildModeButton(context, 'Auto', 'auto', glowColor),
-              _buildModeButton(context, 'Sleep', 'sleep', glowColor),
+              _buildModeButton('Thấp', '1', glowColor, selected: purifierKey == 'low'),
+              _buildModeButton('TB', '2', glowColor, selected: purifierKey == 'med'),
+              _buildModeButton('Cao', '3', glowColor, selected: purifierKey == 'high'),
+              _buildModeButton('Auto', 'auto', glowColor, selected: purifierKey == 'auto'),
+              _buildModeButton('Sleep', 'sleep', glowColor, selected: purifierKey == 'sleep'),
             ]),
-          if (isFeeder)
+          if (_isFeeder)
             Wrap(spacing: 8.0, runSpacing: 8.0, children: [
-              _buildModeButton(context, 'Nhả 1 phần', '1', glowColor),
-              _buildModeButton(context, 'Nhả 2 phần', '2', glowColor),
-              _buildModeButton(context, 'Nhả 3 phần', '3', glowColor),
+              _buildModeButton('Nhả 1 phần', '1', glowColor),
+              _buildModeButton('Nhả 2 phần', '2', glowColor),
+              _buildModeButton('Nhả 3 phần', '3', glowColor),
             ]),
-          if (isCurtain)
+          if (_isCurtain)
             Wrap(spacing: 8.0, runSpacing: 8.0, children: [
-              _buildModeButton(context, 'Mở cửa', 'open', glowColor),
-              _buildModeButton(context, 'Dừng', 'stop', Colors.redAccent),
-              _buildModeButton(context, 'Đóng cửa', 'close', glowColor),
+              _buildModeButton('Mở cửa', 'open', glowColor, enabled: canOpen),
+              _buildModeButton('Dừng', 'stop', Colors.redAccent),
+              _buildModeButton('Đóng cửa', 'close', glowColor, enabled: canClose),
             ]),
+
+          // NÚT TẠO ICON XỬ LÝ NHANH (shortcut ra home screen)
+          if (_isAirPurifier || _isFeeder || _isCurtain) ...[
+            const SizedBox(height: 12),
+            if (_isAirPurifier)
+              _buildShortcutButton(ShortcutType.purifierCycle, _name, ShortcutIcons.purifier(purifierKey), glowColor),
+            if (_isFeeder)
+              _buildShortcutButton(ShortcutType.feederFeed, _name, ShortcutIcons.feeder(), glowColor),
+            if (_isCurtain)
+              _buildShortcutButton(ShortcutType.doorToggle, _name, ShortcutIcons.door(doorState), glowColor),
+          ],
         ],
       ),
     );
