@@ -7,12 +7,15 @@ import 'theme/app_colors.dart';
 import 'screens/dashboard_tab.dart';
 import 'screens/ai_assistant_tab.dart';
 import 'core/shortcut_handler.dart';
+import 'core/widget_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProviderScope(child: SmartHomeApp()));
   // Lắng nghe khi người dùng bấm icon shortcut trên home screen.
   ShortcutHandler.register();
+  // Đăng ký Home Screen Widget (callback nền + nạp trạng thái lần đầu).
+  WidgetService.init();
 }
 
 class SmartHomeApp extends StatelessWidget {

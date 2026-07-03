@@ -20,6 +20,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | Trợ lý giọng nói (AI + local parse) | ✅ | `main.py` `/api/ai/parse`, `services/ai_parser.py`, `services/local_parser.py`, `screens/ai_assistant_tab.dart` |
 | Dashboard điều khiển | ✅ | `screens/dashboard_tab.dart` |
 | Home-screen Shortcut (icon xử lý nhanh) | ✅ | `core/shortcut_service.dart`, `core/shortcut_handler.dart`, `MainActivity.kt`, `res/drawable/ic_*` |
+| Home Screen Widget (trạng thái sống + điều khiển nền) | ✅ | `core/widget_service.dart`, `SmartHomeWidgetProvider.kt`, `res/layout/smart_home_widget.xml`, package `home_widget` |
 | Automation engine | 📋 (đóng băng) | `services/automation_engine.py` (comment trong `main.py`) |
 
 ## API Endpoints Summary (`backend/app/main.py`)
@@ -57,7 +58,9 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 - `frontend/lib/core/shortcut_handler.dart` — điều phối hành vi shortcut + `ShortcutIcons` (map trạng thái → tên drawable).
 - `frontend/lib/core/shortcut_service.dart` — MethodChannel `smarthome/shortcuts` ↔ native, quick_actions iOS.
 - `frontend/android/.../MainActivity.kt` — build/pin/update shortcut, `resolveIcon()`.
-- `frontend/lib/screens/dashboard_tab.dart` — UI thiết bị + nút tạo shortcut.
+- `frontend/lib/screens/dashboard_tab.dart` — UI thiết bị + nút tạo shortcut + đẩy trạng thái lên widget.
+- `frontend/lib/core/widget_service.dart` — đẩy trạng thái lên App Widget + callback nền xử lý nút widget.
+- `frontend/android/.../SmartHomeWidgetProvider.kt` — AppWidgetProvider render 3 khe thiết bị.
 
 ## Lưu ý an toàn / kỹ thuật
 

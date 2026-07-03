@@ -28,6 +28,27 @@ Launch MainActivity với intent extras
 ```
 Ghi chú: dialog/snackbar hiện qua `appNavigatorKey` (global) vì có thể app vừa mở do bấm icon (`_waitForContext` chờ Navigator sẵn sàng).
 
+## 1b. Home Screen Widget (App Widget)
+
+**Đẩy trạng thái lên widget (app đang mở hoặc khởi động):**
+```
+main.dart WidgetService.init()  hoặc  dashboard fetchDevices() thành công
+  → WidgetService.refreshAll(): DeviceApi.fetchDevices → phân loại khe (p/c/f)
+       → mỗi khe: DeviceApi.fetchStatus → nhãn trạng thái → HomeWidget.saveWidgetData
+  → HomeWidget.updateWidget(qualifiedAndroidName: ...SmartHomeWidgetProvider)
+    → SmartHomeWidgetProvider.onUpdate đọc SharedPreferences → RemoteViews (ẩn khe {slot}_visible=0)
+```
+
+**Bấm nút trên widget (chạy nền, KHÔNG mở app):**
+```
+Nút widget (PendingIntent = HomeWidgetBackgroundIntent, URI smarthome://action?type&brand&id | smarthome://refresh)
+  → HomeWidgetBackgroundReceiver → HomeWidgetBackgroundService (isolate nền)
+    → widgetBackgroundCallback(uri) → WidgetService.handleUri
+      ├─ action: _performAction (purifierCycle/doorToggle/feederFeed) qua DeviceApi
+      └─ refresh: bỏ qua action
+    → refreshAll() cập nhật lại widget
+```
+
 ## 2. Lệnh giọng nói (AI parse)
 
 ```

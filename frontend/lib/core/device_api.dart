@@ -28,6 +28,25 @@ class DeviceApi {
     return null;
   }
 
+  /// Lấy danh sách thiết bị từ backend. Trả về list map hoặc null nếu lỗi.
+  static Future<List<Map<String, dynamic>>?> fetchDevices() async {
+    try {
+      final res = await http
+          .get(Uri.parse('$baseUrl/api/devices'))
+          .timeout(_timeout);
+      if (res.statusCode == 200) {
+        final body = json.decode(utf8.decode(res.bodyBytes));
+        if (body['status'] == 'success') {
+          final list = (body['data'] as List?) ?? [];
+          return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        }
+      }
+    } catch (_) {
+      // Nuốt lỗi: caller tự xử lý null.
+    }
+    return null;
+  }
+
   /// Gửi lệnh bật/tắt (action = 'on' | 'off').
   static Future<bool> sendAction(String brand, String deviceId, String action) async {
     try {

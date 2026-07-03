@@ -33,6 +33,9 @@ dependencies:
   # Tạo Home Screen Quick Actions (iOS + fallback Android long-press)
   quick_actions: ^1.0.7
 
+  # Home Screen Widget (App Widget) hiển thị trạng thái sống + điều khiển nền
+  home_widget: ^0.7.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

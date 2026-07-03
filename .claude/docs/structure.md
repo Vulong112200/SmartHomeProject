@@ -32,7 +32,8 @@ frontend/
 ├── lib/
 │   ├── main.dart                   # Entry: khởi động app, đăng ký ShortcutHandler, MaterialApp + appNavigatorKey, tab layout
 │   ├── core/
-│   │   ├── device_api.dart         # HTTP client: fetchStatus / sendMode / control tới backend
+│   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus / sendMode / sendAction + PurifierCycle
+│   │   ├── widget_service.dart      # Đẩy trạng thái lên App Widget + callback nền xử lý nút widget (home_widget)
 │   │   ├── shortcut_service.dart   # Singleton: MethodChannel 'smarthome/shortcuts' ↔ Android; quick_actions iOS; pin/update/consume action
 │   │   ├── shortcut_handler.dart   # Điều phối khi bấm shortcut (purifier cycle / door toggle / feeder); ShortcutIcons map trạng thái→drawable; appNavigatorKey
 │   │   └── websocket_provider.dart # Kết nối WebSocket /ws
@@ -44,11 +45,15 @@ frontend/
 │       ├── app_colors.dart         # Bảng màu
 │       └── app_theme.dart          # ThemeData
 └── android/app/src/main/
-    ├── kotlin/com/example/frontend/MainActivity.kt   # MethodChannel: pinShortcut/updateShortcut/getInitialAction; buildShortcut + resolveIcon
-    ├── AndroidManifest.xml                            # icon launcher_icon, MainActivity singleTop exported
+    ├── kotlin/com/example/frontend/MainActivity.kt              # MethodChannel: pinShortcut/updateShortcut/getInitialAction; buildShortcut + resolveIcon
+    ├── kotlin/com/example/frontend/SmartHomeWidgetProvider.kt   # AppWidgetProvider: render 3 khe thiết bị, gắn HomeWidgetBackgroundIntent cho nút
+    ├── AndroidManifest.xml                            # launcher_icon; MainActivity singleTop; đăng ký widget provider + home_widget receiver/service
     └── res/
         ├── drawable/ic_purifier_{off,on,low,med,high,auto,sleep}.xml  # icon máy lọc theo trạng thái (vector)
         ├── drawable/ic_door_{open,closed}.xml                         # icon cửa cuốn theo trạng thái (vector)
         ├── drawable/ic_feeder.xml                                     # icon máy cho ăn (vector)
+        ├── drawable/widget_background.xml, widget_button_bg.xml       # nền widget + nền nút
+        ├── layout/smart_home_widget.xml                              # layout App Widget (header + 3 khe device)
+        ├── xml/smart_home_widget_info.xml                            # khai báo appwidget-provider
         └── mipmap-*/launcher_icon.png, ic_launcher.png               # logo app
 ```

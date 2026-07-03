@@ -7,6 +7,7 @@ import '../theme/app_colors.dart';
 import '../core/device_api.dart';
 import '../core/shortcut_service.dart';
 import '../core/shortcut_handler.dart';
+import '../core/widget_service.dart';
 
 class DashboardTab extends StatefulWidget {
   const DashboardTab({super.key});
@@ -49,6 +50,7 @@ class _DashboardTabState extends State<DashboardTab> {
           isOffline = false; // Đã có mạng
         });
         _retryTimer?.cancel(); // Tắt bộ thử lại
+        WidgetService.refreshAll(); // Đồng bộ trạng thái lên Home Screen Widget
       } else {
         _handleOffline();
       }
@@ -355,9 +357,13 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
     final bool canClose = !(doorState == 'opening');
     final bool canOpen = !(doorState == 'closing');
 
-    // ----- Máy lọc: xác định chip mode đang chạy để highlight -----
+    // ----- Máy lọc: xác định chip mode đang chạy để highlight + nhãn trạng thái -----
     final int purifierIndex = _isAirPurifier ? PurifierCycle.indexFromStatus(_status) : 0;
     final String purifierKey = PurifierCycle.steps[purifierIndex].key;
+    if (_isAirPurifier && _status != null) {
+      final bool purifierOn = '${_status!['status']}'.toUpperCase() == 'ON';
+      statusLabel = purifierOn ? 'Đang chạy: ${PurifierCycle.steps[purifierIndex].label}' : 'Đã tắt';
+    }
 
     bool showSwitch = !_isFeeder && !_isCurtain;
 

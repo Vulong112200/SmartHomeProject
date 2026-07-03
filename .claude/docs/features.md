@@ -19,8 +19,8 @@
 ### Quản lý thiết bị (devices)
 - **Status:** ✅ done
 - **Backend:** `DeviceModel` (`models/device.py`) · `/api/devices` GET/POST/DELETE (`main.py:118-155`).
-- **Frontend:** `device_api.dart` · `dashboard_tab.dart` (list + card).
-- **Key logic:** DeviceModel chỉ có id/name/brand/is_active — KHÔNG có icon/category; loại thiết bị suy từ `brand` phía client (`_isAirPurifier`/`_isFeeder`/`_isCurtain` trong dashboard).
+- **Frontend:** `device_api.dart` (`fetchDevices`/`fetchStatus`/`sendMode`/`sendAction`) · `dashboard_tab.dart` (list + card).
+- **Key logic:** DeviceModel chỉ có id/name/brand/is_active — KHÔNG có icon/category; loại thiết bị suy từ TÊN phía client (`_isAirPurifier`='lọc', `_isFeeder`='mèo'/'ăn', `_isCurtain`='cửa'). Card máy lọc & cửa có nhãn trạng thái sống (`statusLabel`) đọc từ `/status`.
 
 ### Điều khiển bật/tắt & chế độ
 - **Status:** ✅ done
@@ -48,6 +48,17 @@
   - Icon phản ánh trạng thái: `ShortcutIcons.purifier/door/feeder` map trạng thái → tên drawable; native `resolveIcon()` tra theo tên trong `drawable`/`mipmap`, thiếu → fallback `launcher_icon`. **Các drawable ic_purifier_*/ic_door_*/ic_feeder phải tồn tại** (đã tạo).
   - Khi bấm: purifier/door đọc trạng thái thật (`fetchStatus`) → tính bước kế → thực thi → `updateShortcutIcon` cho khớp; feeder/door open/close chỉ hỏi xác nhận.
   - ⚠️ Giới hạn: pinned shortcut là ảnh tĩnh, không badge/text sống; trạng thái chỉ cập nhật lúc bấm (không tự refresh nền). Một số launcher cache icon pinned. iOS quick action vẫn dùng logo app.
+
+### Home Screen Widget (App Widget)
+- **Status:** ✅ done
+- **Backend:** dùng lại `/api/devices`, `/status`, `/mode`, `/test-control`.
+- **Frontend:** `core/widget_service.dart` (đẩy dữ liệu + callback nền) · `DeviceApi.fetchDevices` · `SmartHomeWidgetProvider.kt` · `res/layout/smart_home_widget.xml` · `res/xml/smart_home_widget_info.xml` · package `home_widget` · đăng ký receiver/service trong `AndroidManifest.xml`.
+- **Key logic:**
+  - 3 khe cố định theo loại: p=máy lọc (contains 'lọc'), c=cửa (contains 'cửa'), f=máy cho ăn (contains 'mèo'/'ăn'). Khe không có thiết bị → ẩn (`{slot}_visible`).
+  - Dữ liệu đẩy qua `HomeWidget.saveWidgetData` (string), vẽ lại bằng `updateWidget(qualifiedAndroidName: com.example.frontend.SmartHomeWidgetProvider)`.
+  - Nút bấm → `HomeWidgetBackgroundIntent` (URI `smarthome://action?type&brand&id` hoặc `smarthome://refresh`) → `widgetBackgroundCallback` (@pragma vm:entry-point) chạy NỀN, gọi DeviceApi rồi `refreshAll()` cập nhật lại. KHÔNG mở app.
+  - App đang mở: `dashboard_tab.fetchDevices` thành công → `WidgetService.refreshAll()` đồng bộ widget.
+  - ⚠️ Giới hạn: chỉ hiện 1 thiết bị/loại (nếu có 2 máy lọc chỉ hiện 1). Trạng thái phụ thuộc backend (Render free có thể ngủ → "Không rõ").
 
 ### Automation engine
 - **Status:** 📋 planned (đóng băng)
