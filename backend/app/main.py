@@ -155,6 +155,27 @@ async def delete_device(device_id: str):
         return {"status": "error", "message": str(e)}
 
 # =========================================================
+# CACHE TRẠNG THÁI NGẮN HẠN
+# Poll định kỳ từ nhiều card có thể gọi status liên tục -> cache ~3s để
+# giảm số lần gọi cloud (Tuya/VeSync), tăng tốc phản hồi. Bị xóa ngay sau
+# mỗi lệnh điều khiển để lần đọc kế tiếp lấy trạng thái mới.
+# =========================================================
+_STATUS_CACHE_TTL = 3.0  # giây
+_status_cache: dict = {}  # {(brand, device_id): (monotonic_ts, data)}
+
+def _cache_get(brand: str, device_id: str):
+    entry = _status_cache.get((brand, device_id))
+    if entry and (time.monotonic() - entry[0]) < _STATUS_CACHE_TTL:
+        return entry[1]
+    return None
+
+def _cache_set(brand: str, device_id: str, data):
+    _status_cache[(brand, device_id)] = (time.monotonic(), data)
+
+def _cache_invalidate(brand: str, device_id: str):
+    _status_cache.pop((brand, device_id), None)
+
+# =========================================================
 # API - Test Control Device (Action & Mode)
 # =========================================================
 @app.get("/api/test-control/{brand}/{device_id}")
@@ -162,9 +183,13 @@ async def test_control(brand: str, device_id: str, action: str = "on"):
     try:
         connector = device_manager.get_connector(brand)
         if action == "on":
-            await connector.turn_on(device_id)
+            ok = await connector.turn_on(device_id)
         else:
-            await connector.turn_off(device_id)
+            ok = await connector.turn_off(device_id)
+        _cache_invalidate(brand, device_id)
+        if not ok:
+            logger.warning(f"Lệnh {action} cho {device_id} qua {brand} không thành công")
+            return {"status": "error", "message": f"Thiết bị {device_id} không nhận lệnh {action}"}
         logger.info(f"Đã thực hiện lệnh {action} cho thiết bị {device_id} qua {brand}")
         return {"status": "success", "message": f"Đã {action} thiết bị {device_id} ({brand})"}
     except Exception as e:
@@ -176,7 +201,11 @@ async def test_control_mode(brand: str, device_id: str, mode: str):
     try:
         connector = device_manager.get_connector(brand)
         if hasattr(connector, 'set_mode'):
-            await connector.set_mode(device_id, mode)
+            ok = await connector.set_mode(device_id, mode)
+            _cache_invalidate(brand, device_id)
+            if not ok:
+                logger.warning(f"Đổi chế độ {mode} cho {device_id} qua {brand} không thành công")
+                return {"status": "error", "message": f"Thiết bị không nhận chế độ {mode}"}
             logger.info(f"Đã chuyển chế độ {mode} cho thiết bị {device_id} qua {brand}")
             return {"status": "success", "message": f"Đã chuyển sang chế độ {mode}"}
         else:
@@ -191,10 +220,14 @@ async def test_control_mode(brand: str, device_id: str, mode: str):
 @app.get("/api/devices/{brand}/{device_id}/status")
 async def get_device_status(brand: str, device_id: str):
     try:
+        cached = _cache_get(brand, device_id)
+        if cached is not None:
+            return {"status": "success", "data": cached, "cached": True}
         connector = device_manager.get_connector(brand)
         if not connector:
             return {"status": "error", "message": f"Không tìm thấy connector cho {brand}"}
         state = await connector.get_device_state(device_id)
+        _cache_set(brand, device_id, state)
         return {"status": "success", "data": state}
     except Exception as e:
         logger.error(f"Lỗi lấy trạng thái {brand}/{device_id}: {e}")

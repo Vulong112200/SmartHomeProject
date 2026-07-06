@@ -33,10 +33,13 @@ class TuyaConnector(DeviceConnector):
         Lưu ý: tên DP tùy thiết bị. In log 1 lần để xác nhận nếu map chưa đúng.
         """
         try:
-            if not self.is_connected: self.openapi.connect()
+            if not self.is_connected:
+                await asyncio.to_thread(self.openapi.connect)
 
             endpoint = f'/v1.0/iot-03/devices/{device_id}/status'
-            response = self.openapi.get(endpoint)
+            # tuya-connector-python là client đồng bộ (requests) -> chạy trong thread
+            # để không block event loop, tránh các request khác xếp hàng nối tiếp.
+            response = await asyncio.to_thread(self.openapi.get, endpoint)
             print(f"[Tuya Door] Status raw: {response}")
 
             if not response.get('success'):
@@ -88,18 +91,20 @@ class TuyaConnector(DeviceConnector):
     async def turn_off(self, device_id: str) -> bool:
         return await self.set_mode(device_id, "close")
 
-    def _send_control(self, device_id: str, value: str):
+    async def _send_control(self, device_id: str, value: str):
         """Gửi 1 lệnh 'control' tới Tuya Cloud và trả về response gốc."""
         commands = {'commands': [{'code': 'control', 'value': value}]}
         # ĐƯỜNG DẪN CHUẨN: /v1.0/iot-03/...
         endpoint = f'/v1.0/iot-03/devices/{device_id}/commands'
-        response = self.openapi.post(endpoint, commands)
+        # Client đồng bộ -> chạy trong thread để không block event loop.
+        response = await asyncio.to_thread(self.openapi.post, endpoint, commands)
         print(f"[Tuya Door] Gửi lệnh {value}: {response}")
         return response
 
     async def set_mode(self, device_id: str, mode: str) -> bool:
         try:
-            if not self.is_connected: self.openapi.connect()
+            if not self.is_connected:
+                await asyncio.to_thread(self.openapi.connect)
 
             # Với cửa cuốn, mode là 'open', 'close', 'stop'
             mode = mode.lower()
@@ -109,10 +114,10 @@ class TuyaConnector(DeviceConnector):
             # rồi mới gửi 'open'/'close' để lệnh chạy đúng ý người dùng.
             # Không áp dụng khi mode == 'stop' (tránh gửi thừa/đệ quy).
             if mode in ("open", "close"):
-                self._send_control(device_id, "stop")
+                await self._send_control(device_id, "stop")
                 await asyncio.sleep(0.4)
 
-            response = self._send_control(device_id, mode)
+            response = await self._send_control(device_id, mode)
             return response.get('success', False)
         except Exception as e:
             print(f"[Tuya Door] Lỗi: {e}")

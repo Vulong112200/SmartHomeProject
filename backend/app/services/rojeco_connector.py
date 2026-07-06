@@ -1,3 +1,4 @@
+import asyncio
 from tuya_connector import TuyaOpenAPI
 from .base_connector import DeviceConnector
 from typing import Dict, Any
@@ -37,17 +38,19 @@ class RojecoConnector(DeviceConnector):
 
     async def set_mode(self, device_id: str, mode: str) -> bool:
         try:
-            if not self.is_connected: self.openapi.connect()
-            
+            if not self.is_connected:
+                await asyncio.to_thread(self.openapi.connect)
+
             # Chuyển mode sang số nguyên (portions)
             portions = int(mode)
-            
+
             # Cấu trúc Body chuẩn theo ảnh Debug của bạn
             commands = {'commands': [{'code': 'manual_feed', 'value': portions}]}
-            
+
             # ĐƯỜNG DẪN CHUẨN: /v1.0/iot-03/...
             endpoint = f'/v1.0/iot-03/devices/{device_id}/commands'
-            response = self.openapi.post(endpoint, commands)
+            # Client đồng bộ -> chạy trong thread để không block event loop.
+            response = await asyncio.to_thread(self.openapi.post, endpoint, commands)
             
             print(f"[Rojeco] Gửi lệnh thành công: {response}")
             return response.get('success', False)

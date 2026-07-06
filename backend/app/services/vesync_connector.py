@@ -22,6 +22,24 @@ class VeSyncConnector(DeviceConnector):
             return await result
         return result
 
+    @staticmethod
+    def _read(obj, *names, default=None):
+        """
+        Đọc thuộc tính phòng thủ, hỗ trợ cả pyvesync ≤2.x (attr nằm thẳng trên device)
+        lẫn 3.x (attr chuyển vào device.state.*). Thử lần lượt trên chính obj rồi trên
+        obj.state, trả giá trị đầu tiên khác None.
+        """
+        targets = [obj]
+        state = getattr(obj, 'state', None)
+        if state is not None:
+            targets.append(state)
+        for target in targets:
+            for name in names:
+                val = getattr(target, name, None)
+                if val is not None:
+                    return val
+        return default
+
     async def connect(self) -> bool:
         print(f"[VeSync] Đang kết nối với tài khoản: {self.email}...")
         self.manager = VeSync(self.email, self.password, self.time_zone)
@@ -39,9 +57,14 @@ class VeSyncConnector(DeviceConnector):
             if all_devices:
                 print("[VeSync] --- DANH SÁCH CHI TIẾT THIẾT BỊ ---")
                 for dev in all_devices:
-                    # In ra toàn bộ thông tin gốc để tìm CID
-                    print(f"   -> Tên: '{dev.device_name}' | Loại: '{dev.device_type}'")
-                    print(f"   -> CID (Copy mã này): {dev.cid}")
+                    try:
+                        # In ra toàn bộ thông tin gốc để tìm CID (tên attr có thể đổi giữa các bản pyvesync)
+                        name = getattr(dev, 'device_name', '?')
+                        dtype = getattr(dev, 'device_type', '?')
+                        cid = getattr(dev, 'cid', '?')
+                        print(f"   -> Tên: '{name}' | Loại: '{dtype}' | CID: {cid}")
+                    except Exception as e:
+                        print(f"   -> (không đọc được thông tin thiết bị: {e})")
                 print("-----------------------------------------")
 
             # 2. Vẫn kiểm tra nhóm fans như cũ
@@ -63,21 +86,32 @@ class VeSyncConnector(DeviceConnector):
         
         for dev in all_devices:
             # Tìm theo CID (Ưu tiên) hoặc Tên thiết bị
-            if dev.cid == device_id or dev.device_name == device_id:
+            if getattr(dev, 'cid', None) == device_id or getattr(dev, 'device_name', None) == device_id:
                 return dev
         return None
 
     async def get_device_state(self, device_id: str) -> Dict[str, Any]:
         purifier = self._get_purifier(device_id)
-        if purifier:
+        if not purifier:
+            return {"device_id": device_id, "status": "offline"}
+        try:
             await self._safe_call(purifier.update)
+
+            # pyvesync 3.x chuyển trạng thái runtime vào purifier.state.*,
+            # bản ≤2.x để thẳng trên purifier. _read() thử cả hai.
+            raw_status = self._read(purifier, 'device_status', default='')
+            mode = self._read(purifier, 'mode', default='unknown')
+            speed = self._read(purifier, 'fan_level', 'speed', default='unknown')
+
             return {
                 "device_id": device_id,
-                "status": "ON" if purifier.device_status == "on" else "OFF",
-                "mode": getattr(purifier, 'mode', 'unknown'),
-                "speed": getattr(purifier, 'fan_level', 'unknown')
+                "status": "ON" if str(raw_status).lower() == "on" else "OFF",
+                "mode": mode,
+                "speed": speed,
             }
-        return {"device_id": device_id, "status": "offline"}
+        except Exception as e:
+            print(f"[VeSync] Lỗi đọc trạng thái {device_id}: {e}")
+            return {"device_id": device_id, "status": "offline"}
 
     async def turn_on(self, device_id: str) -> bool:
         purifier = self._get_purifier(device_id)

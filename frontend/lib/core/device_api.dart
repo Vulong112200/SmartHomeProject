@@ -47,13 +47,26 @@ class DeviceApi {
     return null;
   }
 
+  /// Kiểm tra response điều khiển thật sự thành công.
+  /// Backend trả HTTP 200 kèm {status:"success"|"error"} — lệnh thất bại (thiết
+  /// bị không nhận) vẫn là 200 nên phải đọc field `status` trong body.
+  static bool _isOk(http.Response res) {
+    if (res.statusCode != 200) return false;
+    try {
+      final body = json.decode(utf8.decode(res.bodyBytes));
+      return body['status'] == 'success';
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Gửi lệnh bật/tắt (action = 'on' | 'off').
   static Future<bool> sendAction(String brand, String deviceId, String action) async {
     try {
       final res = await http
           .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId?action=$action'))
           .timeout(_timeout);
-      return res.statusCode == 200;
+      return _isOk(res);
     } catch (_) {
       return false;
     }
@@ -66,7 +79,7 @@ class DeviceApi {
       final res = await http
           .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$mode'))
           .timeout(_timeout);
-      return res.statusCode == 200;
+      return _isOk(res);
     } catch (_) {
       return false;
     }

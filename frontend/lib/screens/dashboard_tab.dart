@@ -21,11 +21,26 @@ class _DashboardTabState extends State<DashboardTab> {
   List<dynamic> devices = [];
   bool isLoading = true;
   bool isOffline = false; // Cờ theo dõi trạng thái mạng
+  bool isWaking = false;  // Đang đánh thức server (Render free-tier ngủ -> cold start)
   Timer? _retryTimer;     // Bộ đếm giờ tự thử lại
 
   @override
   void initState() {
     super.initState();
+    _bootstrap();
+  }
+
+  // Đánh thức server trước (Render free-tier ngủ sau ~15 phút, cold start 30-50s),
+  // hiển thị trạng thái "đang đánh thức" thay vì treo im lặng, rồi mới tải thiết bị.
+  Future<void> _bootstrap() async {
+    setState(() => isWaking = true);
+    try {
+      await http.get(Uri.parse('$baseUrl/health')).timeout(const Duration(seconds: 35));
+    } catch (_) {
+      // Bỏ qua: nếu thất bại, fetchDevices bên dưới sẽ xử lý offline.
+    }
+    if (!mounted) return;
+    setState(() => isWaking = false);
     fetchDevices();
   }
 
@@ -83,14 +98,13 @@ class _DashboardTabState extends State<DashboardTab> {
 
     setState(() => device['is_active'] = value);
     final action = value ? "on" : "off";
-    final brand = device['brand'];
-    final dId = device['id'];
+    final brand = device['brand'].toString().toLowerCase();
+    final dId = device['id'].toString();
 
-    try {
-      final response = await http.get(Uri.parse('$baseUrl/api/test-control/$brand/$dId?action=$action'))
-                                 .timeout(const Duration(seconds: 5));
-      if (response.statusCode != 200) throw Exception("Lỗi Server");
-    } catch (e) {
+    // Dùng DeviceApi (chung baseUrl/timeout) — trả false nếu thiết bị không nhận lệnh.
+    final ok = await DeviceApi.sendAction(brand, dId, action);
+    if (!mounted) return;
+    if (!ok) {
       setState(() => device['is_active'] = !value); // Trả lại công tắc
       _showErrorSnackBar("Lỗi kết nối. Vui lòng thử lại!");
     }
@@ -128,7 +142,21 @@ class _DashboardTabState extends State<DashboardTab> {
 
           Expanded(
             child: isLoading && devices.isEmpty
-            ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+            ? Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(color: AppColors.primary),
+                    if (isWaking) ...[
+                      const SizedBox(height: 16),
+                      const Text(
+                        "Đang đánh thức máy chủ...",
+                        style: TextStyle(color: AppColors.textSub, fontSize: 13),
+                      ),
+                    ],
+                  ],
+                ),
+              )
             // 4. KÉO ĐỂ REFRESH (Pull to Refresh)
             : RefreshIndicator(
               onRefresh: fetchDevices,
@@ -240,6 +268,9 @@ class SmartDeviceCard extends StatefulWidget {
 
 class _SmartDeviceCardState extends State<SmartDeviceCard> {
   Map<String, dynamic>? _status; // trạng thái THẬT từ backend (nếu có)
+  bool _sending = false;         // đang gửi lệnh -> chặn double-tap
+  String? _pendingMode;          // mode vừa bấm (tô sáng lạc quan trước khi có trạng thái thật)
+  Timer? _pollTimer;             // tự động poll trạng thái định kỳ
 
   String get _brand => widget.device['brand'].toString().toLowerCase();
   String get _id => widget.device['id'].toString();
@@ -249,18 +280,43 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   bool get _isFeeder => _name.toLowerCase().contains('mèo') || _name.toLowerCase().contains('ăn');
   bool get _isCurtain => _name.toLowerCase().contains('cửa');
 
+  bool get _needsStatus => _isAirPurifier || _isCurtain;
+
   @override
   void initState() {
     super.initState();
     // Chỉ máy lọc & cửa mới cần lấy trạng thái thật để hiển thị đúng.
-    if (_isAirPurifier || _isCurtain) _refreshStatus();
+    if (_needsStatus) {
+      _refreshStatus();
+      // Tự động cập nhật định kỳ để trạng thái luôn tươi, không cần kéo reload.
+      _pollTimer = Timer.periodic(const Duration(seconds: 6), (_) => _refreshStatus());
+    }
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _refreshStatus() async {
-    if (widget.isOffline) return;
+    if (widget.isOffline || !mounted) return;
     final s = await DeviceApi.fetchStatus(_brand, _id);
     if (!mounted) return;
-    setState(() => _status = s);
+    setState(() {
+      _status = s;
+      // Có trạng thái thật rồi thì bỏ tô sáng lạc quan để phản ánh đúng.
+      if (s != null) _pendingMode = null;
+    });
+  }
+
+  /// Refresh có lặp lại vài nhịp để bắt kịp độ trễ propagation của cloud
+  /// (Tuya/VeSync cập nhật trạng thái chậm hơn lệnh ghi 1-2s).
+  Future<void> _refreshAfterCommand() async {
+    await Future.delayed(const Duration(milliseconds: 800));
+    await _refreshStatus();
+    await Future.delayed(const Duration(milliseconds: 1700));
+    await _refreshStatus();
   }
 
   void _snack(String msg, Color color) {
@@ -275,13 +331,25 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
       _snack("Không thể điều khiển khi mất kết nối!", Colors.redAccent);
       return;
     }
-    final ok = await DeviceApi.sendMode(_brand, _id, modeValue);
-    if (!mounted) return;
-    if (ok) {
-      _snack('Đã chọn: $label', AppColors.primary);
-      _refreshStatus(); // cập nhật lại highlight/icon theo trạng thái mới
-    } else {
-      _snack("Lỗi kết nối tới thiết bị!", Colors.redAccent);
+    if (_sending) return; // chặn double-tap: đang gửi lệnh trước đó
+
+    // Tô sáng ngay nút vừa bấm (lạc quan) để phản hồi tức thì, không đợi round-trip.
+    setState(() {
+      _sending = true;
+      _pendingMode = modeValue;
+    });
+    try {
+      final ok = await DeviceApi.sendMode(_brand, _id, modeValue);
+      if (!mounted) return;
+      if (ok) {
+        _snack('Đã chọn: $label', AppColors.primary);
+        _refreshAfterCommand(); // reconcile trạng thái thật (có lặp lại vài nhịp)
+      } else {
+        setState(() => _pendingMode = null); // bỏ tô sáng lạc quan khi lệnh thất bại
+        _snack("Lỗi kết nối tới thiết bị!", Colors.redAccent);
+      }
+    } finally {
+      if (mounted) setState(() => _sending = false);
     }
   }
 
@@ -338,7 +406,7 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
     if (_isFeeder) { glowColor = AppColors.purple; icon = Icons.pets; }
     if (_isCurtain) { glowColor = AppColors.success; icon = Icons.blinds; }
 
-    // ----- Trạng thái cửa (để đổi icon/nhãn + khóa nút) -----
+    // ----- Trạng thái cửa (để đổi icon/nhãn + tô sáng nút đang hoạt động) -----
     final String doorState = '${_status?['door_state'] ?? 'unknown'}'.toLowerCase();
     String? statusLabel;
     if (_isCurtain && _status != null) {
@@ -352,14 +420,26 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
         'partial': 'Mở một phần',
       }[doorState];
     }
-    // Interlock UI: đang mở dở thì khóa "Đóng cửa" tới khi mở hẳn/dừng; đang đóng
-    // dở thì khóa "Mở cửa".
-    final bool canClose = !(doorState == 'opening');
-    final bool canOpen = !(doorState == 'closing');
+    // Nút cửa đang hoạt động (để tô sáng): ưu tiên lệnh vừa bấm (lạc quan),
+    // nếu chưa có thì suy từ trạng thái thật. KHÔNG khóa nút nào -> luôn bấm được
+    // (backend đã tự chèn 'stop' trước khi đảo chiều nên an toàn).
+    final String? activeDoorMode = (_pendingMode != null && const ['open', 'close', 'stop'].contains(_pendingMode))
+        ? _pendingMode
+        : const {
+            'open': 'open',
+            'opening': 'open',
+            'closed': 'close',
+            'closing': 'close',
+            'stopped': 'stop',
+          }[doorState];
 
     // ----- Máy lọc: xác định chip mode đang chạy để highlight + nhãn trạng thái -----
     final int purifierIndex = _isAirPurifier ? PurifierCycle.indexFromStatus(_status) : 0;
-    final String purifierKey = PurifierCycle.steps[purifierIndex].key;
+    // Ưu tiên mode vừa bấm (lạc quan) để tô sáng ngay, rồi mới reconcile theo trạng thái thật.
+    final String purifierKey = _pendingMode != null
+        ? (const {'1': 'low', '2': 'med', '3': 'high', 'auto': 'auto', 'sleep': 'sleep'}[_pendingMode]
+            ?? PurifierCycle.steps[purifierIndex].key)
+        : PurifierCycle.steps[purifierIndex].key;
     if (_isAirPurifier && _status != null) {
       final bool purifierOn = '${_status!['status']}'.toUpperCase() == 'ON';
       statusLabel = purifierOn ? 'Đang chạy: ${PurifierCycle.steps[purifierIndex].label}' : 'Đã tắt';
@@ -403,11 +483,15 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
                 Switch.adaptive(
                   value: isActive,
                   activeTrackColor: glowColor,
-                  onChanged: widget.isOffline
+                  onChanged: (widget.isOffline || _sending)
                       ? null
                       : (v) {
+                          setState(() => _sending = true);
                           widget.onToggle(v);
-                          Future.delayed(const Duration(seconds: 1), _refreshStatus);
+                          // Reconcile trạng thái thật + mở khóa switch sau khi cloud kịp cập nhật.
+                          _refreshAfterCommand().whenComplete(() {
+                            if (mounted) setState(() => _sending = false);
+                          });
                         },
                 ),
             ],
@@ -429,9 +513,9 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
             ]),
           if (_isCurtain)
             Wrap(spacing: 8.0, runSpacing: 8.0, children: [
-              _buildModeButton('Mở cửa', 'open', glowColor, enabled: canOpen),
-              _buildModeButton('Dừng', 'stop', Colors.redAccent),
-              _buildModeButton('Đóng cửa', 'close', glowColor, enabled: canClose),
+              _buildModeButton('Mở cửa', 'open', glowColor, selected: activeDoorMode == 'open'),
+              _buildModeButton('Dừng', 'stop', Colors.redAccent, selected: activeDoorMode == 'stop'),
+              _buildModeButton('Đóng cửa', 'close', glowColor, selected: activeDoorMode == 'close'),
             ]),
 
           // NÚT TẠO ICON XỬ LÝ NHANH (shortcut ra home screen)

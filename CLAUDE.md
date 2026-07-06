@@ -64,9 +64,11 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 
 ## Lưu ý an toàn / kỹ thuật
 
-- ⚠️ **Credential hardcode** trong `main.py:91-92` (email/password VeSync) và có thể trong `tuya_connector.py`/`ai_parser.py` — nên chuyển sang biến môi trường `.env`.
-- Pinned shortcut Android là ảnh tĩnh: trạng thái phản ánh qua **icon** (đổi khi bấm), không có badge/text sống. Muốn trạng thái sống cần Home Screen Widget (chưa làm).
+- ⚠️ **Credential hardcode** trong `main.py:91-92` (email/password VeSync) và trong `tuya_connector.py`/`rojeco_connector.py` (ACCESS_ID/KEY) — nên chuyển sang biến môi trường `.env`.
+- Pinned shortcut Android là ảnh tĩnh: trạng thái phản ánh qua **icon** (đổi khi bấm), không có badge/text sống. Trạng thái sống đã có ở Home Screen Widget.
 - Tên drawable icon shortcut phải khớp CHÍNH XÁC với `ShortcutIcons` (`shortcut_handler.dart`), nếu thiếu → native fallback về `launcher_icon` (logo app).
+- **Điều khiển & trạng thái (perf/UX):** endpoint control trả `{status:"error"}` khi thiết bị không nhận lệnh (không còn luôn "success"); connector Tuya/Rojeco dùng `asyncio.to_thread` để không block event loop; status có cache ~3s (`_status_cache`). Card máy lọc/cửa tự poll 6s; nút có `_sending` chặn double-tap + tô sáng lạc quan `_pendingMode`. Nút cửa luôn bấm được (bỏ khóa), chỉ tô sáng nút đang hoạt động.
+- Server Render free-tier có thể **ngủ** → app `_bootstrap()` ping `/health` (timeout 35s) và hiện "Đang đánh thức máy chủ..." trước khi tải.
 
 ## Lệnh hay dùng
 

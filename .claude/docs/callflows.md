@@ -64,16 +64,36 @@ ai_assistant_tab.dart (speech-to-text) → POST /api/ai/parse {text}
 ## 3. Điều khiển trực tiếp từ Dashboard
 
 ```
-dashboard_tab.dart (nút bật/tắt hoặc mode)
-  → DeviceApi (GET /api/test-control/{brand}/{id}?action=  hoặc  /mode?mode=)
-  → main.py → device_manager.get_connector(brand) → turn_on/turn_off/set_mode
-  → connector gọi cloud của hãng (Tuya/VeSync/Rojeco)
+dashboard_tab.dart (nút mode / switch bật-tắt)
+  ├─ chặn double-tap: _sending==true → bỏ qua; tô sáng ngay nút vừa bấm (_pendingMode, lạc quan)
+  → DeviceApi.sendAction/sendMode (GET /api/test-control/{brand}/{id}?action=  hoặc  /mode?mode=)
+  → main.py → device_manager.get_connector(brand) → turn_on/turn_off/set_mode (trả bool)
+       ├─ ok==false → trả {status:"error"} (KHÔNG còn luôn "success")
+       └─ invalidate cache trạng thái (brand,id)
+  → connector gọi cloud của hãng qua asyncio.to_thread (Tuya/Rojeco đồng bộ → không block event loop)
+  ← _isOk() đọc body['status']=='success' (không chỉ HTTP 200)
+  → _refreshAfterCommand: poll lại 2 nhịp (~0.8s + ~2.5s) để bắt kịp độ trễ propagation cloud
 ```
+Ghi chú: nút cửa (Mở/Dừng/Đóng) KHÔNG bị khóa — luôn bấm được; nút đang hoạt động được tô sáng
+theo `door_state` (backend tự chèn `stop` trước khi đảo chiều nên an toàn).
 
 ## 4. Đọc trạng thái thiết bị
 
 ```
 dashboard_tab.dart / shortcut_handler.dart → DeviceApi.fetchStatus(brand, id)
-  → GET /api/devices/{brand}/{id}/status → connector.get_device_state
+  → GET /api/devices/{brand}/{id}/status
+       ├─ cache còn hạn (<3s) → trả ngay {..., cached:true}
+       └─ connector.get_device_state → cache_set → trả về
   → trả {status: success, data: {status, door_state/position | mode/speed}}
+```
+Ghi chú: card máy lọc & cửa tự động poll `Timer.periodic(6s)` (`initState`, hủy khi `dispose`) →
+trạng thái luôn tươi, không cần kéo reload.
+
+## 4b. Khởi động app (warm-up server)
+
+```
+dashboard_tab.dart _bootstrap() (initState)
+  → isWaking=true, hiện "Đang đánh thức máy chủ..." (thay vì treo im lặng)
+  → GET /health (timeout 35s) đánh thức Render free-tier đang ngủ
+  → isWaking=false → fetchDevices()
 ```
