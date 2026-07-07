@@ -72,17 +72,22 @@ dashboard_tab.dart (nút mode / switch bật-tắt)
        └─ invalidate cache trạng thái (brand,id)
   → connector gọi cloud của hãng qua asyncio.to_thread (Tuya/Rojeco đồng bộ → không block event loop)
   ← _isOk() đọc body['status']=='success' (không chỉ HTTP 200)
-  → _refreshAfterCommand: poll lại 2 nhịp (~0.8s + ~2.5s) để bắt kịp độ trễ propagation cloud
+  → _refreshAfterCommand: poll lại nhiều nhịp (~0.7/1.3/2/3s) với fresh=true (bỏ cache),
+       dừng sớm khi trạng thái thật KHỚP mode vừa bấm
 ```
-Ghi chú: nút cửa (Mở/Dừng/Đóng) KHÔNG bị khóa — luôn bấm được; nút đang hoạt động được tô sáng
-theo `door_state` (backend tự chèn `stop` trước khi đảo chiều nên an toàn).
+Ghi chú quan trọng — reconcile theo GIÁ TRỊ:
+- `_pendingMode` (mode vừa bấm) chỉ bị xóa khi `_currentModeValue(status thật) == _pendingMode`
+  (cloud xác nhận) HOẶC quá hạn `_pendingSince` (~10s). Nếu chưa khớp → GIỮ tô sáng lạc quan,
+  tránh highlight nhảy về mode cũ khi cloud chưa kịp propagate.
+- Nút cửa (Mở/Dừng/Đóng) KHÔNG bị khóa — luôn bấm được; nút đang hoạt động được tô sáng
+  theo `door_state`/`_pendingMode` (backend tự chèn `stop` trước khi đảo chiều nên an toàn).
 
 ## 4. Đọc trạng thái thiết bị
 
 ```
 dashboard_tab.dart / shortcut_handler.dart → DeviceApi.fetchStatus(brand, id)
-  → GET /api/devices/{brand}/{id}/status
-       ├─ cache còn hạn (<3s) → trả ngay {..., cached:true}
+  → GET /api/devices/{brand}/{id}/status  (thêm ?fresh=1 để bỏ qua cache)
+       ├─ (không fresh) cache còn hạn (<3s) → trả ngay {..., cached:true}
        └─ connector.get_device_state → cache_set → trả về
   → trả {status: success, data: {status, door_state/position | mode/speed}}
 ```

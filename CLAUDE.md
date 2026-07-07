@@ -32,7 +32,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | DELETE | `/api/devices/{device_id}` | Xóa thiết bị |
 | GET | `/api/test-control/{brand}/{device_id}?action=on\|off` | Bật/tắt |
 | GET | `/api/test-control/{brand}/{device_id}/mode?mode=...` | Đổi chế độ (open/close/stop/low/high...) |
-| GET | `/api/devices/{brand}/{device_id}/status` | **Trạng thái sống** → `{data:{status:ON\|OFF\|offline, door_state, position,...}}` |
+| GET | `/api/devices/{brand}/{device_id}/status` (opt `?fresh=1`) | **Trạng thái sống** → `{data:{status:ON\|OFF\|offline, door_state, position,...}}`. Có cache ~3s; `fresh=1` bỏ qua cache (dùng sau lệnh điều khiển). |
 | POST | `/api/ai/parse` | Parse + thực thi lệnh NL (body `{text}`) |
 | WS | `/ws` | WebSocket (hiện chỉ echo) |
 | GET/HEAD | `/`, `/health` | Health check |
@@ -67,7 +67,7 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 - ⚠️ **Credential hardcode** trong `main.py:91-92` (email/password VeSync) và trong `tuya_connector.py`/`rojeco_connector.py` (ACCESS_ID/KEY) — nên chuyển sang biến môi trường `.env`.
 - Pinned shortcut Android là ảnh tĩnh: trạng thái phản ánh qua **icon** (đổi khi bấm), không có badge/text sống. Trạng thái sống đã có ở Home Screen Widget.
 - Tên drawable icon shortcut phải khớp CHÍNH XÁC với `ShortcutIcons` (`shortcut_handler.dart`), nếu thiếu → native fallback về `launcher_icon` (logo app).
-- **Điều khiển & trạng thái (perf/UX):** endpoint control trả `{status:"error"}` khi thiết bị không nhận lệnh (không còn luôn "success"); connector Tuya/Rojeco dùng `asyncio.to_thread` để không block event loop; status có cache ~3s (`_status_cache`). Card máy lọc/cửa tự poll 6s; nút có `_sending` chặn double-tap + tô sáng lạc quan `_pendingMode`. Nút cửa luôn bấm được (bỏ khóa), chỉ tô sáng nút đang hoạt động.
+- **Điều khiển & trạng thái (perf/UX):** endpoint control trả `{status:"error"}` khi thiết bị không nhận lệnh (không còn luôn "success"); connector Tuya/Rojeco dùng `asyncio.to_thread` để không block event loop; status có cache ~3s (`_status_cache`, `?fresh=1` để bỏ cache). Card máy lọc/cửa tự poll 6s; nút có `_sending` chặn double-tap + tô sáng lạc quan `_pendingMode`. ⚠️ Tô sáng lạc quan **reconcile theo giá trị**: chỉ xóa `_pendingMode` khi trạng thái thật khớp mode vừa bấm (hoặc timeout ~10s) — nếu clear mù khi cloud chưa propagate thì highlight sẽ nhảy về mode cũ. Nút cửa luôn bấm được (bỏ khóa), chỉ tô sáng nút đang hoạt động.
 - Server Render free-tier có thể **ngủ** → app `_bootstrap()` ping `/health` (timeout 35s) và hiện "Đang đánh thức máy chủ..." trước khi tải.
 
 ## Lệnh hay dùng

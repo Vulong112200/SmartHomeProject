@@ -11,10 +11,13 @@ class DeviceApi {
   /// Lấy trạng thái THẬT của thiết bị từ backend (query phần cứng).
   /// Trả về map data (vd {status, mode, speed} cho máy lọc; {door_state, position}
   /// cho cửa) hoặc null nếu lỗi.
-  static Future<Map<String, dynamic>?> fetchStatus(String brand, String deviceId) async {
+  static Future<Map<String, dynamic>?> fetchStatus(String brand, String deviceId, {bool fresh = false}) async {
     try {
+      // fresh=true -> bỏ qua cache backend (dùng sau lệnh điều khiển để bắt kịp
+      // trạng thái mới nhất từ cloud, tránh đọc trúng bản cache cũ).
+      final q = fresh ? '?fresh=1' : '';
       final res = await http
-          .get(Uri.parse('$baseUrl/api/devices/$brand/$deviceId/status'))
+          .get(Uri.parse('$baseUrl/api/devices/$brand/$deviceId/status$q'))
           .timeout(_timeout);
       if (res.statusCode == 200) {
         final body = json.decode(utf8.decode(res.bodyBytes));

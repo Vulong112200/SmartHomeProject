@@ -270,7 +270,12 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   Map<String, dynamic>? _status; // trạng thái THẬT từ backend (nếu có)
   bool _sending = false;         // đang gửi lệnh -> chặn double-tap
   String? _pendingMode;          // mode vừa bấm (tô sáng lạc quan trước khi có trạng thái thật)
+  DateTime? _pendingSince;       // thời điểm set _pendingMode (để timeout tránh kẹt highlight)
   Timer? _pollTimer;             // tự động poll trạng thái định kỳ
+
+  // Giữ tô sáng lạc quan tối đa 10s: nếu cloud vẫn chưa xác nhận thì thôi giữ
+  // (tránh kẹt highlight sai khi lệnh thật sự không ăn).
+  static const Duration _pendingTimeout = Duration(seconds: 10);
 
   String get _brand => widget.device['brand'].toString().toLowerCase();
   String get _id => widget.device['id'].toString();
@@ -299,24 +304,66 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
     super.dispose();
   }
 
-  Future<void> _refreshStatus() async {
+  /// Suy ra "modeValue tương đương" từ trạng thái THẬT, để đối chiếu với
+  /// _pendingMode (mode vừa bấm). Trả null nếu không xác định được.
+  String? _currentModeValue(Map<String, dynamic> s) {
+    if (_isCurtain) {
+      final ds = '${s['door_state'] ?? ''}'.toLowerCase();
+      return const {
+        'open': 'open',
+        'opening': 'open',
+        'closed': 'close',
+        'closing': 'close',
+        'stopped': 'stop',
+      }[ds];
+    }
+    if (_isAirPurifier) {
+      // PurifierStep.mode: off/on -> null; low->'1', med->'2', high->'3', auto, sleep.
+      return PurifierCycle.steps[PurifierCycle.indexFromStatus(s)].mode;
+    }
+    return null;
+  }
+
+  Future<void> _refreshStatus({bool fresh = false}) async {
     if (widget.isOffline || !mounted) return;
-    final s = await DeviceApi.fetchStatus(_brand, _id);
+    final s = await DeviceApi.fetchStatus(_brand, _id, fresh: fresh);
     if (!mounted) return;
     setState(() {
-      _status = s;
-      // Có trạng thái thật rồi thì bỏ tô sáng lạc quan để phản ánh đúng.
-      if (s != null) _pendingMode = null;
+      if (s != null) _status = s;
+      // Chỉ bỏ tô sáng lạc quan khi trạng thái thật ĐÃ KHỚP mode vừa bấm
+      // (cloud xác nhận), hoặc đã quá hạn chờ. Nếu chưa khớp -> GIỮ highlight
+      // để không nhảy về mode cũ khi cloud chưa kịp propagate.
+      if (_pendingMode != null) {
+        final matched = s != null && _currentModeValue(s) == _pendingMode;
+        final expired = _pendingSince != null &&
+            DateTime.now().difference(_pendingSince!) >= _pendingTimeout;
+        if (matched || expired) {
+          _pendingMode = null;
+          _pendingSince = null;
+        }
+      }
     });
   }
 
-  /// Refresh có lặp lại vài nhịp để bắt kịp độ trễ propagation của cloud
-  /// (Tuya/VeSync cập nhật trạng thái chậm hơn lệnh ghi 1-2s).
+  /// Sau khi gửi lệnh: poll lại nhiều nhịp (đọc FRESH bỏ cache) tới khi trạng
+  /// thái thật khớp mode vừa bấm, bắt kịp độ trễ propagation của cloud.
   Future<void> _refreshAfterCommand() async {
-    await Future.delayed(const Duration(milliseconds: 800));
-    await _refreshStatus();
-    await Future.delayed(const Duration(milliseconds: 1700));
-    await _refreshStatus();
+    final hadPending = _pendingMode != null;
+    const delays = [
+      Duration(milliseconds: 700),
+      Duration(milliseconds: 1300),
+      Duration(seconds: 2),
+      Duration(seconds: 3),
+    ];
+    for (var i = 0; i < delays.length; i++) {
+      await Future.delayed(delays[i]);
+      if (!mounted) return;
+      await _refreshStatus(fresh: true);
+      // Có pending: dừng sớm khi cloud đã xác nhận (reconcile xong).
+      if (hadPending && _pendingMode == null) return;
+      // Không pending (switch on/off): chỉ cần vài nhịp, tránh khóa switch quá lâu.
+      if (!hadPending && i >= 1) return;
+    }
   }
 
   void _snack(String msg, Color color) {
@@ -337,6 +384,7 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
     setState(() {
       _sending = true;
       _pendingMode = modeValue;
+      _pendingSince = DateTime.now();
     });
     try {
       final ok = await DeviceApi.sendMode(_brand, _id, modeValue);
@@ -345,7 +393,10 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
         _snack('Đã chọn: $label', AppColors.primary);
         _refreshAfterCommand(); // reconcile trạng thái thật (có lặp lại vài nhịp)
       } else {
-        setState(() => _pendingMode = null); // bỏ tô sáng lạc quan khi lệnh thất bại
+        setState(() {
+          _pendingMode = null; // bỏ tô sáng lạc quan khi lệnh thất bại
+          _pendingSince = null;
+        });
         _snack("Lỗi kết nối tới thiết bị!", Colors.redAccent);
       }
     } finally {

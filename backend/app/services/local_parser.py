@@ -39,7 +39,7 @@ def parse_command_locally(text: str, devices_list: list) -> list:
             mode = "1" # Mặc định là 1 phần nếu không nói rõ
             if any(kw in text for kw in ["2 phần", "hai phần", "nhiều chút", "vừa vừa"]): mode = "2"
             if any(kw in text for kw in ["3 phần", "ba phần", "nhiều", "đầy", "max"]): mode = "3"
-            
+
             actions.append({"brand": "rojeco", "id": rojeco_id, "action": "set_mode", "mode": mode})
 
     # 3. CỬA CUỐN (Tuya)

@@ -218,11 +218,14 @@ async def test_control_mode(brand: str, device_id: str, mode: str):
 # API - Lấy trạng thái THẬT của thiết bị (query từ phần cứng)
 # =========================================================
 @app.get("/api/devices/{brand}/{device_id}/status")
-async def get_device_status(brand: str, device_id: str):
+async def get_device_status(brand: str, device_id: str, fresh: bool = False):
     try:
-        cached = _cache_get(brand, device_id)
-        if cached is not None:
-            return {"status": "success", "data": cached, "cached": True}
+        # fresh=1: bỏ qua cache (client gọi ngay sau lệnh điều khiển để lấy
+        # trạng thái mới nhất). Poll định kỳ vẫn dùng cache bình thường.
+        if not fresh:
+            cached = _cache_get(brand, device_id)
+            if cached is not None:
+                return {"status": "success", "data": cached, "cached": True}
         connector = device_manager.get_connector(brand)
         if not connector:
             return {"status": "error", "message": f"Không tìm thấy connector cho {brand}"}

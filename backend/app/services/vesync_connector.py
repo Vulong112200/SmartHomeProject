@@ -25,14 +25,14 @@ class VeSyncConnector(DeviceConnector):
     @staticmethod
     def _read(obj, *names, default=None):
         """
-        Đọc thuộc tính phòng thủ, hỗ trợ cả pyvesync ≤2.x (attr nằm thẳng trên device)
-        lẫn 3.x (attr chuyển vào device.state.*). Thử lần lượt trên chính obj rồi trên
-        obj.state, trả giá trị đầu tiên khác None.
+        Đọc thuộc tính phòng thủ, hỗ trợ cả pyvesync 3.x (state runtime nằm trong
+        device.state.*) lẫn ≤2.x (attr thẳng trên device). Ưu tiên `obj.state.<x>`
+        TRƯỚC — vì ở 3.x các attr top-level (device_status/fan_level...) chỉ còn là
+        property @deprecated trỏ về state, đọc thẳng state để tránh cảnh báo & sai lệch.
+        Trả giá trị đầu tiên khác None.
         """
-        targets = [obj]
         state = getattr(obj, 'state', None)
-        if state is not None:
-            targets.append(state)
+        targets = [state, obj] if state is not None else [obj]
         for target in targets:
             for name in names:
                 val = getattr(target, name, None)
@@ -137,13 +137,30 @@ class VeSyncConnector(DeviceConnector):
             
         mode = mode.lower()
         print(f"[VeSync] Đang đổi chế độ máy lọc {device_id} sang: {mode}")
-        
-        # Xử lý các chế độ theo chuẩn của thư viện pyvesync
+
+        # Ưu tiên API mới của pyvesync 3.x (set_*), fallback về hàm cũ (deprecated)
+        # nếu bản thư viện chưa có.
+        def _method(*names):
+            for n in names:
+                fn = getattr(purifier, n, None)
+                if fn is not None:
+                    return fn
+            return None
+
         if mode == "auto":
-            return await self._safe_call(purifier.auto_mode)
+            fn = _method('set_auto_mode', 'auto_mode')
+            return bool(await self._safe_call(fn)) if fn else False
         elif mode == "sleep":
-            return await self._safe_call(purifier.sleep_mode)
-        elif mode in ["1", "2", "3"]: # Tốc độ 1 (Thấp), 2 (TB), 3 (Cao)
-            return await self._safe_call(purifier.change_fan_speed, int(mode))
-            
+            fn = _method('set_sleep_mode', 'sleep_mode')
+            return bool(await self._safe_call(fn)) if fn else False
+        elif mode in ["1", "2", "3", "4"]: # Tốc độ quạt (nút UI hiện dùng 1-3)
+            level = int(mode)
+            # Chỉ đặt nếu model hỗ trợ mức này (fan_levels tùy model: [1,2,3] hoặc [1,2,3,4]).
+            levels = getattr(purifier, 'fan_levels', None)
+            if levels and level not in levels:
+                print(f"[VeSync] Model không hỗ trợ tốc độ {level} (fan_levels={list(levels)})")
+                return False
+            fn = _method('set_fan_speed', 'change_fan_speed')
+            return bool(await self._safe_call(fn, level)) if fn else False
+
         return False
