@@ -51,9 +51,10 @@
 - **Backend:** không đổi (thứ tự là tuỳ biến hiển thị phía client; `DeviceModel` không có cột thứ tự).
 - **Frontend:** `core/device_order.dart` (lưu/áp thứ tự qua `shared_preferences`) · `dashboard_tab.dart` (`SliverReorderableList` + `ReorderableDelayedDragStartListener`).
 - **Key logic:**
-  - Nhấn-giữ thẻ thiết bị để kéo đổi chỗ; `_onReorder` dùng `onReorderItem` (newIndex ĐÃ điều chỉnh cho item bị gỡ) → `removeAt`/`insert` rồi `DeviceOrder.save([ids])`.
+  - Kéo bằng **tay cầm riêng** (`dragHandle` = `ReorderableDragStartListener` bọc icon `drag_indicator` ở cuối header thẻ), KHÔNG bọc cả thẻ. ⚠️ Bọc cả thẻ bằng `ReorderableDelayedDragStartListener` gây **xung đột cử chỉ** với nút/switch bên trong → nhấn giữ trúng nút hiện message lỗi; tay cầm riêng loại bỏ xung đột này.
+  - `_onReorder` dùng `onReorderItem` (newIndex ĐÃ điều chỉnh cho item bị gỡ) → `removeAt`/`insert` rồi `DeviceOrder.save([ids])`. `proxyDecorator` bọc thẻ đang kéo trong `Material` (bo góc + đổ bóng).
   - `fetchDevices` gọi `DeviceOrder.apply(devices, order)`: sắp theo thứ tự đã lưu; thiết bị CHƯA có trong thứ tự (mới thêm) giữ thứ tự backend và đẩy xuống cuối.
-  - Lưu CỤC BỘ (`SharedPreferences` key `device_order_v1`) → thứ tự riêng từng máy, không đồng bộ cloud. Card bỏ animation entrance để tránh nhấp nháy khi kéo; key `ValueKey(id)` giữ state card (poll không restart) khi đổi chỗ. Gợi ý "Nhấn giữ thẻ để kéo sắp xếp" hiện khi có >1 thiết bị.
+  - Lưu CỤC BỘ (`SharedPreferences` key `device_order_v1`) → thứ tự riêng từng máy, không đồng bộ cloud. Card bỏ animation entrance để tránh nhấp nháy khi kéo; key `ValueKey(id)` giữ state card (poll không restart) khi đổi chỗ. Gợi ý "Kéo biểu tượng ⋮⋮ bên phải thẻ để sắp xếp" hiện khi có >1 thiết bị.
 
 ### Home-screen Shortcut (icon xử lý nhanh)
 - **Status:** ✅ done

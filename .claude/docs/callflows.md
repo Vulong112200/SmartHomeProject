@@ -120,10 +120,11 @@ dashboard_tab.dart _bootstrap() (initState)
 Tải danh sách:
   fetchDevices → DeviceOrder.load() (SharedPreferences 'device_order_v1')
     → DeviceOrder.apply(devices, order): sắp theo id đã lưu; thiết bị mới → cuối
-    → render SliverReorderableList (ReorderableDelayedDragStartListener, key=ValueKey(id))
+    → render SliverReorderableList (item key=ValueKey(id); proxyDecorator = Material bo góc + bóng)
 
 Kéo đổi chỗ:
-  nhấn-giữ thẻ → kéo → onReorderItem(oldIndex, newIndex)  [newIndex đã điều chỉnh]
+  kéo TAY CẦM riêng (dragHandle = ReorderableDragStartListener, tránh xung đột cử chỉ với nút/switch)
+    → onReorderItem(oldIndex, newIndex)  [newIndex đã điều chỉnh]
     → _onReorder: devices.removeAt/insert (setState)
     → DeviceOrder.save([ids theo thứ tự mới])   # chỉ lưu cục bộ, không gọi backend
 ```

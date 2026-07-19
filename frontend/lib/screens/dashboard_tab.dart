@@ -237,7 +237,7 @@ class _DashboardTabState extends State<DashboardTab> {
                             children: [
                               Icon(Icons.drag_indicator, size: 14, color: AppColors.textSub),
                               SizedBox(width: 4),
-                              Text("Nhấn giữ thẻ để kéo sắp xếp", style: TextStyle(color: AppColors.textSub, fontSize: 11)),
+                              Text("Kéo biểu tượng ⋮⋮ bên phải thẻ để sắp xếp", style: TextStyle(color: AppColors.textSub, fontSize: 11)),
                             ],
                           ),
                         ),
@@ -245,19 +245,33 @@ class _DashboardTabState extends State<DashboardTab> {
                     SliverReorderableList(
                       itemCount: devices.length,
                       onReorderItem: _onReorder,
+                      // Thẻ nổi lên gọn gàng (bo góc + đổ bóng) khi đang kéo.
+                      proxyDecorator: (child, index, animation) => Material(
+                        color: Colors.transparent,
+                        elevation: 8,
+                        shadowColor: Colors.black54,
+                        borderRadius: BorderRadius.circular(24),
+                        child: child,
+                      ),
                       itemBuilder: (context, index) {
                         final device = devices[index];
                         // Key ổn định theo id (PK) để list giữ đúng state card khi đổi chỗ.
-                        return ReorderableDelayedDragStartListener(
+                        // CHỈ kéo bằng tay cầm riêng (drag handle) — không bọc cả thẻ, tránh
+                        // xung đột cử chỉ với nút/switch bên trong (gây message lỗi khi nhấn giữ).
+                        return Padding(
                           key: ValueKey('${device['id']}'),
-                          index: index,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                            child: SmartDeviceCard(
-                              device: device,
-                              baseUrl: baseUrl,
-                              isOffline: isOffline, // Truyền trạng thái mạng vào Card
-                              onToggle: (val) => _toggleDeviceState(device, val),
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                          child: SmartDeviceCard(
+                            device: device,
+                            baseUrl: baseUrl,
+                            isOffline: isOffline, // Truyền trạng thái mạng vào Card
+                            onToggle: (val) => _toggleDeviceState(device, val),
+                            dragHandle: ReorderableDragStartListener(
+                              index: index,
+                              child: const Padding(
+                                padding: EdgeInsets.all(4),
+                                child: Icon(Icons.drag_indicator, color: AppColors.textSub, size: 22),
+                              ),
                             ),
                           ),
                         );
@@ -292,8 +306,9 @@ class SmartDeviceCard extends StatefulWidget {
   final String baseUrl;
   final bool isOffline;
   final Function(bool) onToggle;
+  final Widget? dragHandle; // tay cầm kéo-thả (null nếu không cho sắp xếp)
 
-  const SmartDeviceCard({super.key, required this.device, required this.baseUrl, required this.isOffline, required this.onToggle});
+  const SmartDeviceCard({super.key, required this.device, required this.baseUrl, required this.isOffline, required this.onToggle, this.dragHandle});
 
   @override
   State<SmartDeviceCard> createState() => _SmartDeviceCardState();
@@ -609,6 +624,10 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
                           });
                         },
                 ),
+              if (widget.dragHandle != null) ...[
+                const SizedBox(width: 4),
+                widget.dragHandle!,
+              ],
             ],
           ),
           const SizedBox(height: 16),
