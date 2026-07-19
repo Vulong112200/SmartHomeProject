@@ -1,6 +1,7 @@
 import 'package:home_widget/home_widget.dart';
 
 import 'device_api.dart';
+import 'device_type.dart';
 import 'shortcut_service.dart';
 
 /// Tên đầy đủ của AppWidgetProvider phía Android (khớp package + class).
@@ -24,13 +25,8 @@ class WidgetService {
     await refreshAll();
   }
 
-  // ---- Phân loại thiết bị theo tên (khớp logic dashboard) ----
-  static bool _isPurifier(String n) => n.toLowerCase().contains('lọc');
-  static bool _isFeeder(String n) =>
-      n.toLowerCase().contains('mèo') || n.toLowerCase().contains('ăn');
-  static bool _isCurtain(String n) => n.toLowerCase().contains('cửa');
-
   /// Lấy toàn bộ thiết bị + trạng thái, đẩy lên widget rồi yêu cầu vẽ lại.
+  /// (Phân loại thiết bị dùng chung device_type.dart với dashboard.)
   static Future<void> refreshAll() async {
     final devices = await DeviceApi.fetchDevices();
     if (devices == null) {
@@ -44,12 +40,15 @@ class WidgetService {
       final name = '${d['name']}';
       final brand = '${d['brand']}'.toLowerCase();
       final id = '${d['id']}';
-      if (_isPurifier(name)) {
-        await _fillPurifier(brand, id, name);
-      } else if (_isCurtain(name)) {
-        await _fillCurtain(brand, id, name);
-      } else if (_isFeeder(name)) {
-        await _fillFeeder(brand, id, name);
+      switch (deviceTypeOf(name)) {
+        case DeviceType.airPurifier:
+          await _fillPurifier(brand, id, name);
+        case DeviceType.curtain:
+          await _fillCurtain(brand, id, name);
+        case DeviceType.feeder:
+          await _fillFeeder(brand, id, name);
+        case DeviceType.unknown:
+          break;
       }
     }
     await _update();

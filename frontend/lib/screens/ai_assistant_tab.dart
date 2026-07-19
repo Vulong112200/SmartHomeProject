@@ -6,6 +6,7 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:http/http.dart' as http;
 import 'package:flutter_animate/flutter_animate.dart';
 
+import '../core/config.dart';
 import '../core/websocket_provider.dart';
 import '../theme/app_colors.dart';
 import 'chat_bubble.dart';
@@ -26,14 +27,32 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
   bool _isTyping = false;
   bool _hasGreetedThisSession = false;
 
-  Timer? _silenceTimer; 
+  Timer? _silenceTimer;
   bool _commandSentThisSession = false;
 
-  final String baseUrl = 'https://vuhp-smarthome.onrender.com';
+  final String baseUrl = AppConfig.baseUrl;
 
   List<Map<String, dynamic>> messages = [
     {"isUser": false, "text": "Chào Vũ! Tôi là trợ lý AI. Bạn muốn điều khiển thiết bị nào?", "actions": []}
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    // Tự kết nối WebSocket khi vào app (trước đây phải bấm badge mới connect).
+    Future.microtask(() => ref.read(webSocketProvider.notifier).connect());
+  }
+
+  @override
+  void dispose() {
+    // Giải phóng tài nguyên: controller/timer/mic — trước đây bị leak
+    // (speech có thể giữ session mic nếu không stop).
+    _silenceTimer?.cancel();
+    _speech.stop();
+    _commandController.dispose();
+    _scrollCtrl.dispose();
+    super.dispose();
+  }
 
   void _executeSend() {
     if (_commandSentThisSession) return; // Nếu đã gửi rồi -> Bỏ qua ngay
@@ -142,32 +161,44 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
     ref.read(webSocketProvider.notifier).sendMessage("Bạn: $text");
 
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl/api/ai/parse'),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"text": text}),
-      );
-      
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/ai/parse'),
+            headers: {"Content-Type": "application/json"},
+            body: jsonEncode({"text": text}),
+          )
+          .timeout(const Duration(seconds: 30)); // AI + IoT có thể chậm, nhưng không treo vô hạn
+
+      if (!mounted) return;
       if (response.statusCode == 200) {
         final resData = jsonDecode(utf8.decode(response.bodyBytes));
-        
+
         setState(() {
           _isTyping = false;
           List parsedActions = resData['execution_results'] ?? [];
-          
+
           if (parsedActions.isEmpty) {
             messages.add({"isUser": false, "text": "Tôi chưa hiểu lệnh này, bạn có thể nói rõ hơn không?", "actions": []});
           } else {
             messages.add({
-              "isUser": false, 
+              "isUser": false,
               "text": "Đã thực hiện xong lệnh của bạn:",
               "actions": parsedActions
             });
           }
         });
         _scrollToBottom();
+      } else {
+        // FIX: trước đây non-200 không có nhánh else -> _isTyping kẹt true,
+        // indicator quay mãi. Giờ báo lỗi rõ ràng.
+        setState(() {
+          _isTyping = false;
+          messages.add({"isUser": false, "text": "Máy chủ gặp lỗi (HTTP ${response.statusCode}). Thử lại sau nhé.", "actions": []});
+        });
+        _scrollToBottom();
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _isTyping = false;
         messages.add({"isUser": false, "text": "Lỗi mất kết nối với máy chủ AI.", "actions": []});

@@ -58,7 +58,8 @@ ai_assistant_tab.dart (speech-to-text) → POST /api/ai/parse {text}
   → câu đơn: parse_command_locally(text, devices)
   → câu phức (và/rồi/với/nhưng) hoặc local rỗng: parse_command_with_ai (OpenRouter)
   → execute_single_action cho mỗi action (asyncio.gather song song)
-       connector.turn_on/turn_off/set_mode theo brand
+       nhận cả action = on|off (AI) LẪN turn_on|turn_off (local parser)
+       connector.turn_on/turn_off/set_mode theo brand → _cache_invalidate(brand, id)
   → trả {ai_understood, execution_results:[{device_name, action, success}]}
 ```
 
@@ -92,8 +93,11 @@ dashboard_tab.dart / shortcut_handler.dart → DeviceApi.fetchStatus(brand, id)
        └─ connector.get_device_state → cache_set → trả về
   → trả {status: success, data: {status, door_state/position | mode/speed}}
 ```
-Ghi chú: card máy lọc & cửa tự động poll `Timer.periodic(6s)` (`initState`, hủy khi `dispose`) →
-trạng thái luôn tươi, không cần kéo reload.
+Ghi chú: card máy lọc & cửa tự động poll `Timer.periodic(6s)` — CHỈ khi `pollingEnabled`
+(tab Home hiển thị theo `DashboardTab.isVisible` từ IndexedStack VÀ app foreground theo
+`WidgetsBindingObserver`); tab ẩn/app nền → `_setPolling(false)` dừng timer, hiển thị lại →
+refresh ngay + poll tiếp (`didUpdateWidget`). Mỗi lần có data → `onStatusChanged` báo ON/OFF
+thật về parent để header đếm "Đang bật" đúng.
 
 Cách connector suy trạng thái (đều đọc cloud THẬT, không dùng lịch sử lệnh app):
 - VeSync: `purifier.update()` → đọc `device_status`/`mode`/`fan_level` (trạng thái vật lý thật).
@@ -104,6 +108,34 @@ Cách connector suy trạng thái (đều đọc cloud THẬT, không dùng lị
 Đồng bộ icon shortcut theo trạng thái thật (khi app mở): mỗi lần `_refreshStatus` có data →
 `dashboard_tab._syncShortcutIcon` đẩy `updateShortcutIcon` cho cửa/quạt (no-op an toàn nếu chưa pin;
 `_lastShortcutIcon` chặn gọi lặp) → icon đúng cả khi thiết bị bị điều khiển từ remote vật lý/app khác.
+
+## 5. Hẹn giờ thiết bị (scheduler server-side)
+
+**Tạo/sửa lịch từ app:**
+```
+schedule_tab.dart (FAB ＋ / tap card) → _ScheduleForm (bottom sheet)
+  chọn thiết bị (dropdown từ /api/devices) → hành động theo loại (device_type.dart)
+  → giờ (TimePicker) → ngày lặp (FilterChip T2..CN → CSV 0-6) → tên tùy chọn
+  → ScheduleApi.createSchedule / updateSchedule (POST | PATCH /api/schedules, JSON body)
+    → main.py validate (_validate_schedule_fields: action_type, HH:MM, days CSV)
+    → INSERT/UPDATE bảng schedules; PATCH đổi time/bật enabled → reset last_fired_date
+```
+
+**Vòng lặp kích hoạt (chạy nền trên server):**
+```
+main.py lifespan → asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
+  → mỗi 30s: now = datetime.now(Asia/Ho_Chi_Minh)
+    → query schedules enabled==True
+    → lịch ĐẾN GIỜ khi: weekday ∈ days (hoặc days rỗng) VÀ 0 <= now - giờ hẹn < 120s
+                        VÀ last_fired_date != hôm nay
+    → đánh dấu last_fired_date = hôm nay + commit TRƯỚC khi gửi lệnh (chống bắn lặp)
+    → execute_schedule_action: device_manager.get_connector(brand)
+         → turn_on / turn_off / set_mode(device_id, action_value)
+    → _cache_invalidate(brand, device_id)  # app đọc được trạng thái mới ngay
+```
+Ghi chú: server được UptimeRobot ping /health giữ thức (Render free-tier). Lịch lưu SQLite —
+ephemeral trên Render, mất khi redeploy. `/api/schedules/{id}/run` chạy ngay để test (không
+đổi last_fired_date). Kịch bản nhiều bước = nhiều lịch đơn (vd 4h30 mode 3 + 6h30 mode auto).
 
 ## 4b. Khởi động app (warm-up server)
 

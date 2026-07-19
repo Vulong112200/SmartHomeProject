@@ -1,4 +1,5 @@
 import asyncio
+import os
 from tuya_connector import TuyaOpenAPI
 from .base_connector import DeviceConnector
 from typing import Dict, Any
@@ -25,23 +26,29 @@ class TuyaConnector(DeviceConnector):
     def __init__(self):
         self.is_connected = False
         
-        # --- ĐIỀN THÔNG TIN TỪ BỨC ẢNH TRƯỚC VÀO ĐÂY ---
-        self.ACCESS_ID = "vucjttuxyjnvq9drt4j9"      # Vd: vuqttuxyj...
-        self.ACCESS_KEY = "dffb86f14ef34d87a14d38c0f30314ce" # Vd: dffb86f...
-        
-        # Vì bạn chọn Data Center Singapore, Tuya thường dùng server Ấn Độ (tuyain) hoặc Châu Âu (tuyaeu)
-        self.API_ENDPOINT = "https://openapi-sg.iotbing.com/" 
+        # Credential đọc từ biến môi trường (backend/.env local, hoặc Render dashboard).
+        self.ACCESS_ID = os.getenv("TUYA_ACCESS_ID", "")
+        self.ACCESS_KEY = os.getenv("TUYA_ACCESS_KEY", "")
+
+        # Data Center Singapore
+        self.API_ENDPOINT = os.getenv("TUYA_API_ENDPOINT", "https://openapi-sg.iotbing.com/")
         
         self.openapi = TuyaOpenAPI(self.API_ENDPOINT, self.ACCESS_ID, self.ACCESS_KEY)
 
     async def connect(self) -> bool:
         try:
-            result = self.openapi.connect()
+            # Client đồng bộ (requests) -> chạy trong thread, không block event loop.
+            result = await asyncio.to_thread(self.openapi.connect)
             print("[Tuya Token Response]", result)
-            self.is_connected = True
-            print("[Tuya] ✅ Đã kết nối Tuya Cloud!")
-            return True
+            # Chỉ đánh dấu connected khi Tuya thật sự cấp token thành công.
+            self.is_connected = bool(result.get("success")) if isinstance(result, dict) else True
+            if self.is_connected:
+                print("[Tuya] ✅ Đã kết nối Tuya Cloud!")
+            else:
+                print(f"[Tuya] ❌ Tuya từ chối cấp token: {result}")
+            return self.is_connected
         except Exception as e:
+            print(f"[Tuya] ❌ Lỗi kết nối Tuya Cloud: {e}")
             return False
 
     async def get_device_state(self, device_id: str) -> Dict[str, Any]:

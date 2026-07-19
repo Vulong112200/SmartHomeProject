@@ -3,6 +3,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter/foundation.dart';
+
+import 'config.dart';
 // 1. Định nghĩa trạng thái (Dữ liệu) của WebSocket
 class WebSocketState {
   final bool isConnected;
@@ -36,44 +38,51 @@ class WebSocketNotifier extends Notifier<WebSocketState> {
     return WebSocketState();
   }
 
+  bool _connecting = false; // chặn connect trùng khi đang bắt tay
+
   // Hàm thực hiện kết nối WebSocket
-  void connect() {
-    if (state.isConnected) return;
+  Future<void> connect() async {
+    if (state.isConnected || _connecting) return;
+    _connecting = true;
 
-    // Kết nối tới Backend FastAPI
-    // Nếu chạy Flutter Web trên Chrome:
-    // dùng 127.0.0.1 hoặc IP local của máy
+    // Kết nối tới backend trên Render (wss — cùng host với REST API).
+    final wsUrl = Uri.parse(AppConfig.wsUrl);
 
-    // final wsUrl = Uri.parse('ws://127.0.0.1:8000/ws');
-    final wsUrl = Uri.parse('ws://192.168.1.62:8000/ws');
+    try {
+      final channel = WebSocketChannel.connect(wsUrl);
+      // CHỜ bắt tay xong mới báo "Live" — trước đây set isConnected=true ngay
+      // sau connect() nên badge hiện Live cả khi server không tồn tại.
+      await channel.ready;
+      _channel = channel;
+      state = state.copyWith(isConnected: true);
 
-    _channel = WebSocketChannel.connect(wsUrl);
+      // Lắng nghe dữ liệu realtime từ server
+      channel.stream.listen(
+        (message) {
+          // GIỚI HẠN 200 tin gần nhất — tránh list phình vô hạn theo thời gian.
+          final msgs = [...state.messages, message.toString()];
+          state = state.copyWith(
+            messages: msgs.length > 200 ? msgs.sublist(msgs.length - 200) : msgs,
+          );
+        },
 
-    // Cập nhật trạng thái giao diện:
-    // đã kết nối thành công
-    state = state.copyWith(isConnected: true);
+        // Khi websocket bị đóng
+        onDone: () {
+          state = state.copyWith(isConnected: false);
+        },
 
-    // Lắng nghe dữ liệu realtime từ server
-    _channel!.stream.listen(
-      (message) {
-        // Khi server gửi dữ liệu mới
-        // thêm vào danh sách message
-        state = state.copyWith(
-          messages: [...state.messages, message.toString()],
-        );
-      },
-
-      // Khi websocket bị đóng
-      onDone: () {
-        state = state.copyWith(isConnected: false);
-      },
-
-      // Khi có lỗi
-      onError: (error) {
-        state = state.copyWith(isConnected: false);
-        debugPrint('Lỗi WebSocket: $error');
-      },
-    );
+        // Khi có lỗi
+        onError: (error) {
+          state = state.copyWith(isConnected: false);
+          debugPrint('Lỗi WebSocket: $error');
+        },
+      );
+    } catch (e) {
+      debugPrint('Không kết nối được WebSocket: $e');
+      state = state.copyWith(isConnected: false);
+    } finally {
+      _connecting = false;
+    }
   }
 
   // Gửi dữ liệu lên server

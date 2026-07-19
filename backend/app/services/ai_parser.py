@@ -18,11 +18,19 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     logger.error("⚠️ Không tìm thấy OPENROUTER_API_KEY! Hãy kiểm tra lại biến môi trường trên Render.")
 
-# Khởi tạo client trỏ thẳng vào server của OpenRouter
-client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
+# Khởi tạo client trỏ thẳng vào server của OpenRouter.
+# LƯU Ý: khởi tạo LƯỜI (lazy) — nếu thiếu key, app vẫn boot bình thường
+# (local parser vẫn chạy), chỉ phần AI fallback bị vô hiệu.
+_client: AsyncOpenAI | None = None
+
+def _get_client() -> AsyncOpenAI | None:
+    global _client
+    if _client is None and OPENROUTER_API_KEY:
+        _client = AsyncOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+    return _client
 
 async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
     """
@@ -58,9 +66,14 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
     Trả về JSON:
     """
 
+    client = _get_client()
+    if client is None:
+        logger.warning("Bỏ qua AI parse vì thiếu OPENROUTER_API_KEY.")
+        return []
+
     try:
         # 3. GỌI MODEL MIỄN PHÍ TỪ OPENROUTER
-        # Hậu tố :free đảm bảo không bao giờ tính tiền. 
+        # Hậu tố :free đảm bảo không bao giờ tính tiền.
         # Có thể thử "meta-llama/llama-3.3-70b-instruct:free" nếu muốn.
         response = await client.chat.completions.create(
             # model=" google/gemini-2.5-flash:free",
@@ -73,7 +86,7 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
         )
         
         # 4. LẤY KẾT QUẢ VÀ LÀM SẠCH JSON
-        result_text = response.choices[0].message.content.strip()
+        result_text = (response.choices[0].message.content or "").strip()
         
         # Dọn dẹp rác markdown (```json ... ```) nếu AI lỡ thêm vào
         if result_text.startswith("```json"):

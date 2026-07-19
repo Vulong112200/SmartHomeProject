@@ -1,4 +1,11 @@
-backend/app/__pycache__/main.cpython-313.pyc
-backend/app/__pycache__/main.cpython-313.pyc
-backend/app/services/__pycache__/rojeco_connector.cpython-313.pyc
-backend/app/services/__pycache__/tuya_connector.cpython-313.pyc
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Biến môi trường chứa credential — KHÔNG commit
+backend/.env
+.env
+
+# Database local (Render tự tạo lại từ create_all)
+# backend/smarthome.db  # đang được commit sẵn 3 thiết bị — bỏ comment nếu muốn ngừng track

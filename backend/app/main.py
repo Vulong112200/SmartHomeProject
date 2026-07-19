@@ -5,6 +5,13 @@ import os
 import asyncio
 import logging
 from datetime import datetime
+from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
+
+# Nạp biến môi trường từ backend/.env TRƯỚC khi import các connector
+# (credential Tuya/VeSync/Rojeco đọc từ os.getenv lúc khởi tạo).
+load_dotenv()
 
 from pydantic import BaseModel
 from fastapi import FastAPI, WebSocket, Depends
@@ -23,12 +30,16 @@ from app.services.rojeco_connector import RojecoConnector
 # Import AI Parser (Đã đổi thành AI dùng cho OpenRouter)
 from app.services.ai_parser import parse_command_with_ai
 
+# Vòng lặp Hẹn giờ chạy nền
+from app.services.scheduler import scheduler_loop, execute_schedule_action
+
 # Tạm thời comment Automation Engine để tránh lỗi chưa hoàn thiện
 # from app.services.automation_engine import automation_engine, AutomationRule
 
 # Import Database
 from app.core.database import SessionLocal, engine, Base, get_db
 from app.models.device import DeviceModel
+from app.models.schedule import ScheduleModel  # đăng ký bảng schedules với Base
 
 import time
 from fastapi import Request
@@ -62,55 +73,52 @@ logger.info("Đang khởi tạo Database...")
 Base.metadata.create_all(bind=engine)
 
 # =========================================================
-# FastAPI App
+# Lifespan: khởi động connector + vòng lặp Hẹn giờ (Scheduler)
 # =========================================================
-app = FastAPI(title="Smart Home System API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Bắt đầu khởi động các connector...")
+
+    async def _init_connector(brand: str, factory):
+        """Khởi tạo 1 connector an toàn: lỗi 1 hãng không làm sập cả app."""
+        try:
+            plugin = factory()
+            ok = await plugin.connect()
+            device_manager.register_connector(brand, plugin)
+            if not ok:
+                logger.warning(f"Connector {brand} kết nối KHÔNG thành công (sẽ thử lại khi có lệnh).")
+        except Exception as e:
+            logger.error(f"Lỗi khởi động connector {brand}: {e}")
+
+    await _init_connector("tuya", TuyaConnector)
+    await _init_connector("vesync", lambda: VeSyncConnector(
+        email=os.getenv("VESYNC_EMAIL", ""),
+        password=os.getenv("VESYNC_PASSWORD", ""),
+    ))
+    await _init_connector("rojeco", RojecoConnector)
+
+    # --- Vòng lặp Hẹn giờ (server luôn thức nhờ UptimeRobot ping /health) ---
+    scheduler_task = asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
+
+    yield
+
+    # Shutdown: dừng scheduler sạch sẽ
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Đã dừng scheduler & shutdown app.")
+
+app = FastAPI(title="Smart Home System API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# =========================================================
-# Startup Event
-# =========================================================
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Bắt đầu khởi động các connector...")
-
-    # --- Tuya ---
-    tuya_plugin = TuyaConnector()
-    await tuya_plugin.connect()
-    device_manager.register_connector("tuya", tuya_plugin)
-
-    # --- VeSync ---
-    vesync_plugin = VeSyncConnector(
-        email="haphivuboris@gmail.com",
-        password="Hoalong741369@"
-    )
-    await vesync_plugin.connect()
-    device_manager.register_connector("vesync", vesync_plugin)
-
-    # --- Rojeco ---
-    rojeco_plugin = RojecoConnector()
-    await rojeco_plugin.connect()
-    device_manager.register_connector("rojeco", rojeco_plugin)
-
-    # =====================================================
-    # Automation Rules (Đã đóng gói an toàn để phát triển sau)
-    # =====================================================
-    """
-    def is_second_0(): return datetime.now().second == 0
-    async def auto_turn_on():
-        connector = device_manager.get_connector("tuya")
-        await connector.turn_on("den_phong_khach")
-    # rule1 = AutomationRule(name="Bật đèn", condition=is_second_0, action=auto_turn_on)
-    # automation_engine.add_rule(rule1)
-    # asyncio.create_task(automation_engine.start_engine())
-    """
 
 # =========================================================
 # API - Get Devices
@@ -138,19 +146,18 @@ async def add_device(id: str, name: str, brand: str, db: Session = Depends(get_d
         return {"status": "error", "message": f"Lỗi: {str(e)}"}
 
 @app.delete("/api/devices/{device_id}")
-async def delete_device(device_id: str):
+async def delete_device(device_id: str, db: Session = Depends(get_db)):
+    # Dùng Depends(get_db) để session luôn được đóng (kể cả khi lỗi) — tránh leak.
     try:
-        db = SessionLocal()
         device = db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
         if device:
             db.delete(device)
             db.commit()
-            db.close()
             logger.info(f"Đã xóa thiết bị {device_id}")
             return {"status": "success", "message": f"Đã xóa thiết bị {device_id}"}
-        db.close()
         return {"status": "error", "message": "Không tìm thấy thiết bị để xóa."}
     except Exception as e:
+        db.rollback()
         logger.error(f"Lỗi xóa thiết bị: {e}")
         return {"status": "error", "message": str(e)}
 
@@ -243,11 +250,10 @@ class VoiceCommand(BaseModel):
     text: str
 
 @app.post("/api/ai/parse")
-async def parse_voice_command(command: VoiceCommand):
-    db = SessionLocal()
+async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_db)):
+    # Depends(get_db): session tự đóng kể cả khi query lỗi — tránh leak.
     devices = db.query(DeviceModel).all()
-    db.close()
-    
+
     text_lower = command.text.lower()
     logger.info(f"Nhận lệnh giọng nói: '{command.text}'")
     actions = []
@@ -277,64 +283,24 @@ async def parse_voice_command(command: VoiceCommand):
         actions = await parse_command_with_ai(command.text, devices)
 
     # 3. Thực thi lệnh
-    # results = []
-    # for action in actions:
-    #     brand = action.get("brand")
-    #     dev_id = action.get("id")
-    #     act_type = action.get("action")
-    #     mode = action.get("mode")
-        
-    #     # Lấy Tên thiết bị để hiển thị lên Chat đẹp hơn
-    #     device_obj = next((d for d in devices if d.id == dev_id), None)
-    #     dev_name = device_obj.name if device_obj else dev_id
-        
-    #     # Dịch Action sang Tiếng Việt cho người dùng dễ hiểu
-    #     action_ui = ""
-    #     if act_type == "on" or mode == "on": action_ui = "Bật"
-    #     elif act_type == "off" or mode == "off": action_ui = "Tắt"
-    #     elif mode:
-    #         if mode == "open": action_ui = "Mở cửa"
-    #         elif mode == "close": action_ui = "Đóng cửa"
-    #         elif mode == "stop": action_ui = "Dừng"
-    #         else: action_ui = f"Chế độ {mode}"
-    #     else: action_ui = "Thực thi"
-
-    #     success = False
-    #     try:
-    #         connector = device_manager.get_connector(brand)
-    #         if connector:
-    #             # Sửa lỗi tắt máy lọc: Tối ưu lại cấu trúc If/Else
-    #             if act_type == "off" or mode == "off":
-    #                 success = await connector.turn_off(dev_id)
-    #             elif act_type == "on" or mode == "on":
-    #                 success = await connector.turn_on(dev_id)
-    #             elif mode and hasattr(connector, 'set_mode'):
-    #                 success = await connector.set_mode(dev_id, mode)
-    #     except Exception as e:
-    #         logger.error(f"[AI Execution Error] {e}")
-
-    #     # Gửi Tên và Action tiếng Việt về cho App
-    #     results.append({
-    #         "device_name": dev_name, 
-    #         "action": action_ui, 
-    #         "success": success
-    #     })
-
-    # return {"status": "success", "ai_understood": actions, "execution_results": results}
-    
     async def execute_single_action(action):
         brand = action.get("brand")
         dev_id = action.get("id")
         act_type = action.get("action")
         mode = action.get("mode")
-        
+
         # Format tên hiển thị
         device_obj = next((d for d in devices if d.id == dev_id), None)
         dev_name = device_obj.name if device_obj else dev_id
-        
+
+        # FIX: local_parser phát 'turn_on'/'turn_off', AI phát 'on'/'off' —
+        # nhận cả hai để lệnh local "bật máy lọc" không rơi vào khoảng trống.
+        is_on = act_type in ("on", "turn_on") or mode == "on"
+        is_off = act_type in ("off", "turn_off") or mode == "off"
+
         action_ui = ""
-        if act_type == "on" or mode == "on": action_ui = "Bật"
-        elif act_type == "off" or mode == "off": action_ui = "Tắt"
+        if is_on: action_ui = "Bật"
+        elif is_off: action_ui = "Tắt"
         elif mode:
             if mode == "open": action_ui = "Mở"
             elif mode == "close": action_ui = "Đóng"
@@ -346,18 +312,21 @@ async def parse_voice_command(command: VoiceCommand):
         try:
             connector = device_manager.get_connector(brand)
             if connector:
-                if act_type == "off" or mode == "off":
+                if is_off:
                     success = await connector.turn_off(dev_id)
-                elif act_type == "on" or mode == "on":
+                elif is_on:
                     success = await connector.turn_on(dev_id)
                 elif mode and hasattr(connector, 'set_mode'):
                     success = await connector.set_mode(dev_id, mode)
+            # FIX: invalidate cache như các endpoint control — để lần đọc
+            # trạng thái kế tiếp không dính bản cache cũ (~3s).
+            _cache_invalidate(brand, dev_id)
         except Exception as e:
             logger.error(f"[AI Execution Error] {e}")
 
         return {
-            "device_name": dev_name, 
-            "action": action_ui, 
+            "device_name": dev_name,
+            "action": action_ui,
             "success": success
         }
 
@@ -367,6 +336,141 @@ async def parse_voice_command(command: VoiceCommand):
     results = await asyncio.gather(*tasks)
 
     return {"status": "success", "ai_understood": actions, "execution_results": results}
+
+# =========================================================
+# API - Hẹn giờ (Schedules CRUD)
+# =========================================================
+import re as _re
+
+class ScheduleCreate(BaseModel):
+    name: str = ""
+    brand: str
+    device_id: str
+    action_type: str                 # on | off | mode
+    action_value: str | None = None  # bắt buộc khi action_type == mode
+    time: str                        # "HH:MM" giờ Asia/Ho_Chi_Minh
+    days: str = ""                   # CSV 0-6 (0=Thứ2); rỗng = mỗi ngày
+    enabled: bool = True
+
+class ScheduleUpdate(BaseModel):
+    name: str | None = None
+    brand: str | None = None
+    device_id: str | None = None
+    action_type: str | None = None
+    action_value: str | None = None
+    time: str | None = None
+    days: str | None = None
+    enabled: bool | None = None
+
+def _validate_schedule_fields(action_type: str | None, action_value: str | None,
+                              time_str: str | None, days: str | None) -> str | None:
+    """Trả về thông báo lỗi (tiếng Việt) hoặc None nếu hợp lệ."""
+    if action_type is not None:
+        if action_type not in ("on", "off", "mode"):
+            return "action_type phải là on | off | mode"
+        if action_type == "mode" and not action_value:
+            return "action_value bắt buộc khi action_type = mode"
+    if time_str is not None and not _re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", time_str):
+        return "time phải có dạng HH:MM (00:00–23:59)"
+    if days:
+        parts = [p.strip() for p in days.split(",") if p.strip()]
+        if any(not p.isdigit() or int(p) > 6 for p in parts):
+            return "days phải là CSV các số 0-6 (0=Thứ2 … 6=CN)"
+    return None
+
+def _schedule_to_dict(s: ScheduleModel) -> dict:
+    return {
+        "id": s.id, "name": s.name, "brand": s.brand, "device_id": s.device_id,
+        "action_type": s.action_type, "action_value": s.action_value,
+        "time": s.time, "days": s.days or "", "enabled": bool(s.enabled),
+        "last_fired_date": s.last_fired_date,
+    }
+
+@app.get("/api/schedules")
+async def list_schedules(db: Session = Depends(get_db)):
+    schedules = db.query(ScheduleModel).order_by(ScheduleModel.time).all()
+    return {"status": "success", "data": [_schedule_to_dict(s) for s in schedules]}
+
+@app.post("/api/schedules")
+async def create_schedule(body: ScheduleCreate, db: Session = Depends(get_db)):
+    err = _validate_schedule_fields(body.action_type, body.action_value, body.time, body.days)
+    if err:
+        return {"status": "error", "message": err}
+    try:
+        sch = ScheduleModel(
+            name=body.name, brand=body.brand, device_id=body.device_id,
+            action_type=body.action_type, action_value=body.action_value,
+            time=body.time, days=body.days, enabled=body.enabled,
+        )
+        db.add(sch)
+        db.commit()
+        db.refresh(sch)
+        logger.info(f"⏰ Đã tạo lịch #{sch.id}: {sch.brand}/{sch.device_id} {sch.action_type} lúc {sch.time}")
+        return {"status": "success", "data": _schedule_to_dict(sch)}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Lỗi tạo lịch: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.patch("/api/schedules/{schedule_id}")
+async def update_schedule(schedule_id: int, body: ScheduleUpdate, db: Session = Depends(get_db)):
+    sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
+    if not sch:
+        return {"status": "error", "message": "Không tìm thấy lịch."}
+    fields = body.model_dump(exclude_unset=True)
+    err = _validate_schedule_fields(
+        fields.get("action_type", sch.action_type),
+        fields.get("action_value", sch.action_value),
+        fields.get("time"), fields.get("days"),
+    )
+    if err:
+        return {"status": "error", "message": err}
+    try:
+        for key, value in fields.items():
+            setattr(sch, key, value)
+        # Đổi giờ/bật lại lịch -> cho phép kích hoạt lại trong hôm nay nếu tới giờ mới.
+        if "time" in fields or fields.get("enabled") is True:
+            sch.last_fired_date = None
+        db.commit()
+        db.refresh(sch)
+        return {"status": "success", "data": _schedule_to_dict(sch)}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Lỗi sửa lịch #{schedule_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.delete("/api/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
+    sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
+    if not sch:
+        return {"status": "error", "message": "Không tìm thấy lịch."}
+    try:
+        db.delete(sch)
+        db.commit()
+        logger.info(f"⏰ Đã xóa lịch #{schedule_id}")
+        return {"status": "success", "message": f"Đã xóa lịch #{schedule_id}"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Lỗi xóa lịch #{schedule_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/schedules/{schedule_id}/run")
+async def run_schedule_now(schedule_id: int, db: Session = Depends(get_db)):
+    """Chạy NGAY hành động của lịch (để test), không ảnh hưởng last_fired_date."""
+    sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
+    if not sch:
+        return {"status": "error", "message": "Không tìm thấy lịch."}
+    try:
+        ok = await execute_schedule_action(
+            sch.brand, sch.device_id, sch.action_type, sch.action_value,
+            invalidate_cache=_cache_invalidate,
+        )
+        if not ok:
+            return {"status": "error", "message": "Thiết bị không nhận lệnh."}
+        return {"status": "success", "message": f"Đã chạy lịch #{schedule_id}"}
+    except Exception as e:
+        logger.error(f"Lỗi chạy lịch #{schedule_id}: {e}")
+        return {"status": "error", "message": str(e)}
 
 # =========================================================
 # WebSocket (Giữ kết nối cho App)

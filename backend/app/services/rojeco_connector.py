@@ -1,4 +1,5 @@
 import asyncio
+import os
 from tuya_connector import TuyaOpenAPI
 from .base_connector import DeviceConnector
 from typing import Dict, Any
@@ -7,22 +8,26 @@ class RojecoConnector(DeviceConnector):
     def __init__(self):
         self.is_connected = False
         
-        # --- ĐIỀN 2 MÃ CỦA BẠN VÀO ĐÂY ---
-        self.ACCESS_ID = "vucjttuxyjnvq9drt4j9"      # Vd: vuqttuxyj...
-        self.ACCESS_KEY = "dffb86f14ef34d87a14d38c0f30314ce" # Vd: dffb86f...
-        
+        # Credential đọc từ biến môi trường (dùng chung app Tuya với TuyaConnector).
+        self.ACCESS_ID = os.getenv("TUYA_ACCESS_ID", "")
+        self.ACCESS_KEY = os.getenv("TUYA_ACCESS_KEY", "")
+
         # Endpoint chuẩn cho Singapore Data Center
-        self.API_ENDPOINT = "https://openapi-sg.iotbing.com/" 
+        self.API_ENDPOINT = os.getenv("TUYA_API_ENDPOINT", "https://openapi-sg.iotbing.com/")
         
         self.openapi = TuyaOpenAPI(self.API_ENDPOINT, self.ACCESS_ID, self.ACCESS_KEY)
 
     async def connect(self) -> bool:
         try:
-            result = self.openapi.connect()
+            # Client đồng bộ (requests) -> chạy trong thread, không block event loop.
+            result = await asyncio.to_thread(self.openapi.connect)
             print("[Tuya Token Response]", result)
-            self.is_connected = True
-            print("[Rojeco] ✅ Đã kết nối Tuya Cloud!")
-            return True
+            self.is_connected = bool(result.get("success")) if isinstance(result, dict) else True
+            if self.is_connected:
+                print("[Rojeco] ✅ Đã kết nối Tuya Cloud!")
+            else:
+                print(f"[Rojeco] ❌ Tuya từ chối cấp token: {result}")
+            return self.is_connected
         except Exception as e:
             print(f"[Rojeco] ❌ Lỗi kết nối mây: {e}")
             return False

@@ -4,31 +4,48 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:http/http.dart' as http;
 import '../theme/app_colors.dart';
+import '../core/config.dart';
 import '../core/device_api.dart';
 import '../core/device_order.dart';
+import '../core/device_type.dart';
 import '../core/shortcut_service.dart';
 import '../core/shortcut_handler.dart';
 import '../core/widget_service.dart';
 
 class DashboardTab extends StatefulWidget {
-  const DashboardTab({super.key});
+  /// Tab Home có đang hiển thị không (IndexedStack giữ tab sống kể cả khi ẩn).
+  /// Dùng để tạm dừng poll trạng thái khi người dùng ở tab khác.
+  final bool isVisible;
+
+  const DashboardTab({super.key, this.isVisible = true});
 
   @override
   State<DashboardTab> createState() => _DashboardTabState();
 }
 
-class _DashboardTabState extends State<DashboardTab> {
-  final String baseUrl = 'https://vuhp-smarthome.onrender.com';
+class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver {
+  final String baseUrl = AppConfig.baseUrl;
   List<dynamic> devices = [];
   bool isLoading = true;
   bool isOffline = false; // Cờ theo dõi trạng thái mạng
   bool isWaking = false;  // Đang đánh thức server (Render free-tier ngủ -> cold start)
   Timer? _retryTimer;     // Bộ đếm giờ tự thử lại
+  bool _appActive = true; // App đang ở foreground? (pause poll khi vào nền)
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _bootstrap();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Vào nền -> dừng poll (tiết kiệm pin/mạng); trở lại -> poll tiếp ngay.
+    final active = state == AppLifecycleState.resumed;
+    if (active != _appActive) {
+      setState(() => _appActive = active);
+    }
   }
 
   // Đánh thức server trước (Render free-tier ngủ sau ~15 phút, cold start 30-50s),
@@ -36,7 +53,7 @@ class _DashboardTabState extends State<DashboardTab> {
   Future<void> _bootstrap() async {
     setState(() => isWaking = true);
     try {
-      await http.get(Uri.parse('$baseUrl/health')).timeout(const Duration(seconds: 35));
+      await http.get(Uri.parse('$baseUrl/health')).timeout(AppConfig.healthTimeout);
     } catch (_) {
       // Bỏ qua: nếu thất bại, fetchDevices bên dưới sẽ xử lý offline.
     }
@@ -47,8 +64,17 @@ class _DashboardTabState extends State<DashboardTab> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _retryTimer?.cancel(); // Tắt timer khi thoát màn hình
     super.dispose();
+  }
+
+  // Card báo trạng thái THẬT (từ poll) về đây để header đếm "Đang bật" đúng —
+  // trước đây chỉ đếm is_active tĩnh từ /api/devices nên sai khi thiết bị
+  // được bật/tắt từ remote vật lý hoặc app khác.
+  void _onDeviceStatusChanged(dynamic device, bool isOn) {
+    if (device['is_active'] == isOn) return;
+    setState(() => device['is_active'] = isOn);
   }
 
   // 1. HÀM LẤY DỮ LIỆU ĐƯỢC NÂNG CẤP (Có Timeout và Auto-Retry)
@@ -265,7 +291,10 @@ class _DashboardTabState extends State<DashboardTab> {
                             device: device,
                             baseUrl: baseUrl,
                             isOffline: isOffline, // Truyền trạng thái mạng vào Card
+                            // Poll trạng thái CHỈ khi tab Home hiển thị + app ở foreground.
+                            pollingEnabled: widget.isVisible && _appActive,
                             onToggle: (val) => _toggleDeviceState(device, val),
+                            onStatusChanged: (isOn) => _onDeviceStatusChanged(device, isOn),
                             dragHandle: ReorderableDragStartListener(
                               index: index,
                               child: const Padding(
@@ -305,10 +334,21 @@ class SmartDeviceCard extends StatefulWidget {
   final dynamic device;
   final String baseUrl;
   final bool isOffline;
+  final bool pollingEnabled; // false khi tab ẩn / app ở nền -> dừng poll 6s
   final Function(bool) onToggle;
+  final Function(bool)? onStatusChanged; // báo trạng thái THẬT về parent (đếm "Đang bật")
   final Widget? dragHandle; // tay cầm kéo-thả (null nếu không cho sắp xếp)
 
-  const SmartDeviceCard({super.key, required this.device, required this.baseUrl, required this.isOffline, required this.onToggle, this.dragHandle});
+  const SmartDeviceCard({
+    super.key,
+    required this.device,
+    required this.baseUrl,
+    required this.isOffline,
+    required this.onToggle,
+    this.pollingEnabled = true,
+    this.onStatusChanged,
+    this.dragHandle,
+  });
 
   @override
   State<SmartDeviceCard> createState() => _SmartDeviceCardState();
@@ -330,9 +370,10 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   String get _id => widget.device['id'].toString();
   String get _name => widget.device['name'].toString();
 
-  bool get _isAirPurifier => _name.toLowerCase().contains('lọc');
-  bool get _isFeeder => _name.toLowerCase().contains('mèo') || _name.toLowerCase().contains('ăn');
-  bool get _isCurtain => _name.toLowerCase().contains('cửa');
+  DeviceType get _type => deviceTypeOf(_name);
+  bool get _isAirPurifier => _type == DeviceType.airPurifier;
+  bool get _isFeeder => _type == DeviceType.feeder;
+  bool get _isCurtain => _type == DeviceType.curtain;
 
   bool get _needsStatus => _isAirPurifier || _isCurtain;
 
@@ -342,9 +383,26 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
     // Chỉ máy lọc & cửa mới cần lấy trạng thái thật để hiển thị đúng.
     if (_needsStatus) {
       _refreshStatus();
-      // Tự động cập nhật định kỳ để trạng thái luôn tươi, không cần kéo reload.
-      _pollTimer = Timer.periodic(const Duration(seconds: 6), (_) => _refreshStatus());
+      _setPolling(widget.pollingEnabled);
     }
+  }
+
+  @override
+  void didUpdateWidget(covariant SmartDeviceCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Tab ẩn / app vào nền -> dừng poll; hiển thị lại -> refresh ngay + poll tiếp.
+    if (_needsStatus && widget.pollingEnabled != oldWidget.pollingEnabled) {
+      if (widget.pollingEnabled) _refreshStatus();
+      _setPolling(widget.pollingEnabled);
+    }
+  }
+
+  // Bật/tắt vòng poll trạng thái 6s.
+  void _setPolling(bool enabled) {
+    _pollTimer?.cancel();
+    _pollTimer = enabled
+        ? Timer.periodic(const Duration(seconds: 6), (_) => _refreshStatus())
+        : null;
   }
 
   @override
@@ -395,6 +453,10 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
     // Đồng bộ icon shortcut theo trạng thái THẬT vừa poll được -> icon hội tụ đúng
     // cả khi cửa/quạt bị điều khiển từ remote vật lý / app khác (khi app đang mở).
     if (s != null) _syncShortcutIcon(s);
+    // Báo trạng thái ON/OFF thật về parent để header đếm "Đang bật" chính xác.
+    if (s != null) {
+      widget.onStatusChanged?.call('${s['status']}'.toUpperCase() == 'ON');
+    }
   }
 
   /// Đẩy icon shortcut (nếu đã pin) cho khớp trạng thái THẬT. Gọi updateShortcut

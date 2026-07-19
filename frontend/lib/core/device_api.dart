@@ -1,12 +1,14 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import 'config.dart';
+
 /// Lớp helper dùng CHUNG cho việc gọi API điều khiển & đọc trạng thái thiết bị.
 /// Được tái dùng bởi Dashboard (SmartDeviceCard) và Shortcut handler để tránh
 /// lặp code.
 class DeviceApi {
-  static const String baseUrl = 'https://vuhp-smarthome.onrender.com';
-  static const Duration _timeout = Duration(seconds: 6);
+  static const String baseUrl = AppConfig.baseUrl;
+  static const Duration _timeout = AppConfig.apiTimeout;
 
   /// Lấy trạng thái THẬT của thiết bị từ backend (query phần cứng).
   /// Trả về map data (vd {status, mode, speed} cho máy lọc; {door_state, position}

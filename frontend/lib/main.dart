@@ -6,6 +6,7 @@ import 'theme/app_theme.dart';
 import 'theme/app_colors.dart';
 import 'screens/dashboard_tab.dart';
 import 'screens/ai_assistant_tab.dart';
+import 'screens/schedule_tab.dart';
 import 'core/shortcut_handler.dart';
 import 'core/widget_service.dart';
 
@@ -46,15 +47,18 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // Hiển thị nội dung dựa theo tab đang chọn
+      // Hiển thị nội dung dựa theo tab đang chọn.
+      // isVisible cho DashboardTab biết tab Home có đang hiển thị không —
+      // để tạm dừng poll trạng thái 6s khi người dùng ở tab khác (tiết kiệm pin/mạng).
       body: IndexedStack(
         index: _currentIndex,
-        children: const [
-          DashboardTab(),
-          AIAssistantTab(),
+        children: [
+          DashboardTab(isVisible: _currentIndex == 0),
+          const AIAssistantTab(),
+          const ScheduleTab(),
         ],
       ),
-      
+
       // Thanh điều hướng hiện đại
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
@@ -71,6 +75,11 @@ class _MainScreenState extends State<MainScreen> {
             icon: Icon(Icons.auto_awesome_outlined),
             selectedIcon: Icon(Icons.auto_awesome, color: AppColors.primary),
             label: 'AI Assistant',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.schedule_outlined),
+            selectedIcon: Icon(Icons.schedule, color: AppColors.primary),
+            label: 'Hẹn giờ',
           ),
         ],
       ),
