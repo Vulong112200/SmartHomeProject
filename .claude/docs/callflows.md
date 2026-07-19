@@ -113,3 +113,17 @@ dashboard_tab.dart _bootstrap() (initState)
   → GET /health (timeout 35s) đánh thức Render free-tier đang ngủ
   → isWaking=false → fetchDevices()
 ```
+
+## 4c. Sắp xếp thứ tự thiết bị (kéo-thả, cục bộ)
+
+```
+Tải danh sách:
+  fetchDevices → DeviceOrder.load() (SharedPreferences 'device_order_v1')
+    → DeviceOrder.apply(devices, order): sắp theo id đã lưu; thiết bị mới → cuối
+    → render SliverReorderableList (ReorderableDelayedDragStartListener, key=ValueKey(id))
+
+Kéo đổi chỗ:
+  nhấn-giữ thẻ → kéo → onReorderItem(oldIndex, newIndex)  [newIndex đã điều chỉnh]
+    → _onReorder: devices.removeAt/insert (setState)
+    → DeviceOrder.save([ids theo thứ tự mới])   # chỉ lưu cục bộ, không gọi backend
+```

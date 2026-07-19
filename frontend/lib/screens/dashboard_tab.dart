@@ -5,6 +5,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:http/http.dart' as http;
 import '../theme/app_colors.dart';
 import '../core/device_api.dart';
+import '../core/device_order.dart';
 import '../core/shortcut_service.dart';
 import '../core/shortcut_handler.dart';
 import '../core/widget_service.dart';
@@ -59,8 +60,11 @@ class _DashboardTabState extends State<DashboardTab> {
 
       if (response.statusCode == 200) {
         final data = json.decode(utf8.decode(response.bodyBytes));
+        // Sắp theo thứ tự người dùng đã kéo-thả (lưu cục bộ); thiết bị mới xuống cuối.
+        final order = await DeviceOrder.load();
+        if (!mounted) return;
         setState(() {
-          devices = data['data'];
+          devices = DeviceOrder.apply(List<dynamic>.from(data['data'] ?? []), order);
           isLoading = false;
           isOffline = false; // Đã có mạng
         });
@@ -115,6 +119,16 @@ class _DashboardTabState extends State<DashboardTab> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), backgroundColor: Colors.redAccent, duration: const Duration(seconds: 2)),
     );
+  }
+
+  // Kéo-thả đổi thứ tự thiết bị (chỉ ảnh hưởng hiển thị, lưu cục bộ SharedPreferences).
+  // Dùng onReorderItem: newIndex ĐÃ được điều chỉnh cho item bị gỡ tại oldIndex.
+  void _onReorder(int oldIndex, int newIndex) {
+    setState(() {
+      final item = devices.removeAt(oldIndex);
+      devices.insert(newIndex, item);
+    });
+    DeviceOrder.save([for (final d in devices) '${d['id']}']);
   }
 
   @override
@@ -214,23 +228,42 @@ class _DashboardTabState extends State<DashboardTab> {
                     const SliverFillRemaining(
                       child: Center(child: Text("Không có dữ liệu thiết bị", style: TextStyle(color: AppColors.textSub))),
                     )
-                  else
-                    SliverList(
-                      delegate: SliverChildBuilderDelegate(
-                        (context, index) {
-                          return Padding(
+                  else ...[
+                    if (devices.length > 1)
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.only(left: 24, right: 24, bottom: 4),
+                          child: Row(
+                            children: [
+                              Icon(Icons.drag_indicator, size: 14, color: AppColors.textSub),
+                              SizedBox(width: 4),
+                              Text("Nhấn giữ thẻ để kéo sắp xếp", style: TextStyle(color: AppColors.textSub, fontSize: 11)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    SliverReorderableList(
+                      itemCount: devices.length,
+                      onReorderItem: _onReorder,
+                      itemBuilder: (context, index) {
+                        final device = devices[index];
+                        // Key ổn định theo id (PK) để list giữ đúng state card khi đổi chỗ.
+                        return ReorderableDelayedDragStartListener(
+                          key: ValueKey('${device['id']}'),
+                          index: index,
+                          child: Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
                             child: SmartDeviceCard(
-                              device: devices[index],
+                              device: device,
                               baseUrl: baseUrl,
                               isOffline: isOffline, // Truyền trạng thái mạng vào Card
-                              onToggle: (val) => _toggleDeviceState(devices[index], val),
-                            ).animate().fade(delay: (100 * index).ms).slideX(begin: 0.1),
-                          );
-                        },
-                        childCount: devices.length,
-                      ),
+                              onToggle: (val) => _toggleDeviceState(device, val),
+                            ),
+                          ),
+                        );
+                      },
                     ),
+                  ],
                   const SliverToBoxAdapter(child: SizedBox(height: 100)),
                 ],
               ),

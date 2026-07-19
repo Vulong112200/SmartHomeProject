@@ -36,6 +36,9 @@ dependencies:
   # Home Screen Widget (App Widget) hiển thị trạng thái sống + điều khiển nền
   home_widget: ^0.7.0
 
+  # Lưu cấu hình cục bộ (thứ tự sắp xếp thiết bị trên dashboard)
+  shared_preferences: ^2.2.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
