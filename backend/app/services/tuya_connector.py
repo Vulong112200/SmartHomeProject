@@ -3,6 +3,24 @@ from tuya_connector import TuyaOpenAPI
 from .base_connector import DeviceConnector
 from typing import Dict, Any
 
+# =========================================================
+# Tên DP (data point) ứng viên cho cửa cuốn/rèm — tùy model Tuya khác nhau.
+# Xem log "[Tuya Door] Status raw" để bổ sung tên nếu thiết bị của bạn dùng tên khác.
+# Ưu tiên VỊ TRÍ/TÌNH TRẠNG THẬT do motor báo về; 'control' chỉ là LỆNH CUỐI
+# echo trên cloud (có thể cũ/kẹt) nên chỉ dùng làm fallback cuối.
+# =========================================================
+# Vị trí thật 0-100. percent_state = vị trí HIỆN TẠI (ưu tiên hơn percent_control = target).
+_POSITION_DPS = ("percent_state", "position", "curtain_position", "percent_control")
+# Một số model báo thẳng tình trạng (opening/closing/open/closed/stop...).
+_WORK_STATE_DPS = ("work_state", "doorcontrol_state", "situation_set", "door_state")
+# Map giá trị work_state thô -> door_state chuẩn của app.
+_WORK_STATE_MAP = {
+    "open": "open", "opened": "open", "fully_open": "open",
+    "close": "closed", "closed": "closed", "fully_close": "closed",
+    "opening": "opening", "closing": "closing",
+    "stop": "stopped", "pause": "stopped", "stopped": "stopped",
+}
+
 class TuyaConnector(DeviceConnector):
     def __init__(self):
         self.is_connected = False
@@ -48,32 +66,49 @@ class TuyaConnector(DeviceConnector):
             # Chuyển list DP thành dict cho dễ tra cứu
             dps = {item.get('code'): item.get('value') for item in response.get('result', [])}
 
-            # DP điều khiển gần nhất: 'open' | 'close' | 'stop'
+            # DP điều khiển gần nhất: 'open' | 'close' | 'stop' (chỉ là lệnh cuối)
             control = str(dps.get('control', '')).lower()
-            # Vị trí hiện tại 0-100 (nếu thiết bị hỗ trợ)
-            position = dps.get('percent_state', dps.get('position'))
 
-            # Suy ra trạng thái cửa
+            # 1) VỊ TRÍ THẬT do motor báo về (đáng tin nhất) — thử lần lượt các tên DP.
+            position = None
+            for code in _POSITION_DPS:
+                if dps.get(code) is not None:
+                    try:
+                        position = int(dps[code])
+                        break
+                    except (TypeError, ValueError):
+                        continue
+
+            # 2) DP tình trạng thật (nếu model báo trực tiếp).
+            work_state = ""
+            for code in _WORK_STATE_DPS:
+                if dps.get(code) is not None:
+                    work_state = str(dps[code]).lower()
+                    break
+
+            # Suy ra door_state: ưu tiên vị trí thật -> tình trạng thật -> lệnh cuối.
+            door_state = None
             if position is not None:
-                try:
-                    position = int(position)
-                except (TypeError, ValueError):
-                    position = None
+                if position >= 100:
+                    door_state = "open"
+                elif position <= 0:
+                    door_state = "closed"
+                else:
+                    door_state = "partial"
+            elif work_state:
+                door_state = _WORK_STATE_MAP.get(work_state)
 
-            if position == 100:
-                door_state = "open"
-            elif position == 0:
-                door_state = "closed"
-            elif control == "open":
-                door_state = "opening"
-            elif control == "close":
-                door_state = "closing"
-            elif control == "stop":
-                door_state = "stopped"
-            elif position is not None:
-                door_state = "partial"
-            else:
-                door_state = "unknown"
+            # 3) Fallback CUỐI: 'control' = lệnh cuối echo trên cloud (có thể cũ/kẹt).
+            if door_state is None:
+                if control == "open":
+                    door_state = "opening"
+                elif control == "close":
+                    door_state = "closing"
+                elif control == "stop":
+                    door_state = "stopped"
+                else:
+                    door_state = "unknown"
+                    print(f"[Tuya Door] ⚠️ Không nhận ra DP trạng thái/vị trí, dps={dps}")
 
             return {
                 "device_id": device_id,

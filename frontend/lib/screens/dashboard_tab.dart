@@ -272,6 +272,7 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   String? _pendingMode;          // mode vừa bấm (tô sáng lạc quan trước khi có trạng thái thật)
   DateTime? _pendingSince;       // thời điểm set _pendingMode (để timeout tránh kẹt highlight)
   Timer? _pollTimer;             // tự động poll trạng thái định kỳ
+  String? _lastShortcutIcon;     // icon shortcut đã đẩy gần nhất (tránh gọi native lặp lại)
 
   // Giữ tô sáng lạc quan tối đa 10s: nếu cloud vẫn chưa xác nhận thì thôi giữ
   // (tránh kẹt highlight sai khi lệnh thật sự không ăn).
@@ -343,6 +344,36 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
         }
       }
     });
+    // Đồng bộ icon shortcut theo trạng thái THẬT vừa poll được -> icon hội tụ đúng
+    // cả khi cửa/quạt bị điều khiển từ remote vật lý / app khác (khi app đang mở).
+    if (s != null) _syncShortcutIcon(s);
+  }
+
+  /// Đẩy icon shortcut (nếu đã pin) cho khớp trạng thái THẬT. Gọi updateShortcut
+  /// cho id chưa pin là no-op an toàn ở native (ShortcutManagerCompat chỉ cập nhật
+  /// shortcut đang tồn tại) nên không cần lưu danh sách shortcut đã tạo. Chỉ gọi
+  /// khi icon thật sự đổi để tránh gọi native mỗi nhịp poll.
+  void _syncShortcutIcon(Map<String, dynamic> s) {
+    String type;
+    String iconRes;
+    String label = _name;
+    if (_isCurtain) {
+      final ds = '${s['door_state'] ?? ''}'.toLowerCase();
+      if (ds.isEmpty || ds == 'unknown') return;
+      type = ShortcutType.doorToggle;
+      iconRes = ShortcutIcons.door(ds);
+    } else if (_isAirPurifier) {
+      final step = PurifierCycle.steps[PurifierCycle.indexFromStatus(s)];
+      type = ShortcutType.purifierCycle;
+      iconRes = ShortcutIcons.purifier(step.key);
+      label = '$_name • ${step.label}';
+    } else {
+      return;
+    }
+    if (iconRes == _lastShortcutIcon) return;
+    _lastShortcutIcon = iconRes;
+    final action = ShortcutAction(type: type, brand: _brand, deviceId: _id, deviceName: _name);
+    ShortcutService.instance.updateShortcutIcon(action, label: label, iconRes: iconRes);
   }
 
   /// Sau khi gửi lệnh: poll lại nhiều nhịp (đọc FRESH bỏ cache) tới khi trạng

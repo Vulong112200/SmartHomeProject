@@ -22,7 +22,8 @@ Launch MainActivity với intent extras
   └─ đang chạy: onNewIntent → invokeMethod('onShortcutAction', map)
     → ShortcutService._dispatch → ShortcutHandler.handle(action)  (switch theo action.type)
       ├─ purifierCycle: fetchStatus → PurifierCycle.next → apply(/mode) → updateShortcutIcon(step)
-      ├─ doorToggle:    fetchStatus → hỏi chiều ngược → sendMode(open/close) → updateShortcutIcon(state)
+      ├─ doorToggle:    fetchStatus → hỏi chiều ngược → sendMode(open/close) → updateShortcutIcon(icon lạc quan)
+      │                    → _reconcileDoorIcon: chờ ~2s → fetchStatus(fresh) → updateShortcutIcon(door_state THẬT)
       ├─ doorOpen/doorClose/feederFeed: _confirm dialog → DeviceApi.sendMode
       └─ updateShortcutIcon → MethodChannel 'updateShortcut' → ShortcutManagerCompat.updateShortcuts
 ```
@@ -93,6 +94,16 @@ dashboard_tab.dart / shortcut_handler.dart → DeviceApi.fetchStatus(brand, id)
 ```
 Ghi chú: card máy lọc & cửa tự động poll `Timer.periodic(6s)` (`initState`, hủy khi `dispose`) →
 trạng thái luôn tươi, không cần kéo reload.
+
+Cách connector suy trạng thái (đều đọc cloud THẬT, không dùng lịch sử lệnh app):
+- VeSync: `purifier.update()` → đọc `device_status`/`mode`/`fan_level` (trạng thái vật lý thật).
+- Tuya cửa: đọc DP status từ cloud → ưu tiên **vị trí thật** (`_POSITION_DPS`) → **tình trạng thật**
+  (`_WORK_STATE_DPS`) → chỉ fallback DP `control` (lệnh cuối, có thể kẹt) khi không có 2 nguồn trên;
+  không nhận ra DP → `unknown` + log `[Tuya Door] ⚠️`.
+
+Đồng bộ icon shortcut theo trạng thái thật (khi app mở): mỗi lần `_refreshStatus` có data →
+`dashboard_tab._syncShortcutIcon` đẩy `updateShortcutIcon` cho cửa/quạt (no-op an toàn nếu chưa pin;
+`_lastShortcutIcon` chặn gọi lặp) → icon đúng cả khi thiết bị bị điều khiển từ remote vật lý/app khác.
 
 ## 4b. Khởi động app (warm-up server)
 

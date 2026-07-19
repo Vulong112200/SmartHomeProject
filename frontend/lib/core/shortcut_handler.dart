@@ -68,15 +68,33 @@ class ShortcutHandler {
       onYes: () async {
         final ok = await DeviceApi.sendMode(action.brand, action.deviceId, targetMode);
         if (ok) {
+          // Phản hồi tức thì theo mục tiêu (lạc quan), rồi hòa giải về trạng
+          // thái THẬT sau 1 nhịp để icon phản ánh đúng kết quả lệnh thật sự.
           await ShortcutService.instance.updateShortcutIcon(
             action,
             label: action.deviceName,
             iconRes: ShortcutIcons.door(willOpen ? 'open' : 'closed'),
           );
+          _reconcileDoorIcon(action); // fire-and-forget
         }
         return ok;
       },
       successMsg: willOpen ? 'Đang mở cửa...' : 'Đang đóng cửa...',
+    );
+  }
+
+  /// Sau khi gửi lệnh cửa, chờ 1 nhịp cho motor bắt đầu chạy rồi đọc trạng thái
+  /// THẬT từ cloud và chỉnh icon shortcut cho khớp — bắt kịp cả khi lệnh không
+  /// đạt như ý (kẹt, bị chặn) chứ không đóng băng theo mục tiêu giả định.
+  static Future<void> _reconcileDoorIcon(ShortcutAction action) async {
+    await Future.delayed(const Duration(seconds: 2));
+    final s = await DeviceApi.fetchStatus(action.brand, action.deviceId, fresh: true);
+    final ds = '${s?['door_state']}'.toLowerCase();
+    if (ds.isEmpty || ds == 'null' || ds == 'unknown') return;
+    await ShortcutService.instance.updateShortcutIcon(
+      action,
+      label: action.deviceName,
+      iconRes: ShortcutIcons.door(ds),
     );
   }
 
