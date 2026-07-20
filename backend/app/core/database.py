@@ -24,3 +24,30 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def run_startup_migrations(engine) -> None:
+    """
+    Migration nhẹ cho SQLite: create_all KHÔNG thêm cột vào bảng đã tồn tại,
+    nên các cột mới phải ALTER TABLE thủ công ở đây. Idempotent — chỉ thêm cột thiếu.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "schedules" not in inspector.get_table_names():
+        return  # bảng chưa tồn tại -> create_all sẽ tạo đủ cột, khỏi migrate
+
+    existing = {col["name"] for col in inspector.get_columns("schedules")}
+    wanted = {
+        "end_time": "TEXT",
+        "end_action_type": "TEXT",
+        "end_action_value": "TEXT",
+        "last_end_fired_date": "TEXT",
+        "one_shot": "INTEGER DEFAULT 0",
+    }
+    missing = {name: ddl for name, ddl in wanted.items() if name not in existing}
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name, ddl in missing.items():
+            conn.execute(text(f"ALTER TABLE schedules ADD COLUMN {name} {ddl}"))

@@ -51,17 +51,28 @@ List<_ActionOption> _actionsFor(DeviceType type) {
   }
 }
 
-/// Nhãn tiếng Việt cho hành động của một lịch (hiện trên danh sách).
-String _actionLabel(Schedule s, DeviceType type) {
+/// Nhãn tiếng Việt cho 1 hành động (dùng cho cả hành động bắt đầu lẫn kết thúc).
+String _actionLabelFor(String actionType, String? actionValue, DeviceType type) {
   for (final opt in _actionsFor(type)) {
-    if (opt.actionType == s.actionType && opt.actionValue == s.actionValue) {
+    if (opt.actionType == actionType && opt.actionValue == actionValue) {
       return opt.label;
     }
   }
   // Fallback khi loại thiết bị không xác định được từ tên.
-  if (s.actionType == 'on') return 'Bật';
-  if (s.actionType == 'off') return 'Tắt';
-  return 'Chế độ ${s.actionValue ?? '?'}';
+  if (actionType == 'on') return 'Bật';
+  if (actionType == 'off') return 'Tắt';
+  return 'Chế độ ${actionValue ?? '?'}';
+}
+
+/// Nhãn tiếng Việt cho hành động của một lịch (hiện trên danh sách).
+String _actionLabel(Schedule s, DeviceType type) =>
+    _actionLabelFor(s.actionType, s.actionValue, type);
+
+/// Mô tả hành động đầy đủ của lịch: đơn "Lọc Cao", khoảng "Lọc Cao → Lọc TB".
+String _actionSummary(Schedule s, DeviceType type) {
+  final start = _actionLabel(s, type);
+  if (!s.isRange) return start;
+  return '$start → ${_actionLabelFor(s.endActionType ?? '', s.endActionValue, type)}';
 }
 
 /// Nhãn ngày lặp: "Mỗi ngày" / "T2, T4, CN".
@@ -268,6 +279,9 @@ class _ScheduleTabState extends State<ScheduleTab> {
     final type = deviceTypeOf(deviceName);
     final enabled = s.enabled;
     final color = enabled ? AppColors.primary : AppColors.textSub;
+    // Khoảng qua đêm (end < start): đánh dấu giờ kết thúc thuộc hôm sau.
+    final overnight = s.isRange && s.endTime!.compareTo(s.time) < 0;
+    final timeText = s.isRange ? '${s.time} → ${s.endTime}${overnight ? '⁺¹' : ''}' : s.time;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -281,15 +295,31 @@ class _ScheduleTabState extends State<ScheduleTab> {
         onTap: () => _openForm(edit: s),
         child: Row(
           children: [
-            // Giờ lớn bên trái
+            // Giờ lớn bên trái (khoảng dài hơn nên chữ nhỏ lại để không tràn)
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(s.time,
+                Text(timeText,
                     style: TextStyle(
-                        fontSize: 26, fontWeight: FontWeight.bold,
+                        fontSize: s.isRange ? 18 : 26, fontWeight: FontWeight.bold,
                         color: enabled ? AppColors.textMain : AppColors.textSub)),
-                Text(_daysLabel(s.days), style: TextStyle(fontSize: 11, color: color)),
+                Row(
+                  children: [
+                    Text(_daysLabel(s.days), style: TextStyle(fontSize: 11, color: color)),
+                    if (s.oneShot)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text('1 lần', style: TextStyle(fontSize: 9, color: color)),
+                        ),
+                      ),
+                  ],
+                ),
               ],
             ),
             const SizedBox(width: 16),
@@ -299,13 +329,13 @@ class _ScheduleTabState extends State<ScheduleTab> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    s.name.isNotEmpty ? s.name : _actionLabel(s, type),
+                    s.name.isNotEmpty ? s.name : _actionSummary(s, type),
                     style: const TextStyle(color: AppColors.textMain, fontWeight: FontWeight.w600),
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${_actionLabel(s, type)} • $deviceName',
+                    '${_actionSummary(s, type)} • $deviceName',
                     style: const TextStyle(color: AppColors.textSub, fontSize: 12),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -348,6 +378,10 @@ class _ScheduleFormState extends State<_ScheduleForm> {
   late Set<int> _days; // rỗng = mỗi ngày
   late final TextEditingController _nameCtrl;
   bool _saving = false;
+  // ---- Lịch KHOẢNG (bắt đầu -> kết thúc) ----
+  bool _isRange = false;
+  late TimeOfDay _endTime;
+  late String _endActionKey;
 
   Map<String, dynamic> get _device =>
       widget.devices.firstWhere((d) => '${d['id']}' == _deviceId, orElse: () => widget.devices.first);
@@ -368,6 +402,16 @@ class _ScheduleFormState extends State<_ScheduleForm> {
     if (!_actions.any((a) => a.key == _actionKey)) _actionKey = _actions.first.key;
     final parts = (e?.time ?? '07:00').split(':');
     _time = TimeOfDay(hour: int.tryParse(parts[0]) ?? 7, minute: int.tryParse(parts[1]) ?? 0);
+    // Khoảng: nạp giờ/hành động kết thúc từ lịch cũ; mặc định = giờ bắt đầu + 1h.
+    _isRange = e?.isRange ?? false;
+    final endParts = (e?.endTime ?? '').split(':');
+    _endTime = _isRange
+        ? TimeOfDay(
+            hour: int.tryParse(endParts[0]) ?? ((_time.hour + 1) % 24),
+            minute: int.tryParse(endParts.length > 1 ? endParts[1] : '') ?? _time.minute)
+        : TimeOfDay(hour: (_time.hour + 1) % 24, minute: _time.minute);
+    _endActionKey = _isRange ? '${e!.endActionType}:${e.endActionValue ?? ''}' : _actions.first.key;
+    if (!_actions.any((a) => a.key == _endActionKey)) _endActionKey = _actions.first.key;
     _days = (e?.days ?? '')
         .split(',')
         .map((p) => int.tryParse(p.trim()))
@@ -388,12 +432,26 @@ class _ScheduleFormState extends State<_ScheduleForm> {
     if (picked != null) setState(() => _time = picked);
   }
 
+  Future<void> _pickEndTime() async {
+    final picked = await showTimePicker(context: context, initialTime: _endTime);
+    if (picked != null) setState(() => _endTime = picked);
+  }
+
+  String _fmt(TimeOfDay t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
   Future<void> _save() async {
     if (_saving) return;
+    if (_isRange && _endTime.hour == _time.hour && _endTime.minute == _time.minute) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Giờ kết thúc phải khác giờ bắt đầu.'),
+          backgroundColor: Colors.redAccent));
+      return;
+    }
     setState(() => _saving = true);
     final action = _actions.firstWhere((a) => a.key == _actionKey);
-    final timeStr =
-        '${_time.hour.toString().padLeft(2, '0')}:${_time.minute.toString().padLeft(2, '0')}';
+    final endAction = _actions.firstWhere((a) => a.key == _endActionKey);
+    final timeStr = _fmt(_time);
     final daysStr = (_days.toList()..sort()).join(',');
     final brand = '${_device['brand']}'.toLowerCase();
 
@@ -407,6 +465,9 @@ class _ScheduleFormState extends State<_ScheduleForm> {
         actionValue: action.actionValue,
         time: timeStr,
         days: daysStr,
+        endTime: _isRange ? _fmt(_endTime) : null,
+        endActionType: _isRange ? endAction.actionType : null,
+        endActionValue: _isRange ? endAction.actionValue : null,
       );
     } else {
       err = await ScheduleApi.updateSchedule(widget.edit!.id, {
@@ -417,6 +478,10 @@ class _ScheduleFormState extends State<_ScheduleForm> {
         'action_value': action.actionValue,
         'time': timeStr,
         'days': daysStr,
+        // Gửi null tường minh khi chuyển về "Một lần" — backend hiểu là xóa khoảng.
+        'end_time': _isRange ? _fmt(_endTime) : null,
+        'end_action_type': _isRange ? endAction.actionType : null,
+        'end_action_value': _isRange ? endAction.actionValue : null,
       });
     }
 
@@ -431,10 +496,55 @@ class _ScheduleFormState extends State<_ScheduleForm> {
     }
   }
 
+  /// Ô chọn giờ (dùng cho cả giờ bắt đầu lẫn giờ kết thúc).
+  Widget _timeTile(String value, VoidCallback onTap) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white10),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.access_time, color: AppColors.primary, size: 20),
+              const SizedBox(width: 12),
+              Text(value,
+                  style: const TextStyle(
+                      fontSize: 20, fontWeight: FontWeight.bold, color: AppColors.textMain)),
+            ],
+          ),
+        ),
+      );
+
+  /// Dàn ChoiceChip chọn hành động (dùng cho hành động bắt đầu & kết thúc).
+  Widget _actionChips(String selectedKey, ValueChanged<String> onSelect) => Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          for (final a in _actions)
+            ChoiceChip(
+              label: Text(a.label,
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: selectedKey == a.key ? Colors.white : AppColors.textMain)),
+              selected: selectedKey == a.key,
+              selectedColor: AppColors.primary,
+              backgroundColor: AppColors.card,
+              onSelected: (_) => onSelect(a.key),
+            ),
+        ],
+      );
+
   @override
   Widget build(BuildContext context) {
-    final timeStr =
-        '${_time.hour.toString().padLeft(2, '0')}:${_time.minute.toString().padLeft(2, '0')}';
+    final timeStr = _fmt(_time);
+    // end < start = khoảng qua đêm -> giờ kết thúc thuộc ngày hôm sau.
+    final endMinutes = _endTime.hour * 60 + _endTime.minute;
+    final startMinutes = _time.hour * 60 + _time.minute;
+    final overnight = _isRange && endMinutes < startMinutes;
 
     return Padding(
       // Đẩy form lên trên bàn phím khi nhập tên.
@@ -467,60 +577,69 @@ class _ScheduleFormState extends State<_ScheduleForm> {
                 if (v == null) return;
                 setState(() {
                   _deviceId = v;
-                  // Loại thiết bị đổi -> danh sách hành động đổi theo.
+                  // Loại thiết bị đổi -> danh sách hành động đổi theo (cả 2 mốc).
                   _actionKey = _actions.first.key;
+                  _endActionKey = _actions.first.key;
                 });
               },
             ),
             const SizedBox(height: 16),
 
-            // ---- Hành động ----
-            const Text('Hành động', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+            // ---- Loại lịch: Một lần (1 mốc) / Khoảng (bắt đầu -> kết thúc) ----
+            const Text('Loại lịch', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
             const SizedBox(height: 6),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final a in _actions)
-                  ChoiceChip(
-                    label: Text(a.label,
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: _actionKey == a.key ? Colors.white : AppColors.textMain)),
-                    selected: _actionKey == a.key,
-                    selectedColor: AppColors.primary,
-                    backgroundColor: AppColors.card,
-                    onSelected: (_) => setState(() => _actionKey = a.key),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 16),
-
-            // ---- Giờ ----
-            const Text('Giờ kích hoạt', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
-            const SizedBox(height: 6),
-            InkWell(
-              onTap: _pickTime,
-              borderRadius: BorderRadius.circular(12),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                decoration: BoxDecoration(
-                  color: AppColors.card,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white10),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(value: false, label: Text('Một mốc', style: TextStyle(fontSize: 12))),
+                  ButtonSegment(value: true, label: Text('Khoảng', style: TextStyle(fontSize: 12))),
+                ],
+                selected: {_isRange},
+                onSelectionChanged: (v) => setState(() => _isRange = v.first),
+                style: SegmentedButton.styleFrom(
+                  backgroundColor: AppColors.card,
+                  foregroundColor: AppColors.textMain,
+                  selectedBackgroundColor: AppColors.primary,
+                  selectedForegroundColor: Colors.white,
+                  side: const BorderSide(color: Colors.white10),
                 ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.access_time, color: AppColors.primary, size: 20),
-                    const SizedBox(width: 12),
-                    Text(timeStr,
-                        style: const TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.bold, color: AppColors.textMain)),
-                  ],
-                ),
+                showSelectedIcon: false,
               ),
             ),
             const SizedBox(height: 16),
+
+            // ---- Hành động (bắt đầu) ----
+            Text(_isRange ? 'Hành động bắt đầu' : 'Hành động',
+                style: const TextStyle(color: AppColors.textSub, fontSize: 12)),
+            const SizedBox(height: 6),
+            _actionChips(_actionKey, (k) => setState(() => _actionKey = k)),
+            const SizedBox(height: 16),
+
+            // ---- Giờ (bắt đầu) ----
+            Text(_isRange ? 'Giờ bắt đầu' : 'Giờ kích hoạt',
+                style: const TextStyle(color: AppColors.textSub, fontSize: 12)),
+            const SizedBox(height: 6),
+            _timeTile(timeStr, _pickTime),
+            const SizedBox(height: 16),
+
+            // ---- Kết thúc (chỉ với lịch khoảng) ----
+            if (_isRange) ...[
+              const Text('Giờ kết thúc', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+              const SizedBox(height: 6),
+              _timeTile(_fmt(_endTime), _pickEndTime),
+              if (overnight)
+                const Padding(
+                  padding: EdgeInsets.only(top: 6),
+                  child: Text('Kết thúc vào ngày hôm sau (lịch qua đêm).',
+                      style: TextStyle(color: AppColors.primary, fontSize: 11)),
+                ),
+              const SizedBox(height: 16),
+              const Text('Hành động kết thúc', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+              const SizedBox(height: 6),
+              _actionChips(_endActionKey, (k) => setState(() => _endActionKey = k)),
+              const SizedBox(height: 16),
+            ],
 
             // ---- Ngày lặp ----
             const Text('Lặp lại (bỏ trống = mỗi ngày)',

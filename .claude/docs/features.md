@@ -16,19 +16,22 @@
 
 ## Features
 
-### Hẹn giờ thiết bị (schedule server-side)
+### Hẹn giờ thiết bị (schedule server-side: đơn + khoảng)
 - **Status:** ✅ done
-- **Backend:** `ScheduleModel` (`models/schedule.py`, bảng `schedules`) · `services/scheduler.py` (`scheduler_loop` + `execute_schedule_action`) · `/api/schedules` GET/POST/PATCH/DELETE + `/api/schedules/{id}/run` (`main.py`).
+- **Backend:** `ScheduleModel` (`models/schedule.py`, bảng `schedules`) · `services/scheduler.py` (`scheduler_loop` + `execute_schedule_action` + `_is_time_due`/`_end_days`) · `run_startup_migrations` (`core/database.py`) · `/api/schedules` GET/POST/PATCH/DELETE + `/api/schedules/{id}/run?part=start|end` + helper `_create_schedule_row` (`main.py`) · test `backend/tests/test_scheduler_helpers.py`.
 - **Frontend:** `core/schedule_api.dart` (`Schedule` model + `ScheduleApi`) · `screens/schedule_tab.dart` (tab thứ 3 "Hẹn giờ": list + form bottom-sheet) · `main.dart` (NavigationDestination + IndexedStack).
 - **Key logic:**
-  - **Hẹn giờ ĐƠN**: 1 lịch = 1 thiết bị + 1 giờ (`"HH:MM"` giờ VN) + 1 hành động (`on`/`off`/`mode`+value) + ngày lặp (`days` CSV 0=Thứ2…6=CN, rỗng = mỗi ngày). Kịch bản nhiều bước (4h30 lọc cao → 6h30 auto) = nhiều lịch.
-  - Vòng lặp asyncio khởi động trong **lifespan** (`main.py`), tick **30s**: lịch "đến giờ" khi `0 <= now - giờ hẹn < 120s` (grace) VÀ `last_fired_date != hôm nay`. **Đánh dấu `last_fired_date` TRƯỚC khi gửi lệnh** → lệnh chậm/lỗi không bắn lặp (an toàn với motor cửa). Lỗi 1 lịch không dừng vòng lặp.
+  - **Hẹn giờ ĐƠN**: 1 lịch = 1 thiết bị + 1 giờ (`"HH:MM"` giờ VN) + 1 hành động (`on`/`off`/`mode`+value) + ngày lặp (`days` CSV 0=Thứ2…6=CN, rỗng = mỗi ngày).
+  - **Hẹn giờ KHOẢNG**: thêm `end_time` + `end_action_type/value` — 2 mốc trong 1 lịch (vd 16:30 lọc Cao → 17:30 lọc TB). `end_time` NULL = lịch đơn (backward compatible). **Qua đêm**: `end_time < time` hợp lệ, end kích hoạt NGÀY HÔM SAU — ngày check end dịch +1 mod 7 (`_end_days`); chỉ chặn end == start. Start và end bắn ĐỘC LẬP, mỗi mốc có fired-date riêng (`last_fired_date`/`last_end_fired_date`) → restart giữa khoảng vẫn trả thiết bị về trạng thái "sau".
+  - **One-shot** (`one_shot=True`): lịch đơn tự `enabled=False` sau start; lịch khoảng tắt sau end. Lỡ trọn cửa sổ của hành động cuối (server ngủ) → tự tắt + log "lịch 1 lần đã lỡ giờ" (tránh bắn nhầm tuần sau cùng thứ). Dùng cho lịch tạo từ giọng nói.
+  - Cột mới thêm bằng `run_startup_migrations(engine)` gọi ngay sau `create_all` trong `main.py` — ALTER TABLE cột thiếu, idempotent (create_all KHÔNG alter bảng đã tồn tại).
+  - Vòng lặp asyncio khởi động trong **lifespan** (`main.py`), tick **30s**: mốc "đến giờ" khi `0 <= now - giờ hẹn < 120s` (grace) VÀ fired-date != hôm nay. **Đánh dấu fired-date TRƯỚC khi gửi lệnh** → lệnh chậm/lỗi không bắn lặp (an toàn với motor cửa). Lỗi 1 lịch không dừng vòng lặp; start xử lý trước end trong cùng tick (khoảng ngắn hơn grace vẫn đúng thứ tự).
   - Hành động tái dùng nguyên primitive connector (`turn_on`/`turn_off`/`set_mode`) + `_cache_invalidate` sau lệnh (truyền callback từ main.py, tránh circular import).
-  - PATCH đổi `time` hoặc bật lại `enabled` → reset `last_fired_date` (cho phép kích hoạt lại trong ngày nếu tới giờ mới). Validate: `action_type` ∈ on/off/mode; `mode` bắt buộc `action_value`; `time` regex HH:MM; `days` CSV 0-6.
-  - `/run` chạy ngay để test, KHÔNG đổi `last_fired_date`.
+  - PATCH đổi `time`/bật `enabled` → reset `last_fired_date`; đổi `end_time`/bật enabled → reset `last_end_fired_date`; gửi `end_time: null` TƯỜNG MINH → xóa sạch bộ end (thành lịch đơn). Validate merged (giá trị mới ưu tiên, thiếu lấy từ row): action ∈ on/off/mode, mode cần value (cùng luật cho bộ end), time regex HH:MM, days CSV 0-6, có end_time thì bắt buộc end_action_type.
+  - `/run` chạy ngay để test (KHÔNG đổi fired-date); `?part=end` chạy hành động kết thúc (lỗi rõ nếu lịch đơn).
   - Múi giờ cố định `ZoneInfo("Asia/Ho_Chi_Minh")` (server Render chạy UTC) — cần `tzdata` trong requirements.
   - ⚠️ Phụ thuộc server luôn thức (UptimeRobot ping `/health`); ổ đĩa Render free ephemeral → lịch mất khi **redeploy** (nâng cấp DB ngoài nếu cần bền).
-  - Form frontend: danh sách hành động theo **loại thiết bị** (`device_type.dart`): máy lọc = Bật/Tắt/Thấp/TB/Cao/Auto/Ngủ; cửa = Mở/Đóng; máy ăn = Nhả 1-3 phần. Tap card để sửa; Switch bật/tắt lịch (PATCH); nút xóa có dialog xác nhận.
+  - Form frontend: `SegmentedButton` "Một mốc"/"Khoảng"; Khoảng hiện thêm tile Giờ kết thúc + chip Hành động kết thúc (đổi thiết bị reset cả 2 action key); end == start chặn bằng snackbar, end < start hiện ghi chú "Kết thúc vào ngày hôm sau (lịch qua đêm)". Card khoảng hiện `"16:30 → 17:30"` (fontSize 18, qua đêm thêm `⁺¹`) + `"Lọc Cao → Lọc TB • <tên>"` (`_actionSummary`); tag "1 lần" khi `oneShot`. Hành động theo **loại thiết bị** (`device_type.dart`): máy lọc = Bật/Tắt/Thấp/TB/Cao/Auto/Ngủ; cửa = Mở/Đóng; máy ăn = Nhả 1-3 phần. Tap card để sửa; Switch bật/tắt lịch (PATCH); nút xóa có dialog xác nhận.
 
 ### Quản lý thiết bị (devices)
 - **Status:** ✅ done
@@ -59,10 +62,21 @@
 - **Backend:** `/api/ai/parse` (`main.py`) — firewall từ khóa thiết bị → local parser (câu đơn) hoặc AI (câu phức có "và/rồi/với/nhưng") → thực thi song song `asyncio.gather`.
 - **Frontend:** `ai_assistant_tab.dart` (speech-to-text) · `chat_bubble.dart` · `websocket_provider.dart`.
 - **Key logic:**
-  - Câu không chứa từ khóa thiết bị bị chặn sớm (không gọi AI); local parser ưu tiên để tiết kiệm chi phí LLM.
+  - Câu không chứa từ khóa thiết bị bị chặn sớm (không gọi AI); firewall có thêm "hẹn"/"lịch" cho câu hẹn giờ. Local parser ưu tiên để tiết kiệm chi phí LLM.
   - **Executor nhận cả 2 bộ giá trị action**: AI phát `on`/`off`, local parser phát `turn_on`/`turn_off` — dispatch trong `execute_single_action` khớp cả hai (fix lỗi lệnh local "bật/tắt máy lọc" không chạy). Sau mỗi action gọi `_cache_invalidate` (như endpoint control) để status đọc lại không dính cache cũ.
   - `ai_parser.py`: client OpenRouter khởi tạo **lười** (`_get_client`) — thiếu `OPENROUTER_API_KEY` app vẫn boot, chỉ AI fallback bị vô hiệu (trả `[]` + log warning).
   - Frontend: request có timeout 30s; non-200 hiện bubble lỗi (trước đây `_isTyping` kẹt vô hạn); `dispose()` giải phóng controller/timer/mic. WebSocket tự connect khi vào tab, dùng `AppConfig.wsUrl` (wss Render), báo "Live" chỉ sau `channel.ready`, giữ tối đa 200 message.
+
+### Giọng nói TẠO lịch hẹn (NL → schedule)
+- **Status:** ✅ done
+- **Backend:** `services/vn_time_parser.py` (MỚI: `extract_schedule_times` + `resolve_target_days`) · `local_parser.py` (intent schedule, refactor `_extract_device_actions`) · `main.py` (`_create_schedule_from_intent`, `_verb_to_schedule_action`, `_action_label_vn`) · prompt few-shot schedule trong `ai_parser.py` · test `backend/tests/test_vn_time_parser.py`.
+- **Frontend:** không cần sửa — bubble "Đã hẹn 16:30 • Chế độ 3" render bằng `chat_bubble.dart` sẵn có; lịch mới hiện trong tab Hẹn giờ sau refresh.
+- **Key logic:**
+  - **Trigger = parse được mốc giờ.** `parse_command_locally` gọi `extract_schedule_times(text)` TRƯỚC: None → đường thi hành ngay như cũ (hành vi không đổi); có giờ → CHỈ trả `{"intent":"schedule", brand, id, action, mode, time, end_time, end_action, end_mode, day_offset, recurring_daily}` hoặc `[]` (AI fallback thử). KHÔNG BAO GIỜ trộn schedule + immediate → "hẹn 16h30 bật quạt" không thể bật quạt luôn.
+  - `vn_time_parser` nhận: "16 giờ 30"/"16h30"/"16:30"/"X giờ rưỡi"/"X giờ Y phút", giờ chữ 1-12 ("bảy giờ"), buổi sáng/trưa/chiều/tối/đêm (cửa sổ quanh mốc, loại trừ "tối đa"; khoảng thiếu buổi 1 bên → chia sẻ buổi nếu giữ được end > start), "mai"→day_offset 1, "mỗi ngày/hàng ngày"→recurring, "từ X đến/tới Y"→khoảng (end < start = qua đêm). Trả kèm `cleaned_text/head/tail` (đã cắt cụm giờ/buổi — tránh "đêm" trong "11 giờ đêm" match nhầm mode sleep).
+  - Trích thiết bị/hành động chạy trên `cleaned_text` (tái dùng nguyên keyword matching cũ). Khoảng 2 hành động: parse riêng head/tail quanh mốc "đến" (tail thiếu từ khóa thiết bị → ghép mồi `_BRAND_HINT`); khoảng 1 hành động → end mặc định Tắt, cửa mở→đóng, cửa đóng/dừng KHÔNG đoán (an toàn: không tự mở cửa → rơi về lịch đơn).
+  - `_create_schedule_from_intent` (main.py): map verb parser (`turn_on/turn_off/set_mode` | `on/off`) → cột lịch (`on/off/mode`), `resolve_target_days` ghim thứ ngày đích + `one_shot=True` (recurring → days rỗng, không one-shot; giờ đã qua hôm nay → tự roll sang mai), tạo row qua `_create_schedule_row` dùng chung với POST endpoint, KHÔNG chạm connector/cache. Lỗi validate → bubble "Lỗi hẹn giờ: ..." success=False.
+  - AI fallback (câu phức): prompt `ai_parser.py` rule 4 + 3 few-shot schedule, output shape GIỐNG HỆT local parser → cùng đi qua `_create_schedule_from_intent`; thời gian AI trả bị re-validate server-side (regex) nên garbage không crash.
 
 ### Sắp xếp thứ tự thiết bị (kéo-thả)
 - **Status:** ✅ done
@@ -112,4 +126,4 @@
 | Table | Status | Ghi chú |
 |---|---|---|
 | devices (`DeviceModel`) | ✅ | id, name, brand, is_active. Thiếu icon/category. |
-| schedules (`ScheduleModel`) | ✅ | id, name, brand, device_id, action_type, action_value, time, days, enabled, last_fired_date. ⚠️ Ephemeral trên Render free (mất khi redeploy). |
+| schedules (`ScheduleModel`) | ✅ | id, name, brand, device_id, action_type, action_value, time, days, enabled, last_fired_date + end_time, end_action_type, end_action_value, last_end_fired_date, one_shot (lịch khoảng/one-shot; cột mới qua `run_startup_migrations`). ⚠️ Ephemeral trên Render free (mất khi redeploy). |

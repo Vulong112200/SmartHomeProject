@@ -18,11 +18,12 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | Điều khiển bật/tắt & mode | ✅ | `main.py` `/api/test-control/...`, connectors |
 | Lấy trạng thái thật thiết bị | ✅ | `main.py` `/api/devices/{brand}/{id}/status` |
 | Trợ lý giọng nói (AI + local parse) | ✅ | `main.py` `/api/ai/parse`, `services/ai_parser.py`, `services/local_parser.py`, `screens/ai_assistant_tab.dart` |
+| Giọng nói TẠO lịch hẹn (NL → schedule) | ✅ | `services/vn_time_parser.py` (parse giờ tiếng Việt), `local_parser.py` (intent schedule), `main.py` `_create_schedule_from_intent` |
 | Dashboard điều khiển | ✅ | `screens/dashboard_tab.dart` |
 | Sắp xếp thứ tự thiết bị (kéo-thả) | ✅ | `screens/dashboard_tab.dart` (`SliverReorderableList`), `core/device_order.dart` (lưu SharedPreferences) |
 | Home-screen Shortcut (icon xử lý nhanh) | ✅ | `core/shortcut_service.dart`, `core/shortcut_handler.dart`, `MainActivity.kt`, `res/drawable/ic_*` |
 | Home Screen Widget (trạng thái sống + điều khiển nền) | ✅ | `core/widget_service.dart`, `SmartHomeWidgetProvider.kt`, `res/layout/smart_home_widget.xml`, package `home_widget` |
-| Hẹn giờ thiết bị (schedule server-side) | ✅ | `services/scheduler.py`, `models/schedule.py`, `main.py` `/api/schedules`, `screens/schedule_tab.dart`, `core/schedule_api.dart` |
+| Hẹn giờ thiết bị (đơn + KHOẢNG start→end, qua đêm, one-shot) | ✅ | `services/scheduler.py`, `models/schedule.py`, `main.py` `/api/schedules`, `screens/schedule_tab.dart`, `core/schedule_api.dart` |
 | Automation engine | 📋 (đóng băng) | `services/automation_engine.py` (comment trong `main.py`) |
 
 ## API Endpoints Summary (`backend/app/main.py`)
@@ -35,12 +36,12 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | GET | `/api/test-control/{brand}/{device_id}?action=on\|off` | Bật/tắt |
 | GET | `/api/test-control/{brand}/{device_id}/mode?mode=...` | Đổi chế độ (open/close/stop/low/high...) |
 | GET | `/api/devices/{brand}/{device_id}/status` (opt `?fresh=1`) | **Trạng thái sống** → `{data:{status:ON\|OFF\|offline, door_state, position,...}}`. Có cache ~3s; `fresh=1` bỏ qua cache (dùng sau lệnh điều khiển). |
-| POST | `/api/ai/parse` | Parse + thực thi lệnh NL (body `{text}`) |
+| POST | `/api/ai/parse` | Parse + thực thi lệnh NL (body `{text}`). Câu CÓ GIỜ ("hẹn 16h30...") → TẠO LỊCH thay vì thi hành ngay |
 | GET | `/api/schedules` | Liệt kê lịch hẹn giờ |
-| POST | `/api/schedules` | Tạo lịch (body JSON: name, brand, device_id, action_type, action_value, time, days, enabled) |
-| PATCH | `/api/schedules/{id}` | Sửa lịch / bật-tắt `enabled` (đổi giờ hoặc bật lại → reset `last_fired_date`) |
+| POST | `/api/schedules` | Tạo lịch (body JSON: name, brand, device_id, action_type, action_value, time, days, enabled + lịch khoảng: end_time, end_action_type, end_action_value, one_shot) |
+| PATCH | `/api/schedules/{id}` | Sửa lịch / bật-tắt `enabled` (đổi giờ/bật lại → reset `last_fired_date`/`last_end_fired_date`; `end_time: null` tường minh → xóa khoảng) |
 | DELETE | `/api/schedules/{id}` | Xóa lịch |
-| POST | `/api/schedules/{id}/run` | Chạy NGAY hành động của lịch (test), không đổi `last_fired_date` |
+| POST | `/api/schedules/{id}/run` (opt `?part=end`) | Chạy NGAY hành động của lịch (test), không đổi fired-date; `part=end` chạy hành động kết thúc |
 | WS | `/ws` | WebSocket (hiện chỉ echo) |
 | GET/HEAD | `/`, `/health` | Health check (UptimeRobot ping giữ server thức) |
 
@@ -48,7 +49,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 
 - **DeviceModel** (`devices`, `device.py`): `id` (PK, vd `den_phong_khach`), `name`, `brand` (`tuya`\|`vesync`\|`rojeco`), `is_active`.
   - ⚠️ Không có cột `icon`/`category`/`type`. Loại thiết bị suy từ TÊN phía client (`core/device_type.dart` — nơi duy nhất).
-- **ScheduleModel** (`schedules`, `schedule.py`): `id` (PK int), `name`, `brand`, `device_id`, `action_type` (`on`\|`off`\|`mode`), `action_value` (mode value, null với on/off), `time` (`"HH:MM"` giờ **Asia/Ho_Chi_Minh**), `days` (CSV weekday Python `0`=Thứ2…`6`=CN, rỗng = mỗi ngày), `enabled`, `last_fired_date` (`"YYYY-MM-DD"` chống kích hoạt trùng trong ngày).
+- **ScheduleModel** (`schedules`, `schedule.py`): `id` (PK int), `name`, `brand`, `device_id`, `action_type` (`on`\|`off`\|`mode`), `action_value` (mode value, null với on/off), `time` (`"HH:MM"` giờ **Asia/Ho_Chi_Minh**), `days` (CSV weekday Python `0`=Thứ2…`6`=CN, rỗng = mỗi ngày), `enabled`, `last_fired_date` (`"YYYY-MM-DD"` chống kích hoạt trùng trong ngày). **Lịch KHOẢNG**: `end_time` (NULL = lịch đơn; `end_time < time` = QUA ĐÊM, end kích hoạt hôm sau), `end_action_type`, `end_action_value`, `last_end_fired_date`, `one_shot` (chạy 1 lần → tự `enabled=False` sau hành động cuối). Cột mới thêm qua `run_startup_migrations` (`core/database.py`, ALTER TABLE idempotent — create_all không alter bảng cũ).
 
 ## Connectors (`backend/app/services/`)
 
@@ -63,7 +64,8 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 ## File quan trọng nhất
 
 - `backend/app/main.py` — toàn bộ endpoint + luồng AI parse + lifespan (connectors + scheduler task).
-- `backend/app/services/scheduler.py` — vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh).
+- `backend/app/services/scheduler.py` — vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh; bắn start + end độc lập, qua đêm dịch ngày +1, one-shot tự tắt).
+- `backend/app/services/vn_time_parser.py` — parse giờ tiếng Việt ("16 giờ 30", "4 giờ chiều", "từ X đến Y", "mai", "mỗi ngày") cho lệnh hẹn giờ bằng giọng nói; `resolve_target_days` quy đổi sang days/one_shot.
 - `frontend/lib/core/config.dart` — nơi DUY NHẤT khai báo baseUrl/wsUrl/timeout.
 - `frontend/lib/core/shortcut_handler.dart` — điều phối hành vi shortcut + `ShortcutIcons` (map trạng thái → tên drawable).
 - `frontend/lib/core/shortcut_service.dart` — MethodChannel `smarthome/shortcuts` ↔ native, quick_actions iOS.
@@ -76,7 +78,8 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 ## Lưu ý an toàn / kỹ thuật
 
 - **Credential ở biến môi trường**: `backend/.env` (gitignore, mẫu ở `backend/.env.example`) — `VESYNC_EMAIL/PASSWORD`, `TUYA_ACCESS_ID/KEY/API_ENDPOINT`, `OPENROUTER_API_KEY`. Trên Render set trong Dashboard > Environment. Thiếu `OPENROUTER_API_KEY` app vẫn boot (AI client khởi tạo lười, local parser vẫn chạy).
-- **Hẹn giờ (scheduler)**: task asyncio khởi động trong lifespan, tick 30s; lịch kích hoạt khi `now` (giờ VN) vào cửa sổ `[giờ hẹn, +120s)` và `last_fired_date != hôm nay` (đánh dấu TRƯỚC khi gửi lệnh — lệnh lỗi không bắn lặp). Server được **UptimeRobot ping /health** giữ thức. ⚠️ Ổ đĩa Render free là ephemeral — lịch trong SQLite **mất khi redeploy** (cân nhắc DB ngoài nếu cần bền). Cần `tzdata` trong requirements (zoneinfo trên Render/Windows).
+- **Hẹn giờ (scheduler)**: task asyncio khởi động trong lifespan, tick 30s; mốc kích hoạt khi `now` (giờ VN) vào cửa sổ `[giờ hẹn, +120s)` và fired-date != hôm nay (đánh dấu TRƯỚC khi gửi lệnh — lệnh lỗi không bắn lặp). **Lịch KHOẢNG**: start và end bắn ĐỘC LẬP (restart giữa khoảng vẫn trả thiết bị về trạng thái "sau"); qua đêm (`end < time`) → ngày check end dịch +1 (`_end_days`). **One-shot**: lịch đơn tắt sau start, lịch khoảng tắt sau end; lỡ trọn cửa sổ (server ngủ) → tự tắt + log, tránh bắn nhầm tuần sau. Server được **UptimeRobot ping /health** giữ thức. ⚠️ Ổ đĩa Render free là ephemeral — lịch trong SQLite **mất khi redeploy** (cân nhắc DB ngoài nếu cần bền). Cần `tzdata` trong requirements (zoneinfo trên Render/Windows).
+- **Giọng nói tạo lịch**: local parser gọi `extract_schedule_times` TRƯỚC — câu có giờ ⇒ CHỈ trả `{"intent":"schedule",...}` (tuyệt đối không thi hành ngay; "hẹn 16h30 bật quạt" không được bật quạt luôn); không rõ thiết bị → `[]` cho AI fallback (prompt `ai_parser.py` có few-shot schedule cùng shape). `main.py._create_schedule_from_intent` map verb → cột lịch, `resolve_target_days` ghim thứ + one_shot (giờ đã qua → tự hiểu ngày mai), tạo row qua `_create_schedule_row` (dùng chung POST endpoint), trả bubble "Đã hẹn 16:30 • Chế độ 3". Khoảng không nói hành động kết thúc → mặc định Tắt (cửa mở → đóng; cửa đóng/dừng KHÔNG đoán — an toàn, thành lịch đơn). Test: `backend/tests/` (pytest).
 - Pinned shortcut Android là ảnh tĩnh: trạng thái phản ánh qua **icon**, không có badge/text sống. Icon hội tụ về trạng thái THẬT **khi app đang chạy** — `dashboard_tab._syncShortcutIcon` đẩy icon mỗi vòng poll 6s (bắt kịp cả khi điều khiển bằng remote vật lý/app khác), và `_reconcileDoorIcon` chỉnh icon cửa theo trạng thái thật sau khi bấm shortcut. App đóng hoàn toàn thì icon giữ nguyên tới lần app mở kế. Trạng thái sống đầy đủ hơn có ở Home Screen Widget.
 - Tên drawable icon shortcut phải khớp CHÍNH XÁC với `ShortcutIcons` (`shortcut_handler.dart`), nếu thiếu → native fallback về `launcher_icon` (logo app).
 - **Điều khiển & trạng thái (perf/UX):** endpoint control trả `{status:"error"}` khi thiết bị không nhận lệnh (không còn luôn "success"); connector Tuya/Rojeco dùng `asyncio.to_thread` để không block event loop; status có cache ~3s (`_status_cache`, `?fresh=1` để bỏ cache; **mọi đường điều khiển** — endpoint control, AI executor, scheduler — đều invalidate cache sau lệnh). Card máy lọc/cửa tự poll 6s **chỉ khi tab Home hiển thị + app foreground** (`pollingEnabled`, `WidgetsBindingObserver`); nút có `_sending` chặn double-tap + tô sáng lạc quan `_pendingMode`. ⚠️ Tô sáng lạc quan **reconcile theo giá trị**: chỉ xóa `_pendingMode` khi trạng thái thật khớp mode vừa bấm (hoặc timeout ~10s) — nếu clear mù khi cloud chưa propagate thì highlight sẽ nhảy về mode cũ. Nút cửa luôn bấm được (bỏ khóa), chỉ tô sáng nút đang hoạt động. Card báo trạng thái thật về parent (`onStatusChanged`) để header đếm "Đang bật" đúng.

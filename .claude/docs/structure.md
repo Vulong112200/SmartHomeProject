@@ -9,20 +9,24 @@ backend/
 ├── app/
 │   ├── main.py                     # FastAPI app: endpoints (devices/control/status/ai/schedules), lifespan (connectors + scheduler task), middleware đo thời gian
 │   ├── core/
-│   │   └── database.py             # SQLAlchemy engine + SessionLocal + Base + get_db (SQLite smarthome.db)
+│   │   └── database.py             # SQLAlchemy engine + SessionLocal + Base + get_db (SQLite smarthome.db) + run_startup_migrations (ALTER TABLE cột mới, idempotent)
 │   ├── models/
 │   │   ├── device.py               # DeviceModel (bảng devices: id, name, brand, is_active)
-│   │   └── schedule.py             # ScheduleModel (bảng schedules: hẹn giờ đơn — time HH:MM, days CSV, action, last_fired_date)
+│   │   └── schedule.py             # ScheduleModel (bảng schedules: time HH:MM, days CSV, action, last_fired_date + lịch KHOẢNG end_time/end_action_*/last_end_fired_date, one_shot)
 │   └── services/
 │       ├── base_connector.py       # Lớp trừu tượng: connect/turn_on/turn_off/get_device_state (+set_mode tùy chọn)
 │       ├── connector_manager.py    # device_manager: register_connector / get_connector theo brand
 │       ├── tuya_connector.py       # Tuya Cloud — cửa cuốn/rèm (control open/close/stop, position 0-100); credential từ env
 │       ├── vesync_connector.py     # VeSync — máy lọc khí (mode, speed)
 │       ├── rojeco_connector.py     # Rojeco — máy cho ăn (get_device_state STUB luôn "ON"); credential từ env
-│       ├── local_parser.py         # parse_command_locally: bắt lệnh đơn giản không cần AI
-│       ├── ai_parser.py            # parse_command_with_ai: gọi LLM (OpenRouter) cho câu phức; client lazy (thiếu key vẫn boot)
-│       ├── scheduler.py            # scheduler_loop: vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh) + execute_schedule_action
+│       ├── local_parser.py         # parse_command_locally: lệnh đơn giản không cần AI; câu CÓ GIỜ → intent schedule (không thi hành ngay)
+│       ├── vn_time_parser.py       # extract_schedule_times: parse giờ tiếng Việt (16h30, 4 giờ chiều, từ X đến Y, mai, mỗi ngày) + resolve_target_days
+│       ├── ai_parser.py            # parse_command_with_ai: gọi LLM (OpenRouter) cho câu phức (có few-shot intent schedule); client lazy (thiếu key vẫn boot)
+│       ├── scheduler.py            # scheduler_loop: vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh); bắn start+end độc lập, qua đêm _end_days +1, one-shot tự tắt
 │       └── automation_engine.py    # Automation rules (đang đóng băng, không import trong main.py)
+├── tests/
+│   ├── test_vn_time_parser.py      # pytest bảng ví dụ parse giờ + resolve_target_days
+│   └── test_scheduler_helpers.py   # pytest _is_time_due/_is_time_missed/_end_days (grace, thứ, qua đêm)
 ├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY) — gitignored
 ├── .env.example                    # Mẫu biến môi trường
 ├── requirements.txt                # Python deps (UTF-8; có tzdata cho zoneinfo)

@@ -49,20 +49,52 @@ async def execute_schedule_action(brand: str, device_id: str, action_type: str,
     return ok
 
 
-def _is_due(schedule: ScheduleModel, now: datetime) -> bool:
-    """Kiểm tra lịch có đến giờ kích hoạt tại thời điểm `now` không."""
-    if schedule.days:
-        days = {int(d) for d in schedule.days.split(",") if d.strip().isdigit()}
-        if days and now.weekday() not in days:
-            return False
+def _parse_hhmm(time_str) -> Optional[tuple]:
     try:
-        hh, mm = map(int, str(schedule.time).split(":"))
+        hh, mm = map(int, str(time_str).split(":"))
+        return hh, mm
     except (ValueError, AttributeError):
-        logger.warning(f"Lịch #{schedule.id} có giờ không hợp lệ: {schedule.time!r}")
-        return False
+        return None
+
+
+def _delta_seconds(time_str: str, days: str, now: datetime) -> Optional[float]:
+    """Giây đã trôi qua kể từ mốc `time_str` hôm nay; None nếu hôm nay không đúng thứ / giờ hỏng."""
+    if days:
+        dayset = {int(d) for d in days.split(",") if d.strip().isdigit()}
+        if dayset and now.weekday() not in dayset:
+            return None
+    parsed = _parse_hhmm(time_str)
+    if parsed is None:
+        logger.warning(f"⏰ Giờ hẹn không hợp lệ: {time_str!r}")
+        return None
+    hh, mm = parsed
     scheduled = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    delta = (now - scheduled).total_seconds()
-    return 0 <= delta < GRACE_SECONDS
+    return (now - scheduled).total_seconds()
+
+
+def _is_time_due(time_str: str, days: str, now: datetime) -> bool:
+    """Mốc giờ có đang trong cửa sổ kích hoạt [giờ hẹn, +grace) không."""
+    delta = _delta_seconds(time_str, days, now)
+    return delta is not None and 0 <= delta < GRACE_SECONDS
+
+
+def _is_time_missed(time_str: str, days: str, now: datetime) -> bool:
+    """Hôm nay đúng thứ nhưng cửa sổ kích hoạt đã trôi qua (lỡ hẹn)."""
+    delta = _delta_seconds(time_str, days, now)
+    return delta is not None and delta >= GRACE_SECONDS
+
+
+def _end_days(sch: ScheduleModel) -> str:
+    """
+    Ngày kích hoạt của HÀNH ĐỘNG KẾT THÚC. Khoảng qua đêm (end < start) thì end
+    thuộc NGÀY HÔM SAU -> dịch từng weekday +1 mod 7. days rỗng (mỗi ngày) giữ rỗng.
+    """
+    start = _parse_hhmm(sch.time)
+    end = _parse_hhmm(sch.end_time)
+    overnight = start and end and (end[0] * 60 + end[1]) < (start[0] * 60 + start[1])
+    if not overnight or not sch.days:
+        return sch.days or ""
+    return ",".join(str((int(d) + 1) % 7) for d in sch.days.split(",") if d.strip().isdigit())
 
 
 async def scheduler_loop(invalidate_cache: Optional[Callable] = None):
@@ -74,26 +106,62 @@ async def scheduler_loop(invalidate_cache: Optional[Callable] = None):
             today = now.date().isoformat()
             db = SessionLocal()
             try:
-                due = [
-                    s for s in db.query(ScheduleModel).filter(ScheduleModel.enabled == True).all()
-                    if s.last_fired_date != today and _is_due(s, now)
-                ]
-                for sch in due:
+                for sch in db.query(ScheduleModel).filter(ScheduleModel.enabled == True).all():
+                    label = sch.name or f"{sch.brand}/{sch.device_id}"
+                    start_due = sch.last_fired_date != today and _is_time_due(sch.time, sch.days or "", now)
+                    end_due = bool(
+                        sch.end_time and sch.last_end_fired_date != today
+                        and _is_time_due(sch.end_time, _end_days(sch), now)
+                    )
+
+                    # Lịch 1 lần đã LỠ trọn cửa sổ của hành động cuối (server ngủ/khởi động
+                    # muộn) -> tự tắt, tránh bắn nhầm vào tuần sau cùng thứ.
+                    if sch.one_shot and not start_due and not end_due:
+                        if sch.end_time:
+                            missed = (sch.last_end_fired_date != today
+                                      and _is_time_missed(sch.end_time, _end_days(sch), now))
+                        else:
+                            missed = (sch.last_fired_date != today
+                                      and _is_time_missed(sch.time, sch.days or "", now))
+                        if missed:
+                            sch.enabled = False
+                            db.commit()
+                            logger.warning(f"⏰ Lịch 1 lần #{sch.id} '{label}' đã lỡ giờ — tự tắt.")
+                        continue
+
                     # Đánh dấu ĐÃ kích hoạt TRƯỚC khi gửi lệnh — nếu lệnh chậm/lỗi
                     # cũng không bắn lặp lại ở tick sau (an toàn hơn với thiết bị motor).
-                    sch.last_fired_date = today
-                    db.commit()
-                    label = sch.name or f"{sch.brand}/{sch.device_id}"
-                    logger.info(f"⏰ Kích hoạt lịch #{sch.id} '{label}': {sch.action_type} {sch.action_value or ''} lúc {sch.time}")
-                    try:
-                        ok = await execute_schedule_action(
-                            sch.brand, sch.device_id, sch.action_type, sch.action_value,
-                            invalidate_cache,
-                        )
-                        if not ok:
-                            logger.warning(f"⏰ Lịch #{sch.id}: thiết bị KHÔNG nhận lệnh.")
-                    except Exception as e:
-                        logger.error(f"⏰ Lịch #{sch.id} lỗi thực thi: {e}")
+                    if start_due:
+                        sch.last_fired_date = today
+                        if sch.one_shot and not sch.end_time:
+                            sch.enabled = False  # lịch đơn 1 lần: xong hành động duy nhất
+                        db.commit()
+                        logger.info(f"⏰ Kích hoạt lịch #{sch.id} '{label}': {sch.action_type} {sch.action_value or ''} lúc {sch.time}")
+                        try:
+                            ok = await execute_schedule_action(
+                                sch.brand, sch.device_id, sch.action_type, sch.action_value,
+                                invalidate_cache,
+                            )
+                            if not ok:
+                                logger.warning(f"⏰ Lịch #{sch.id}: thiết bị KHÔNG nhận lệnh.")
+                        except Exception as e:
+                            logger.error(f"⏰ Lịch #{sch.id} lỗi thực thi: {e}")
+
+                    if end_due:
+                        sch.last_end_fired_date = today
+                        if sch.one_shot:
+                            sch.enabled = False  # hành động CUỐI của lịch khoảng 1 lần
+                        db.commit()
+                        logger.info(f"⏰ Kích hoạt lịch #{sch.id} '{label}' (kết thúc): {sch.end_action_type} {sch.end_action_value or ''} lúc {sch.end_time}")
+                        try:
+                            ok = await execute_schedule_action(
+                                sch.brand, sch.device_id, sch.end_action_type, sch.end_action_value,
+                                invalidate_cache,
+                            )
+                            if not ok:
+                                logger.warning(f"⏰ Lịch #{sch.id} (kết thúc): thiết bị KHÔNG nhận lệnh.")
+                        except Exception as e:
+                            logger.error(f"⏰ Lịch #{sch.id} (kết thúc) lỗi thực thi: {e}")
             finally:
                 db.close()
         except asyncio.CancelledError:

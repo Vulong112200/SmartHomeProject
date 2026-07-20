@@ -54,13 +54,37 @@ Nút widget (PendingIntent = HomeWidgetBackgroundIntent, URI smarthome://action?
 
 ```
 ai_assistant_tab.dart (speech-to-text) → POST /api/ai/parse {text}
-  → main.py: firewall device_keywords (không có từ khóa → trả rỗng, bỏ qua AI)
+  → main.py: firewall device_keywords + "hẹn"/"lịch" (không có từ khóa → trả rỗng, bỏ qua AI)
   → câu đơn: parse_command_locally(text, devices)
   → câu phức (và/rồi/với/nhưng) hoặc local rỗng: parse_command_with_ai (OpenRouter)
   → execute_single_action cho mỗi action (asyncio.gather song song)
-       nhận cả action = on|off (AI) LẪN turn_on|turn_off (local parser)
-       connector.turn_on/turn_off/set_mode theo brand → _cache_invalidate(brand, id)
+       ├─ intent == "schedule" → _create_schedule_from_intent (xem 2b, KHÔNG gọi connector)
+       └─ còn lại: nhận cả action = on|off (AI) LẪN turn_on|turn_off (local parser)
+            connector.turn_on/turn_off/set_mode theo brand → _cache_invalidate(brand, id)
   → trả {ai_understood, execution_results:[{device_name, action, success}]}
+```
+
+## 2b. Giọng nói TẠO lịch hẹn ("hẹn 16 giờ 30 bật quạt lọc mức cao")
+
+```
+parse_command_locally (local_parser.py)
+  → extract_schedule_times(text) (vn_time_parser.py)
+       ├─ None (không có giờ) → _extract_device_actions(text) → thi hành NGAY (đường cũ)
+       └─ có giờ → CHỈ trả intent schedule (không bao giờ thi hành ngay):
+            _extract_device_actions(cleaned_text)   # cụm giờ/buổi/ngày đã bị cắt
+            ├─ rỗng → [] (AI fallback thử, prompt có few-shot schedule cùng shape)
+            └─ khoảng "từ X đến Y": head/tail 2 hành động (tail thiếu thiết bị → ghép _BRAND_HINT);
+                 1 hành động → end mặc định turn_off (cửa open→close; cửa close/stop → lịch đơn)
+  → execute_single_action thấy intent == "schedule"
+    → _create_schedule_from_intent (main.py):
+         verb → cột lịch (turn_on/on→on, turn_off/off→off, set_mode→mode+value)
+         resolve_target_days(time, day_offset, recurring, now VN)
+           ├─ "mỗi ngày" → days rỗng, one_shot=False
+           └─ còn lại → days = thứ ngày đích, one_shot=True (giờ đã qua hôm nay → roll sang mai)
+         _create_schedule_row (validate + INSERT, dùng chung POST /api/schedules)
+    → bubble "Đã hẹn [ngày mai ]16:30 • Chế độ 3" / "Đã hẹn 16:30→17:30 • ..., kết thúc: Tắt"
+       (lỗi validate → "Lỗi hẹn giờ: ..." success=False; KHÔNG chạm connector/cache)
+  → lịch hiện trong tab Hẹn giờ; scheduler_loop kích hoạt như lịch thường (one-shot tự tắt sau khi chạy)
 ```
 
 ## 3. Điều khiển trực tiếp từ Dashboard
@@ -114,28 +138,38 @@ Cách connector suy trạng thái (đều đọc cloud THẬT, không dùng lị
 **Tạo/sửa lịch từ app:**
 ```
 schedule_tab.dart (FAB ＋ / tap card) → _ScheduleForm (bottom sheet)
-  chọn thiết bị (dropdown từ /api/devices) → hành động theo loại (device_type.dart)
-  → giờ (TimePicker) → ngày lặp (FilterChip T2..CN → CSV 0-6) → tên tùy chọn
-  → ScheduleApi.createSchedule / updateSchedule (POST | PATCH /api/schedules, JSON body)
-    → main.py validate (_validate_schedule_fields: action_type, HH:MM, days CSV)
-    → INSERT/UPDATE bảng schedules; PATCH đổi time/bật enabled → reset last_fired_date
+  chọn thiết bị (dropdown từ /api/devices) → loại lịch (SegmentedButton "Một mốc" | "Khoảng")
+  → hành động theo loại thiết bị (device_type.dart) → giờ (TimePicker)
+  → [Khoảng] giờ kết thúc + hành động kết thúc (end == start chặn snackbar;
+       end < start = qua đêm, hiện ghi chú "Kết thúc vào ngày hôm sau")
+  → ngày lặp (FilterChip T2..CN → CSV 0-6) → tên tùy chọn
+  → ScheduleApi.createSchedule / updateSchedule (POST | PATCH /api/schedules, JSON body;
+       edit chuyển Khoảng → Một mốc gửi end_time: null TƯỜNG MINH để xóa khoảng)
+    → main.py _create_schedule_row / PATCH validate merged (_validate_schedule_fields:
+         action_type, HH:MM, days CSV, bộ end cùng luật, chặn end == start)
+    → INSERT/UPDATE bảng schedules; PATCH đổi time/end_time/bật enabled → reset fired-date tương ứng
 ```
 
 **Vòng lặp kích hoạt (chạy nền trên server):**
 ```
 main.py lifespan → asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
-  → mỗi 30s: now = datetime.now(Asia/Ho_Chi_Minh)
-    → query schedules enabled==True
-    → lịch ĐẾN GIỜ khi: weekday ∈ days (hoặc days rỗng) VÀ 0 <= now - giờ hẹn < 120s
-                        VÀ last_fired_date != hôm nay
-    → đánh dấu last_fired_date = hôm nay + commit TRƯỚC khi gửi lệnh (chống bắn lặp)
+  → mỗi 30s: now = datetime.now(Asia/Ho_Chi_Minh); duyệt schedules enabled==True
+    → start ĐẾN GIỜ khi: weekday ∈ days (hoặc days rỗng) VÀ 0 <= now - time < 120s
+                         VÀ last_fired_date != hôm nay
+    → end ĐẾN GIỜ khi:   có end_time VÀ weekday ∈ _end_days (qua đêm: days dịch +1 mod 7)
+                         VÀ 0 <= now - end_time < 120s VÀ last_end_fired_date != hôm nay
+    → mỗi mốc: đánh dấu fired-date + commit TRƯỚC khi gửi lệnh (chống bắn lặp);
+         one_shot: lịch đơn tắt sau start, lịch khoảng tắt sau end;
+         one_shot lỡ trọn cửa sổ mốc cuối (server ngủ) → enabled=False + log (không bắn tuần sau)
     → execute_schedule_action: device_manager.get_connector(brand)
          → turn_on / turn_off / set_mode(device_id, action_value)
     → _cache_invalidate(brand, device_id)  # app đọc được trạng thái mới ngay
 ```
 Ghi chú: server được UptimeRobot ping /health giữ thức (Render free-tier). Lịch lưu SQLite —
 ephemeral trên Render, mất khi redeploy. `/api/schedules/{id}/run` chạy ngay để test (không
-đổi last_fired_date). Kịch bản nhiều bước = nhiều lịch đơn (vd 4h30 mode 3 + 6h30 mode auto).
+đổi fired-date; `?part=end` chạy hành động kết thúc). Start xử lý trước end trong cùng tick
+nên khoảng ngắn hơn grace vẫn đúng thứ tự. Restart giữa khoảng: end vẫn bắn độc lập → thiết bị
+về trạng thái "sau" như mong muốn.
 
 ## 4b. Khởi động app (warm-up server)
 

@@ -14,6 +14,10 @@ class Schedule {
   final String time;         // "HH:MM" giờ VN
   final String days;         // CSV 0-6 (0=Thứ2); rỗng = mỗi ngày
   final bool enabled;
+  final String? endTime;        // lịch KHOẢNG: giờ kết thúc; null = lịch đơn.
+  final String? endActionType;  // endTime < time = khoảng qua đêm (end thuộc hôm sau)
+  final String? endActionValue;
+  final bool oneShot;           // chạy 1 lần rồi backend tự tắt
 
   const Schedule({
     required this.id,
@@ -25,7 +29,13 @@ class Schedule {
     required this.time,
     required this.days,
     required this.enabled,
+    this.endTime,
+    this.endActionType,
+    this.endActionValue,
+    this.oneShot = false,
   });
+
+  bool get isRange => endTime != null;
 
   factory Schedule.fromJson(Map<String, dynamic> j) => Schedule(
         id: j['id'] as int,
@@ -37,6 +47,10 @@ class Schedule {
         time: '${j['time']}',
         days: '${j['days'] ?? ''}',
         enabled: j['enabled'] == true,
+        endTime: j['end_time']?.toString(),
+        endActionType: j['end_action_type']?.toString(),
+        endActionValue: j['end_action_value']?.toString(),
+        oneShot: j['one_shot'] == true,
       );
 }
 
@@ -72,6 +86,9 @@ class ScheduleApi {
     required String time,
     required String days,
     bool enabled = true,
+    String? endTime,
+    String? endActionType,
+    String? endActionValue,
   }) async {
     return _send(
       () => http.post(
@@ -86,6 +103,9 @@ class ScheduleApi {
           'time': time,
           'days': days,
           'enabled': enabled,
+          'end_time': endTime,
+          'end_action_type': endActionType,
+          'end_action_value': endActionValue,
         }),
       ),
     );
@@ -107,8 +127,9 @@ class ScheduleApi {
   }
 
   /// Chạy NGAY hành động của lịch (test). Trả lỗi hoặc null nếu thành công.
-  static Future<String?> runNow(int id) async {
-    return _send(() => http.post(Uri.parse('$_base/$id/run')),
+  /// [end] = true: chạy hành động KẾT THÚC của lịch khoảng.
+  static Future<String?> runNow(int id, {bool end = false}) async {
+    return _send(() => http.post(Uri.parse('$_base/$id/run${end ? '?part=end' : ''}')),
         timeout: const Duration(seconds: 20)); // lệnh IoT thật có thể chậm hơn API thường
   }
 

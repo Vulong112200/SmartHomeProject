@@ -31,13 +31,14 @@ from app.services.rojeco_connector import RojecoConnector
 from app.services.ai_parser import parse_command_with_ai
 
 # Vòng lặp Hẹn giờ chạy nền
-from app.services.scheduler import scheduler_loop, execute_schedule_action
+from app.services.scheduler import scheduler_loop, execute_schedule_action, TZ
+from app.services.vn_time_parser import resolve_target_days
 
 # Tạm thời comment Automation Engine để tránh lỗi chưa hoàn thiện
 # from app.services.automation_engine import automation_engine, AutomationRule
 
 # Import Database
-from app.core.database import SessionLocal, engine, Base, get_db
+from app.core.database import SessionLocal, engine, Base, get_db, run_startup_migrations
 from app.models.device import DeviceModel
 from app.models.schedule import ScheduleModel  # đăng ký bảng schedules với Base
 
@@ -71,6 +72,7 @@ if hasattr(sys.stderr, "reconfigure"):
 # =========================================================
 logger.info("Đang khởi tạo Database...")
 Base.metadata.create_all(bind=engine)
+run_startup_migrations(engine)  # thêm cột mới vào bảng cũ (create_all không ALTER)
 
 # =========================================================
 # Lifespan: khởi động connector + vòng lặp Hẹn giờ (Scheduler)
@@ -246,6 +248,78 @@ async def get_device_status(brand: str, device_id: str, fresh: bool = False):
 # =========================================================
 # API - Nhận Lệnh Giọng Nói (AI OpenRouter)
 # =========================================================
+def _action_label_vn(action_type: str, action_value: str | None) -> str:
+    """Nhãn tiếng Việt cho 1 hành động — dùng chung cho thi hành ngay lẫn hẹn giờ."""
+    if action_type in ("on", "turn_on"):
+        return "Bật"
+    if action_type in ("off", "turn_off"):
+        return "Tắt"
+    if action_value == "open":
+        return "Mở"
+    if action_value == "close":
+        return "Đóng"
+    if action_value == "stop":
+        return "Dừng"
+    return f"Chế độ {action_value}"
+
+def _verb_to_schedule_action(verb: str | None, mode: str | None) -> tuple[str | None, str | None]:
+    """Đổi từ vựng parser (turn_on/turn_off/set_mode | on/off) -> cột lịch (on/off/mode)."""
+    if verb in ("on", "turn_on"):
+        return "on", None
+    if verb in ("off", "turn_off"):
+        return "off", None
+    if verb == "set_mode" or mode:
+        return "mode", mode
+    return None, None
+
+def _create_schedule_from_intent(action: dict, devices: list, db: Session) -> dict:
+    """
+    Tạo lịch hẹn từ intent 'schedule' của local parser / AI.
+    Trả về bubble chat {"device_name","action","success"} — KHÔNG chạm connector.
+    """
+    dev_id = action.get("id")
+    device_obj = next((d for d in devices if d.id == dev_id), None)
+    dev_name = device_obj.name if device_obj else dev_id
+    try:
+        action_type, action_value = _verb_to_schedule_action(action.get("action"), action.get("mode"))
+        if not action_type:
+            raise ValueError("không rõ hành động")
+        end_time = action.get("end_time")
+        end_action_type = end_action_value = None
+        if end_time:
+            end_action_type, end_action_value = _verb_to_schedule_action(
+                action.get("end_action"), action.get("end_mode"))
+            if not end_action_type:
+                end_time = None  # khoảng không có hành động kết thúc hợp lệ -> lịch đơn
+
+        days, one_shot, rolled = resolve_target_days(
+            action.get("time", ""), int(action.get("day_offset", 0) or 0),
+            bool(action.get("recurring_daily", False)), datetime.now(TZ),
+        )
+        sch = _create_schedule_row(
+            db, name="Tạo bởi trợ lý", brand=action.get("brand"), device_id=dev_id,
+            action_type=action_type, action_value=action_value,
+            time=action.get("time", ""), days=days,
+            end_time=end_time, end_action_type=end_action_type,
+            end_action_value=end_action_value, one_shot=one_shot,
+        )
+        prefix = "ngày mai " if (rolled or int(action.get("day_offset", 0) or 0) > 0) else ""
+        label = _action_label_vn(action_type, action_value)
+        if sch.end_time:
+            end_label = _action_label_vn(end_action_type, end_action_value)
+            action_ui = f"Đã hẹn {prefix}{sch.time}→{sch.end_time} • {label}, kết thúc: {end_label}"
+        else:
+            action_ui = f"Đã hẹn {prefix}{sch.time} • {label}"
+        if not days and not one_shot:
+            action_ui += " (mỗi ngày)"
+        return {"device_name": dev_name, "action": action_ui, "success": True}
+    except ValueError as e:
+        return {"device_name": dev_name, "action": f"Lỗi hẹn giờ: {e}", "success": False}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[AI Schedule Error] {e}")
+        return {"device_name": dev_name, "action": "Lỗi hẹn giờ: không tạo được lịch", "success": False}
+
 class VoiceCommand(BaseModel):
     text: str
 
@@ -262,7 +336,8 @@ async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_d
     # BỨC TƯỜNG LỬA: KIỂM TRA TỪ KHÓA THIẾT BỊ
     # ---------------------------------------------------------
     # Danh sách các từ khóa liên quan đến thiết bị trong nhà
-    device_keywords = ["quạt", "lọc", "không khí", "mèo", "ăn", "hạt", "cửa", "cuốn", "đèn", "tất cả"]
+    device_keywords = ["quạt", "lọc", "không khí", "mèo", "ăn", "hạt", "cửa", "cuốn", "đèn", "tất cả",
+                       "hẹn", "lịch"]  # từ khóa hẹn giờ: cho câu tạo lịch đi qua tường lửa
     
     # Nếu câu nói KHÔNG chứa bất kỳ từ khóa nào ở trên -> Chặn luôn
     if not any(kw in text_lower for kw in device_keywords):
@@ -284,6 +359,10 @@ async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_d
 
     # 3. Thực thi lệnh
     async def execute_single_action(action):
+        # Ý ĐỊNH HẸN GIỜ: tạo lịch trong DB, TUYỆT ĐỐI không gọi connector.
+        if action.get("intent") == "schedule":
+            return _create_schedule_from_intent(action, devices, db)
+
         brand = action.get("brand")
         dev_id = action.get("id")
         act_type = action.get("action")
@@ -298,15 +377,10 @@ async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_d
         is_on = act_type in ("on", "turn_on") or mode == "on"
         is_off = act_type in ("off", "turn_off") or mode == "off"
 
-        action_ui = ""
-        if is_on: action_ui = "Bật"
-        elif is_off: action_ui = "Tắt"
-        elif mode:
-            if mode == "open": action_ui = "Mở"
-            elif mode == "close": action_ui = "Đóng"
-            elif mode == "stop": action_ui = "Dừng"
-            else: action_ui = f"Chế độ {mode}"
-        else: action_ui = "Thực thi"
+        if is_on or is_off or mode:
+            action_ui = _action_label_vn("on" if is_on else "off" if is_off else "mode", mode)
+        else:
+            action_ui = "Thực thi"
 
         success = False
         try:
@@ -351,6 +425,10 @@ class ScheduleCreate(BaseModel):
     time: str                        # "HH:MM" giờ Asia/Ho_Chi_Minh
     days: str = ""                   # CSV 0-6 (0=Thứ2); rỗng = mỗi ngày
     enabled: bool = True
+    end_time: str | None = None          # lịch KHOẢNG: giờ kết thúc; end < time = qua đêm
+    end_action_type: str | None = None   # bắt buộc khi có end_time
+    end_action_value: str | None = None
+    one_shot: bool = False               # chạy 1 lần rồi tự tắt
 
 class ScheduleUpdate(BaseModel):
     name: str | None = None
@@ -361,22 +439,76 @@ class ScheduleUpdate(BaseModel):
     time: str | None = None
     days: str | None = None
     enabled: bool | None = None
+    end_time: str | None = None          # gửi null tường minh để xóa khoảng
+    end_action_type: str | None = None
+    end_action_value: str | None = None
+    one_shot: bool | None = None
+
+_TIME_FMT_RE = r"([01]?\d|2[0-3]):[0-5]\d"
+
+def _hhmm_to_minutes(t: str) -> int:
+    hh, mm = t.split(":")
+    return int(hh) * 60 + int(mm)
 
 def _validate_schedule_fields(action_type: str | None, action_value: str | None,
-                              time_str: str | None, days: str | None) -> str | None:
+                              time_str: str | None, days: str | None,
+                              end_time: str | None = None,
+                              end_action_type: str | None = None,
+                              end_action_value: str | None = None) -> str | None:
     """Trả về thông báo lỗi (tiếng Việt) hoặc None nếu hợp lệ."""
     if action_type is not None:
         if action_type not in ("on", "off", "mode"):
             return "action_type phải là on | off | mode"
         if action_type == "mode" and not action_value:
             return "action_value bắt buộc khi action_type = mode"
-    if time_str is not None and not _re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", time_str):
+    if time_str is not None and not _re.fullmatch(_TIME_FMT_RE, time_str):
         return "time phải có dạng HH:MM (00:00–23:59)"
     if days:
         parts = [p.strip() for p in days.split(",") if p.strip()]
         if any(not p.isdigit() or int(p) > 6 for p in parts):
             return "days phải là CSV các số 0-6 (0=Thứ2 … 6=CN)"
+    # --- Lịch KHOẢNG: bộ end validate cùng luật với start ---
+    if end_time is not None:
+        if not end_action_type:
+            return "Lịch khoảng cần đủ giờ kết thúc và hành động kết thúc"
+        if end_action_type not in ("on", "off", "mode"):
+            return "end_action_type phải là on | off | mode"
+        if end_action_type == "mode" and not end_action_value:
+            return "end_action_value bắt buộc khi end_action_type = mode"
+        if not _re.fullmatch(_TIME_FMT_RE, end_time):
+            return "end_time phải có dạng HH:MM (00:00–23:59)"
+        # end < start hợp lệ (khoảng QUA ĐÊM, end thuộc hôm sau); chỉ chặn trùng giờ.
+        if time_str and _hhmm_to_minutes(end_time) == _hhmm_to_minutes(time_str):
+            return "Giờ kết thúc phải khác giờ bắt đầu"
+    elif end_action_type is not None:
+        return "Lịch khoảng cần đủ giờ kết thúc và hành động kết thúc"
     return None
+
+def _create_schedule_row(db: Session, *, name: str, brand: str, device_id: str,
+                         action_type: str, action_value: str | None, time: str,
+                         days: str = "", enabled: bool = True,
+                         end_time: str | None = None, end_action_type: str | None = None,
+                         end_action_value: str | None = None,
+                         one_shot: bool = False) -> ScheduleModel:
+    """Validate + tạo 1 lịch. Dùng chung cho POST /api/schedules và trợ lý AI.
+    Lỗi validate -> raise ValueError(thông báo tiếng Việt)."""
+    err = _validate_schedule_fields(action_type, action_value, time, days,
+                                    end_time, end_action_type, end_action_value)
+    if err:
+        raise ValueError(err)
+    sch = ScheduleModel(
+        name=name, brand=brand, device_id=device_id,
+        action_type=action_type, action_value=action_value,
+        time=time, days=days, enabled=enabled,
+        end_time=end_time, end_action_type=end_action_type,
+        end_action_value=end_action_value, one_shot=one_shot,
+    )
+    db.add(sch)
+    db.commit()
+    db.refresh(sch)
+    logger.info(f"⏰ Đã tạo lịch #{sch.id}: {sch.brand}/{sch.device_id} {sch.action_type} lúc {sch.time}"
+                + (f" → {sch.end_action_type} lúc {sch.end_time}" if sch.end_time else ""))
+    return sch
 
 def _schedule_to_dict(s: ScheduleModel) -> dict:
     return {
@@ -384,6 +516,10 @@ def _schedule_to_dict(s: ScheduleModel) -> dict:
         "action_type": s.action_type, "action_value": s.action_value,
         "time": s.time, "days": s.days or "", "enabled": bool(s.enabled),
         "last_fired_date": s.last_fired_date,
+        "end_time": s.end_time, "end_action_type": s.end_action_type,
+        "end_action_value": s.end_action_value,
+        "last_end_fired_date": s.last_end_fired_date,
+        "one_shot": bool(s.one_shot),
     }
 
 @app.get("/api/schedules")
@@ -393,20 +529,17 @@ async def list_schedules(db: Session = Depends(get_db)):
 
 @app.post("/api/schedules")
 async def create_schedule(body: ScheduleCreate, db: Session = Depends(get_db)):
-    err = _validate_schedule_fields(body.action_type, body.action_value, body.time, body.days)
-    if err:
-        return {"status": "error", "message": err}
     try:
-        sch = ScheduleModel(
-            name=body.name, brand=body.brand, device_id=body.device_id,
+        sch = _create_schedule_row(
+            db, name=body.name, brand=body.brand, device_id=body.device_id,
             action_type=body.action_type, action_value=body.action_value,
             time=body.time, days=body.days, enabled=body.enabled,
+            end_time=body.end_time, end_action_type=body.end_action_type,
+            end_action_value=body.end_action_value, one_shot=body.one_shot,
         )
-        db.add(sch)
-        db.commit()
-        db.refresh(sch)
-        logger.info(f"⏰ Đã tạo lịch #{sch.id}: {sch.brand}/{sch.device_id} {sch.action_type} lúc {sch.time}")
         return {"status": "success", "data": _schedule_to_dict(sch)}
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     except Exception as e:
         db.rollback()
         logger.error(f"Lỗi tạo lịch: {e}")
@@ -418,10 +551,14 @@ async def update_schedule(schedule_id: int, body: ScheduleUpdate, db: Session = 
     if not sch:
         return {"status": "error", "message": "Không tìm thấy lịch."}
     fields = body.model_dump(exclude_unset=True)
+    # Validate trên giá trị ĐÃ MERGE (giá trị mới nếu có, không thì giá trị hiện tại)
+    # để so chéo start/end chính xác với PATCH từng phần.
+    merged = {k: fields.get(k, getattr(sch, k))
+              for k in ("action_type", "action_value", "time", "days",
+                        "end_time", "end_action_type", "end_action_value")}
     err = _validate_schedule_fields(
-        fields.get("action_type", sch.action_type),
-        fields.get("action_value", sch.action_value),
-        fields.get("time"), fields.get("days"),
+        merged["action_type"], merged["action_value"], merged["time"], merged["days"],
+        merged["end_time"], merged["end_action_type"], merged["end_action_value"],
     )
     if err:
         return {"status": "error", "message": err}
@@ -431,6 +568,13 @@ async def update_schedule(schedule_id: int, body: ScheduleUpdate, db: Session = 
         # Đổi giờ/bật lại lịch -> cho phép kích hoạt lại trong hôm nay nếu tới giờ mới.
         if "time" in fields or fields.get("enabled") is True:
             sch.last_fired_date = None
+        if "end_time" in fields or fields.get("enabled") is True:
+            sch.last_end_fired_date = None
+        # Xóa khoảng (end_time: null tường minh) -> dọn sạch cả bộ end cho nhất quán.
+        if "end_time" in fields and fields["end_time"] is None:
+            sch.end_action_type = None
+            sch.end_action_value = None
+            sch.last_end_fired_date = None
         db.commit()
         db.refresh(sch)
         return {"status": "success", "data": _schedule_to_dict(sch)}
@@ -455,14 +599,19 @@ async def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/schedules/{schedule_id}/run")
-async def run_schedule_now(schedule_id: int, db: Session = Depends(get_db)):
-    """Chạy NGAY hành động của lịch (để test), không ảnh hưởng last_fired_date."""
+async def run_schedule_now(schedule_id: int, part: str = "start", db: Session = Depends(get_db)):
+    """Chạy NGAY hành động của lịch (để test), không ảnh hưởng last_fired_date.
+    part=end: chạy hành động KẾT THÚC của lịch khoảng."""
     sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
     if not sch:
         return {"status": "error", "message": "Không tìm thấy lịch."}
+    if part == "end" and not sch.end_time:
+        return {"status": "error", "message": "Lịch này không có hành động kết thúc."}
+    action_type = sch.end_action_type if part == "end" else sch.action_type
+    action_value = sch.end_action_value if part == "end" else sch.action_value
     try:
         ok = await execute_schedule_action(
-            sch.brand, sch.device_id, sch.action_type, sch.action_value,
+            sch.brand, sch.device_id, action_type, action_value,
             invalidate_cache=_cache_invalidate,
         )
         if not ok:
