@@ -8,9 +8,6 @@ import '../core/config.dart';
 import '../core/device_api.dart';
 import '../core/device_order.dart';
 import '../core/device_type.dart';
-import '../core/auth_service.dart';
-import 'add_device_screen.dart';
-import 'admin_screen.dart';
 import '../core/shortcut_service.dart';
 import '../core/shortcut_handler.dart';
 import '../core/widget_service.dart';
@@ -34,56 +31,12 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
   bool isWaking = false;  // Đang đánh thức server (Render free-tier ngủ -> cold start)
   Timer? _retryTimer;     // Bộ đếm giờ tự thử lại
   bool _appActive = true; // App đang ở foreground? (pause poll khi vào nền)
-  String _displayName = "Bạn";
-  bool _isAdmin = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadProfile();
     _bootstrap();
-  }
-
-  // Lấy tên hiển thị + cờ admin. displayName ưu tiên metadata, fallback email.
-  Future<void> _loadProfile() async {
-    final meta = AuthService.user?.userMetadata;
-    final name = (meta?['display_name'] as String?)?.trim();
-    final email = AuthService.email;
-    if (mounted) {
-      setState(() => _displayName =
-          (name != null && name.isNotEmpty) ? name : (email.split('@').first));
-    }
-    final me = await AuthService.fetchMe();
-    if (mounted && me != null) {
-      setState(() => _isAdmin = me['is_admin'] == true);
-    }
-  }
-
-  Future<void> _openAddDevice() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const AddDeviceScreen()),
-    );
-    fetchDevices(); // làm mới sau khi thêm thiết bị
-  }
-
-  Future<void> _confirmLogout() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text("Đăng xuất", style: TextStyle(color: AppColors.textMain)),
-        content: const Text("Bạn muốn đăng xuất khỏi tài khoản?",
-            style: TextStyle(color: AppColors.textSub)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Hủy")),
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text("Đăng xuất", style: TextStyle(color: Colors.redAccent))),
-        ],
-      ),
-    );
-    if (ok == true) await AuthService.signOut(); // AuthGate tự về LoginScreen
   }
 
   @override
@@ -128,8 +81,7 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
   Future<void> fetchDevices() async {
     try {
       // Ép thời gian chờ là 5 giây, nếu server đơ thì báo lỗi ngay
-      final response = await http.get(Uri.parse('$baseUrl/api/devices'),
-                                      headers: AuthService.authHeaders())
+      final response = await http.get(Uri.parse('$baseUrl/api/devices'))
                                  .timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
@@ -262,40 +214,17 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text("Welcome Home,", style: TextStyle(color: AppColors.textSub, fontSize: 14)),
-                                    Text(_displayName, maxLines: 1, overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(color: AppColors.textMain, fontSize: 28, fontWeight: FontWeight.bold)),
-                                  ],
-                                ),
-                              ),
-                              // Thêm thiết bị
-                              IconButton(
-                                onPressed: _openAddDevice,
-                                icon: const Icon(Icons.add_circle_outline, color: AppColors.primary),
-                                tooltip: "Thêm thiết bị",
-                              ),
-                              // Menu: (Quản trị nếu admin) + Đăng xuất
-                              PopupMenuButton<String>(
-                                color: AppColors.surface,
-                                icon: const Icon(Icons.account_circle_outlined, color: AppColors.textSub),
-                                onSelected: (v) {
-                                  if (v == 'admin') {
-                                    Navigator.of(context).push(
-                                      MaterialPageRoute(builder: (_) => const AdminScreen()),
-                                    );
-                                  } else if (v == 'logout') {
-                                    _confirmLogout();
-                                  }
-                                },
-                                itemBuilder: (_) => [
-                                  if (_isAdmin)
-                                    const PopupMenuItem(value: 'admin', child: Text("Quản trị", style: TextStyle(color: AppColors.textMain))),
-                                  const PopupMenuItem(value: 'logout', child: Text("Đăng xuất", style: TextStyle(color: AppColors.textMain))),
+                              const Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text("Welcome Home,", style: TextStyle(color: AppColors.textSub, fontSize: 14)),
+                                  Text("Vũ 🖖", style: TextStyle(color: AppColors.textMain, fontSize: 28, fontWeight: FontWeight.bold)),
                                 ],
+                              ),
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(16)),
+                                child: const Icon(Icons.wb_sunny_rounded, color: Colors.orangeAccent),
                               ),
                             ],
                           ),

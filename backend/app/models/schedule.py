@@ -12,7 +12,6 @@ class ScheduleModel(Base):
     __tablename__ = "schedules"
 
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
-    user_id = Column(String, nullable=False, index=True, default="")  # chủ sở hữu (auth.users.id)
     name = Column(String, default="")                 # Nhãn tùy chọn, vd "Bật lọc mạnh sáng"
     brand = Column(String, nullable=False)            # tuya | vesync | rojeco
     device_id = Column(String, nullable=False)

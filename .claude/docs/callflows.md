@@ -87,33 +87,15 @@ parse_command_locally (local_parser.py)
   → lịch hiện trong tab Hẹn giờ; scheduler_loop kích hoạt như lịch thường (one-shot tự tắt sau khi chạy)
 ```
 
-## 0. Xác thực & phân giải connector theo user (áp dụng cho hầu hết endpoint)
-
-```
-Request (Authorization: Bearer <Supabase JWT>, hoặc không có nếu AUTH_DISABLED=1)
-  → Depends(get_current_user) (core/auth.py): verify HS256 bằng SUPABASE_JWT_SECRET, lấy sub→user_id, email
-       ├─ AUTH_DISABLED=1 → bỏ qua verify, trả user giả cố định (_DEV_USER_ID) — CHỈ dùng local dev
-       └─ thiếu/sai token → 401
-  → endpoint lọc dữ liệu theo user.user_id (devices/schedules) hoặc _get_owned_device (404 nếu không phải của mình)
-  → cần điều khiển thiết bị → connector_factory.get_user_connector(db, user_id, brand):
-       ├─ tuya/rojeco → device_manager.get_connector(brand)  # singleton chung project, đăng ký lúc lifespan
-       └─ vesync → cache _vesync_cache[user_id] còn sống? dùng lại
-                 : không → đọc vendor_accounts.credentials_encrypted → decrypt_json (Fernet)
-                   → VeSyncConnector(email,password).connect() → cache lại; thất bại → ValueError (bubble lỗi VN)
-```
-⚠️ **Frontend hiện KHÔNG gửi Authorization header** — mọi luồng dưới đây (dashboard, AI, hẹn giờ) sẽ 401
-trừ khi server bật `AUTH_DISABLED=1`. Chưa có màn hình đăng nhập / liên kết tài khoản VeSync-Tuya trong app.
-
 ## 3. Điều khiển trực tiếp từ Dashboard
 
 ```
 dashboard_tab.dart (nút mode / switch bật-tắt)
   ├─ chặn double-tap: _sending==true → bỏ qua; tô sáng ngay nút vừa bấm (_pendingMode, lạc quan)
   → DeviceApi.sendAction/sendMode (GET /api/test-control/{brand}/{id}?action=  hoặc  /mode?mode=)
-  → main.py: xác thực (mục 0) → _get_owned_device → connector_factory.get_user_connector
-       → turn_on/turn_off/set_mode (trả bool)
+  → main.py → device_manager.get_connector(brand) → turn_on/turn_off/set_mode (trả bool)
        ├─ ok==false → trả {status:"error"} (KHÔNG còn luôn "success")
-       └─ invalidate cache trạng thái key (user_id, brand, id)
+       └─ invalidate cache trạng thái (brand,id)
   → connector gọi cloud của hãng qua asyncio.to_thread (Tuya/Rojeco đồng bộ → không block event loop)
   ← _isOk() đọc body['status']=='success' (không chỉ HTTP 200)
   → _refreshAfterCommand: poll lại nhiều nhịp (~0.7/1.3/2/3s) với fresh=true (bỏ cache),
@@ -163,18 +145,15 @@ schedule_tab.dart (FAB ＋ / tap card) → _ScheduleForm (bottom sheet)
   → ngày lặp (FilterChip T2..CN → CSV 0-6) → tên tùy chọn
   → ScheduleApi.createSchedule / updateSchedule (POST | PATCH /api/schedules, JSON body;
        edit chuyển Khoảng → Một mốc gửi end_time: null TƯỜNG MINH để xóa khoảng)
-    → main.py: xác thực (mục 0) → _get_owned_device (POST kiểm tra device_id thuộc user)
-       → _create_schedule_row / PATCH validate merged (_validate_schedule_fields:
-         action_type, HH:MM, days CSV, bộ end cùng luật, chặn end == start), gắn user_id
+    → main.py _create_schedule_row / PATCH validate merged (_validate_schedule_fields:
+         action_type, HH:MM, days CSV, bộ end cùng luật, chặn end == start)
     → INSERT/UPDATE bảng schedules; PATCH đổi time/end_time/bật enabled → reset fired-date tương ứng
 ```
-`DELETE /api/schedules/{id}` và `POST /api/schedules/{id}/run` cũng xác thực + lọc theo `user_id`
-như GET/POST/PATCH (query `ScheduleModel.id == id AND user_id == user.user_id`).
 
 **Vòng lặp kích hoạt (chạy nền trên server):**
 ```
 main.py lifespan → asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
-  → mỗi 30s: now = datetime.now(Asia/Ho_Chi_Minh); duyệt schedules enabled==True (mọi user)
+  → mỗi 30s: now = datetime.now(Asia/Ho_Chi_Minh); duyệt schedules enabled==True
     → start ĐẾN GIỜ khi: weekday ∈ days (hoặc days rỗng) VÀ 0 <= now - time < 120s
                          VÀ last_fired_date != hôm nay
     → end ĐẾN GIỜ khi:   có end_time VÀ weekday ∈ _end_days (qua đêm: days dịch +1 mod 7)
@@ -182,19 +161,15 @@ main.py lifespan → asyncio.create_task(scheduler_loop(invalidate_cache=_cache_
     → mỗi mốc: đánh dấu fired-date + commit TRƯỚC khi gửi lệnh (chống bắn lặp);
          one_shot: lịch đơn tắt sau start, lịch khoảng tắt sau end;
          one_shot lỡ trọn cửa sổ mốc cuối (server ngủ) → enabled=False + log (không bắn tuần sau)
-    → execute_schedule_action(db, sch.user_id, brand, device_id, action_type, action_value, invalidate_cache)
-         → connector_factory.get_user_connector(db, sch.user_id, brand)  # Tuya/Rojeco singleton; VeSync per-user
+    → execute_schedule_action: device_manager.get_connector(brand)
          → turn_on / turn_off / set_mode(device_id, action_value)
-    → invalidate_cache(sch.user_id, brand, device_id)  # app đọc được trạng thái mới ngay
+    → _cache_invalidate(brand, device_id)  # app đọc được trạng thái mới ngay
 ```
-Ghi chú: server được UptimeRobot ping /health giữ thức (Render free-tier). Lịch lưu SQLite (ephemeral
-trên Render, mất khi redeploy) HOẶC Postgres/Supabase (bền) tùy `DATABASE_URL`. Start xử lý trước end trong cùng tick
+Ghi chú: server được UptimeRobot ping /health giữ thức (Render free-tier). Lịch lưu SQLite —
+ephemeral trên Render, mất khi redeploy. `/api/schedules/{id}/run` chạy ngay để test (không
+đổi fired-date; `?part=end` chạy hành động kết thúc). Start xử lý trước end trong cùng tick
 nên khoảng ngắn hơn grace vẫn đúng thứ tự. Restart giữa khoảng: end vẫn bắn độc lập → thiết bị
 về trạng thái "sau" như mong muốn.
-
-`POST /api/schedules/{id}/run` gọi `execute_schedule_action(db, sch.user_id, sch.brand, sch.device_id,
-action_type, action_value, invalidate_cache=_cache_invalidate)` — đúng chữ ký hiện tại của `scheduler.py`
-(qua `connector_factory` theo user). Đã có `Depends(get_current_user)` + lọc `user_id`.
 
 ## 4b. Khởi động app (warm-up server)
 

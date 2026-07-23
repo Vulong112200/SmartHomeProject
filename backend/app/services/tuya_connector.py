@@ -51,48 +51,6 @@ class TuyaConnector(DeviceConnector):
             print(f"[Tuya] ❌ Lỗi kết nối Tuya Cloud: {e}")
             return False
 
-    async def _ensure_connected(self):
-        if not self.is_connected:
-            await asyncio.to_thread(self.openapi.connect)
-
-    async def list_app_users(self, schema: str) -> list:
-        """
-        Liệt kê các tài khoản Smart Life đã LIÊN KẾT vào project (theo app schema).
-        Endpoint: GET /v1.0/apps/{schema}/users. Trả list {uid, ...}.
-        ⚠️ Tên endpoint/param có thể lệch giữa các phiên bản Tuya — log raw để soi.
-        """
-        await self._ensure_connected()
-        users, page = [], 1
-        while True:
-            endpoint = f"/v1.0/apps/{schema}/users?page_no={page}&page_size=100"
-            resp = await asyncio.to_thread(self.openapi.get, endpoint)
-            print(f"[Tuya Users] page {page} raw: {resp}")
-            if not isinstance(resp, dict) or not resp.get("success"):
-                break
-            result = resp.get("result", {}) or {}
-            batch = result.get("list", result if isinstance(result, list) else [])
-            if not batch:
-                break
-            users.extend(batch)
-            if not result.get("has_more"):
-                break
-            page += 1
-        return users
-
-    async def list_user_devices(self, uid: str) -> list:
-        """
-        Liệt kê thiết bị của 1 user Tuya đã liên kết.
-        Endpoint: GET /v1.0/users/{uid}/devices. Trả list device thô của Tuya.
-        """
-        await self._ensure_connected()
-        endpoint = f"/v1.0/users/{uid}/devices"
-        resp = await asyncio.to_thread(self.openapi.get, endpoint)
-        print(f"[Tuya Devices] uid={uid} raw: {resp}")
-        if not isinstance(resp, dict) or not resp.get("success"):
-            return []
-        result = resp.get("result", [])
-        return result if isinstance(result, list) else result.get("list", [])
-
     async def get_device_state(self, device_id: str) -> Dict[str, Any]:
         """
         Lấy trạng thái thật của cửa cuốn từ Tuya Cloud.
