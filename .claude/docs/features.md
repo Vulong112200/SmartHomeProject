@@ -16,6 +16,18 @@
 
 ## Features
 
+### Đa người dùng (Supabase Auth + multi-tenant)
+- **Status:** ✅ done (code hoàn chỉnh; cần thiết lập Supabase 1 lần để chạy thật — `SUPABASE_SETUP.md`)
+- **Backend:** `core/auth.py` (`get_current_user`/`require_admin` — verify JWT HS256 Supabase, `AUTH_DISABLED=1` dev bypass) · `core/crypto.py` (Fernet `encrypt_json`/`decrypt_json`) · `core/database.py` (`DATABASE_URL` chọn SQLite/Postgres, `init_db`, `run_startup_migrations`) · `models/vendor_account.py` (`VendorAccountModel`) · `services/connector_factory.py` (`get_user_connector`, `discover_vesync`, `invalidate_user`) · endpoints `/api/me`, `/api/vendor/*`, `/api/devices/import`, `/api/admin/*` (`main.py`) · `backend/docs/supabase_schema.sql` + `SUPABASE_SETUP.md` · test `backend/tests/test_multiuser_scope.py` (37/37 pass).
+- **Frontend:** `core/auth_service.dart` (Supabase Auth + `authHeaders()` Bearer) · `core/vendor_api.dart` (client vendor/admin) · `screens/login_screen.dart` + `AuthGate` (`main.dart`) · `screens/add_device_screen.dart` (khám phá) · `screens/admin_screen.dart` (quản trị) · `dashboard_tab.dart` (tên user động + nút Thêm thiết bị + menu đăng xuất/Quản trị) · `DeviceApi`/`ScheduleApi`/inline calls đã gắn token · `device_order.dart` khóa theo `user.id`.
+- **Key logic:**
+  - Mọi bảng ứng dụng (`devices`, `schedules`, `vendor_accounts`) có cột `user_id` (TEXT = `auth.users.id`); MỌI endpoint (kể cả `DELETE`/`run` lịch) đều `Depends(get_current_user)` và lọc theo `user.user_id`. Điều khiển/đọc trạng thái kiểm tra sở hữu qua `_get_owned_device` trước khi chạm connector. `is_admin` = email token ∈ `ADMIN_EMAILS`.
+  - **DB kép**: `DATABASE_URL` rỗng → SQLite local (`smarthome.db`, `create_all` + `run_startup_migrations` ALTER cột thiếu — idempotent); có giá trị → Postgres/Supabase, schema quản lý qua file SQL riêng (KHÔNG chạy `run_startup_migrations`), có RLS (`*_owner` policies + `is_admin()`) làm phòng thủ thứ hai dù backend đã tự scope bằng connection string vai trò postgres (bỏ qua RLS).
+  - **Connector theo user** (`connector_factory.get_user_connector`): Tuya/Rojeco dùng chung 1 project Tuya → connector **singleton** (đăng ký ở `connector_manager` lúc lifespan). VeSync đăng nhập theo TỪNG tài khoản → connector tạo lười, cache theo `user_id` trong dict module-level `_vesync_cache` (mất khi restart server, tự login lại), credential giải mã từ `vendor_accounts.credentials_encrypted` bằng `core/crypto.py` (Fernet, khóa `FERNET_KEY`).
+  - VeSync connector KHÔNG còn khởi tạo lúc lifespan (trước đây dùng `VESYNC_EMAIL/PASSWORD` chung) — biến env đó không còn tác dụng; mỗi user tự nhập qua `/api/vendor/vesync/connect`.
+  - **Khám phá thiết bị**: VeSync tự phục vụ (`vesync_connector.list_devices()` qua `discover_vesync` → `/api/vendor/vesync/connect` → chọn → `/api/devices/import`). Tuya bán tự động (Tuya bỏ API login email/pass): user quét QR liên kết app account → admin xem `/api/admin/tuya/linked` (`list_app_users`/`list_user_devices`) → gán `tuya_uid` (`/api/admin/vendor/tuya/assign`) → user `/api/vendor/tuya/discover` để chọn import.
+  - Migrate dữ liệu SQLite cũ sang Supabase: xem hướng dẫn cuối `SUPABASE_SETUP.md` (chèn lại thiết bị kèm `user_id` admin, hoặc dùng lại luồng "Thêm thiết bị" sau khi có tài khoản).
+
 ### Hẹn giờ thiết bị (schedule server-side: đơn + khoảng)
 - **Status:** ✅ done
 - **Backend:** `ScheduleModel` (`models/schedule.py`, bảng `schedules`) · `services/scheduler.py` (`scheduler_loop` + `execute_schedule_action` + `_is_time_due`/`_end_days`) · `run_startup_migrations` (`core/database.py`) · `/api/schedules` GET/POST/PATCH/DELETE + `/api/schedules/{id}/run?part=start|end` + helper `_create_schedule_row` (`main.py`) · test `backend/tests/test_scheduler_helpers.py`.
@@ -28,30 +40,32 @@
   - Vòng lặp asyncio khởi động trong **lifespan** (`main.py`), tick **30s**: mốc "đến giờ" khi `0 <= now - giờ hẹn < 120s` (grace) VÀ fired-date != hôm nay. **Đánh dấu fired-date TRƯỚC khi gửi lệnh** → lệnh chậm/lỗi không bắn lặp (an toàn với motor cửa). Lỗi 1 lịch không dừng vòng lặp; start xử lý trước end trong cùng tick (khoảng ngắn hơn grace vẫn đúng thứ tự).
   - Hành động tái dùng nguyên primitive connector (`turn_on`/`turn_off`/`set_mode`) + `_cache_invalidate` sau lệnh (truyền callback từ main.py, tránh circular import).
   - PATCH đổi `time`/bật `enabled` → reset `last_fired_date`; đổi `end_time`/bật enabled → reset `last_end_fired_date`; gửi `end_time: null` TƯỜNG MINH → xóa sạch bộ end (thành lịch đơn). Validate merged (giá trị mới ưu tiên, thiếu lấy từ row): action ∈ on/off/mode, mode cần value (cùng luật cho bộ end), time regex HH:MM, days CSV 0-6, có end_time thì bắt buộc end_action_type.
-  - `/run` chạy ngay để test (KHÔNG đổi fired-date); `?part=end` chạy hành động kết thúc (lỗi rõ nếu lịch đơn).
+  - `/run` chạy ngay để test (KHÔNG đổi fired-date); `?part=end` chạy hành động kết thúc (lỗi rõ nếu lịch đơn). `DELETE` và `POST /run` đều đã có `Depends(get_current_user)` + lọc `user_id`; `POST /run` gọi `execute_schedule_action(db, sch.user_id, sch.brand, sch.device_id, ...)` đúng chữ ký hiện tại của `scheduler.py`.
+  - GET/POST/PATCH schedules đã lọc/gắn `user_id` (đa người dùng); POST kiểm tra `device_id` thuộc user (`_get_owned_device`) trước khi tạo lịch.
   - Múi giờ cố định `ZoneInfo("Asia/Ho_Chi_Minh")` (server Render chạy UTC) — cần `tzdata` trong requirements.
   - ⚠️ Phụ thuộc server luôn thức (UptimeRobot ping `/health`); ổ đĩa Render free ephemeral → lịch mất khi **redeploy** (nâng cấp DB ngoài nếu cần bền).
   - Form frontend: `SegmentedButton` "Một mốc"/"Khoảng"; Khoảng hiện thêm tile Giờ kết thúc + chip Hành động kết thúc (đổi thiết bị reset cả 2 action key); end == start chặn bằng snackbar, end < start hiện ghi chú "Kết thúc vào ngày hôm sau (lịch qua đêm)". Card khoảng hiện `"16:30 → 17:30"` (fontSize 18, qua đêm thêm `⁺¹`) + `"Lọc Cao → Lọc TB • <tên>"` (`_actionSummary`); tag "1 lần" khi `oneShot`. Hành động theo **loại thiết bị** (`device_type.dart`): máy lọc = Bật/Tắt/Thấp/TB/Cao/Auto/Ngủ; cửa = Mở/Đóng; máy ăn = Nhả 1-3 phần. Tap card để sửa; Switch bật/tắt lịch (PATCH); nút xóa có dialog xác nhận.
 
 ### Quản lý thiết bị (devices)
-- **Status:** ✅ done
-- **Backend:** `DeviceModel` (`models/device.py`) · `/api/devices` GET/POST/DELETE (`main.py:118-155`).
+- **Status:** ✅ done (đã lọc theo user_id — xem feature "Đa người dùng" cho ngữ cảnh multi-tenant)
+- **Backend:** `DeviceModel` (`models/device.py`) · `/api/devices` GET/POST/DELETE (`main.py`, đều `Depends(get_current_user)` + lọc `user_id`).
 - **Frontend:** `device_api.dart` (`fetchDevices`/`fetchStatus`/`sendMode`/`sendAction`) · `dashboard_tab.dart` (list + card).
-- **Key logic:** DeviceModel chỉ có id/name/brand/is_active — KHÔNG có icon/category; loại thiết bị suy từ TÊN phía client qua `core/device_type.dart` (**nơi duy nhất**: 'lọc'→airPurifier, 'cửa'→curtain, 'mèo'/'ăn'→feeder) — dùng chung bởi dashboard, widget_service, schedule_tab. Card máy lọc & cửa có nhãn trạng thái sống (`statusLabel`) đọc từ `/status`. Base URL/timeout gom về `core/config.dart` (`AppConfig`).
+- **Key logic:** DeviceModel có `user_id` (chủ sở hữu), `category` (cột mới, tùy chọn — CHƯA dùng ở frontend), `sort_order`, `created_at`; loại thiết bị hiển thị vẫn suy từ TÊN phía client qua `core/device_type.dart` (**nơi duy nhất**: 'lọc'→airPurifier, 'cửa'→curtain, 'mèo'/'ăn'→feeder) — dùng chung bởi dashboard, widget_service, schedule_tab. Card máy lọc & cửa có nhãn trạng thái sống (`statusLabel`) đọc từ `/status`. Base URL/timeout gom về `core/config.dart` (`AppConfig`). ⚠️ Frontend hiện KHÔNG gửi Authorization header nên các request sẽ 401 trừ khi backend bật `AUTH_DISABLED=1`.
 
 ### Điều khiển bật/tắt & chế độ
 - **Status:** ✅ done
-- **Backend:** `/api/test-control/{brand}/{id}?action=` và `/mode?mode=` (`main.py`) → connector `turn_on/turn_off/set_mode`.
+- **Backend:** `/api/test-control/{brand}/{id}?action=` và `/mode?mode=` (`main.py`) → `_get_owned_device` (kiểm tra sở hữu) → `connector_factory.get_user_connector(db, user_id, brand)` → `turn_on/turn_off/set_mode`.
 - **Frontend:** `DeviceApi.sendMode`/`sendAction` · nút mode + switch trong `dashboard_tab.dart`.
 - **Key logic:**
   - Endpoint kiểm tra `bool` connector trả về — lệnh thất bại → `{status:"error"}` (không còn luôn "success"). `DeviceApi._isOk` đọc `body['status']` chứ không chỉ HTTP 200.
+  - Connector không còn resolve tĩnh qua `device_manager` — đi qua `connector_factory.get_user_connector` để VeSync dùng đúng tài khoản của user (Tuya/Rojeco vẫn singleton chung project). Lỗi resolve (chưa kết nối VeSync) ném `ValueError` → endpoint bắt riêng, trả `{status:"error", message:...}`.
   - Frontend: `_sending` chặn double-tap; `_pendingMode` tô sáng lạc quan nút vừa bấm. **Reconcile theo giá trị**: `_refreshStatus` chỉ xóa `_pendingMode` khi `_currentModeValue(status thật)` KHỚP mode vừa bấm (hoặc quá hạn `_pendingSince` ~10s) → highlight KHÔNG nhảy về mode cũ khi cloud chưa propagate. `_refreshAfterCommand` poll lại nhiều nhịp (~0.7/1.3/2/3s) với `fresh=true` (bỏ cache), dừng sớm khi đã khớp.
   - Nút cửa (Mở/Dừng/Đóng) KHÔNG bị khóa — luôn bấm được; tô sáng nút khớp `door_state` (`activeDoorMode`). Backend tự chèn `stop` trước open/close nên an toàn.
   - Connector Tuya/Rojeco dùng `asyncio.to_thread` cho call HTTP đồng bộ → không block event loop. Mode phụ thuộc brand (tuya: open/close/stop; vesync: low/med/high/auto/sleep/off).
 
 ### Trạng thái sống thiết bị
 - **Status:** ✅ done
-- **Backend:** `/api/devices/{brand}/{id}/status` (`main.py`, opt `?fresh=1` bỏ cache) → `connector.get_device_state`; cache in-memory TTL ~3s (`_status_cache`), tự xóa sau mỗi lệnh điều khiển.
+- **Backend:** `/api/devices/{brand}/{id}/status` (`main.py`, opt `?fresh=1` bỏ cache) → `connector_factory.get_user_connector` → `connector.get_device_state`; cache in-memory TTL ~3s (`_status_cache`, key `(user_id, brand, device_id)` — tránh rò rỉ trạng thái giữa các user), tự xóa sau mỗi lệnh điều khiển.
 - **Frontend:** `DeviceApi.fetchStatus(brand, id, {fresh})` (`device_api.dart`) — dùng ở dashboard & shortcut handler; card máy lọc/cửa tự động poll `Timer.periodic(6s)` (dùng cache), refresh sau lệnh dùng `fresh:true`. **Poll tự tạm dừng** khi tab Home ẩn (`DashboardTab.isVisible` từ IndexedStack) hoặc app vào nền (`WidgetsBindingObserver`), refresh ngay khi hiển thị lại (`didUpdateWidget` + `_setPolling`). Card báo ON/OFF thật về parent qua `onStatusChanged` → header đếm "Đang bật" chính xác (trước đây chỉ đếm `is_active` tĩnh).
 - **Key logic:** shape khác nhau theo brand; field chung là `status` (ON/OFF/offline). Tuya thêm `door_state`/`position`; VeSync thêm `mode`/`speed`. ⚠️ Rojeco stub luôn "ON".
   - VeSync connector viết cho pyvesync 3.4.2: `_read()` ưu tiên `purifier.state.*` (tránh property deprecated), bọc try/except. `set_mode` ưu tiên API mới `set_fan_speed`/`set_auto_mode`/`set_sleep_mode` (fallback hàm cũ), validate theo `purifier.fan_levels`.
@@ -117,7 +131,7 @@
 ### Cấu hình & bảo mật (env)
 - **Status:** ✅ done
 - **Backend:** `load_dotenv()` đầu `main.py` · `backend/.env` (thật, gitignore) · `backend/.env.example` (mẫu).
-- **Key logic:** `VESYNC_EMAIL/PASSWORD` (main.py), `TUYA_ACCESS_ID/KEY/API_ENDPOINT` (tuya_connector + rojeco_connector dùng chung), `OPENROUTER_API_KEY` (ai_parser). Trên Render set qua Dashboard > Environment. Lifespan bọc try/except từng connector — 1 hãng lỗi không sập app; Tuya/Rojeco `connect()` chạy `asyncio.to_thread` và chỉ set `is_connected` khi token response `success`.
+- **Key logic:** `TUYA_ACCESS_ID/KEY/API_ENDPOINT` (+ `TUYA_APP_SCHEMA` tùy chọn — tuya_connector + rojeco_connector dùng chung), `OPENROUTER_API_KEY` (ai_parser), và bộ multi-user `DATABASE_URL`/`SUPABASE_JWT_SECRET`/`FERNET_KEY`/`ADMIN_EMAILS`/`AUTH_DISABLED` (xem feature "Đa người dùng"). ⚠️ `VESYNC_EMAIL/PASSWORD` KHÔNG còn dùng (đã bỏ khỏi lifespan). Trên Render set qua Dashboard > Environment. Lifespan bọc try/except từng connector (Tuya/Rojeco) — 1 hãng lỗi không sập app; `connect()` chạy `asyncio.to_thread` và chỉ set `is_connected` khi token response `success`.
 
 ---
 
@@ -125,5 +139,6 @@
 
 | Table | Status | Ghi chú |
 |---|---|---|
-| devices (`DeviceModel`) | ✅ | id, name, brand, is_active. Thiếu icon/category. |
-| schedules (`ScheduleModel`) | ✅ | id, name, brand, device_id, action_type, action_value, time, days, enabled, last_fired_date + end_time, end_action_type, end_action_value, last_end_fired_date, one_shot (lịch khoảng/one-shot; cột mới qua `run_startup_migrations`). ⚠️ Ephemeral trên Render free (mất khi redeploy). |
+| devices (`DeviceModel`) | ✅ | id (vendor device id), user_id, name, brand, category (tùy chọn, chưa dùng ở FE), is_active, sort_order, created_at. |
+| schedules (`ScheduleModel`) | ✅ | id, user_id, name, brand, device_id, action_type, action_value, time, days, enabled, last_fired_date + end_time, end_action_type, end_action_value, last_end_fired_date, one_shot (lịch khoảng/one-shot). Cột SQLite mới qua `run_startup_migrations`; Postgres qua `supabase_schema.sql`. ⚠️ Ephemeral trên Render free NẾU dùng SQLite (mất khi redeploy) — Postgres/Supabase thì bền. |
+| vendor_accounts (`VendorAccountModel`) | 🚧 | id, user_id, brand (vesync\|tuya), credentials_encrypted (Fernet), tuya_uid, label, status, created_at. Model + schema đã có nhưng **chưa có endpoint ghi vào bảng này** — không tạo được qua API hiện tại. |

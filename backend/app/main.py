@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from pydantic import BaseModel
-from fastapi import FastAPI, WebSocket, Depends
+from fastapi import FastAPI, WebSocket, Depends, HTTPException
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -24,8 +24,8 @@ from sqlalchemy.orm import Session
 from app.services.local_parser import parse_command_locally
 from app.services.connector_manager import device_manager
 from app.services.tuya_connector import TuyaConnector
-from app.services.vesync_connector import VeSyncConnector
 from app.services.rojeco_connector import RojecoConnector
+from app.services import connector_factory
 
 # Import AI Parser (Đã đổi thành AI dùng cho OpenRouter)
 from app.services.ai_parser import parse_command_with_ai
@@ -37,10 +37,13 @@ from app.services.vn_time_parser import resolve_target_days
 # Tạm thời comment Automation Engine để tránh lỗi chưa hoàn thiện
 # from app.services.automation_engine import automation_engine, AutomationRule
 
-# Import Database
-from app.core.database import SessionLocal, engine, Base, get_db, run_startup_migrations
+# Import Database + Auth
+from app.core.database import get_db, init_db
+from app.core.auth import get_current_user, require_admin, CurrentUser
+from app.core.crypto import encrypt_json
 from app.models.device import DeviceModel
-from app.models.schedule import ScheduleModel  # đăng ký bảng schedules với Base
+from app.models.schedule import ScheduleModel        # đăng ký bảng schedules với Base
+from app.models.vendor_account import VendorAccountModel
 
 import time
 from fastapi import Request
@@ -71,8 +74,7 @@ if hasattr(sys.stderr, "reconfigure"):
 # Tạo Database
 # =========================================================
 logger.info("Đang khởi tạo Database...")
-Base.metadata.create_all(bind=engine)
-run_startup_migrations(engine)  # thêm cột mới vào bảng cũ (create_all không ALTER)
+init_db()  # SQLite: create_all + ALTER cột thiếu. Postgres: schema qua SQL file.
 
 # =========================================================
 # Lifespan: khởi động connector + vòng lặp Hẹn giờ (Scheduler)
@@ -92,11 +94,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Lỗi khởi động connector {brand}: {e}")
 
+    # Tuya/Rojeco dùng chung 1 project (token chung) -> singleton toàn app.
+    # VeSync KHÔNG khởi tạo ở đây nữa: mỗi user 1 tài khoản riêng, connector
+    # tạo lười theo user qua connector_factory khi có lệnh.
     await _init_connector("tuya", TuyaConnector)
-    await _init_connector("vesync", lambda: VeSyncConnector(
-        email=os.getenv("VESYNC_EMAIL", ""),
-        password=os.getenv("VESYNC_PASSWORD", ""),
-    ))
     await _init_connector("rojeco", RojecoConnector)
 
     # --- Vòng lặp Hẹn giờ (server luôn thức nhờ UptimeRobot ping /health) ---
@@ -114,33 +115,67 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Smart Home System API", lifespan=lifespan)
 
+# App mobile native không bị ràng buộc CORS; nếu dùng web thì set ALLOWED_ORIGINS
+# (CSV) trong env. Dùng Bearer token (không dùng cookie) nên allow_credentials=False.
+_allowed = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_allowed or ["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =========================================================
-# API - Get Devices
+# Helper thiết bị (serialize + kiểm tra sở hữu)
+# =========================================================
+def _device_to_dict(d: DeviceModel) -> dict:
+    return {
+        "id": d.id, "name": d.name, "brand": d.brand,
+        "category": d.category, "is_active": bool(d.is_active),
+        "sort_order": d.sort_order or 0,
+    }
+
+def _get_owned_device(db: Session, user: CurrentUser, device_id: str) -> DeviceModel:
+    """Lấy thiết bị THUỘC user hiện tại; 404 nếu không có/không phải của họ."""
+    dev = (db.query(DeviceModel)
+             .filter(DeviceModel.id == device_id,
+                     DeviceModel.user_id == user.user_id)
+             .first())
+    if not dev:
+        raise HTTPException(404, "Không tìm thấy thiết bị của bạn.")
+    return dev
+
+# =========================================================
+# API - Get Devices (scope theo user)
 # =========================================================
 @app.get("/api/devices")
-async def get_all_devices(db: Session = Depends(get_db)):
-    devices = db.query(DeviceModel).all()
-    return {"status": "success", "data": devices}
+async def get_all_devices(user: CurrentUser = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    devices = (db.query(DeviceModel)
+                 .filter(DeviceModel.user_id == user.user_id)
+                 .order_by(DeviceModel.sort_order, DeviceModel.name)
+                 .all())
+    return {"status": "success", "data": [_device_to_dict(d) for d in devices]}
 
 # =========================================================
 # API - Add & Delete Device
 # =========================================================
 @app.post("/api/devices")
-async def add_device(id: str, name: str, brand: str, db: Session = Depends(get_db)):
+async def add_device(id: str, name: str, brand: str,
+                     user: CurrentUser = Depends(get_current_user),
+                     db: Session = Depends(get_db)):
     try:
-        new_device = DeviceModel(id=id, name=name, brand=brand, is_active=True)
+        existing = db.query(DeviceModel).filter(DeviceModel.id == id).first()
+        if existing:
+            if existing.user_id != user.user_id:
+                return {"status": "error", "message": "Thiết bị đã thuộc người dùng khác."}
+            return {"status": "success", "message": "Thiết bị đã có sẵn."}
+        new_device = DeviceModel(id=id, user_id=user.user_id, name=name,
+                                 brand=brand, is_active=True)
         db.add(new_device)
         db.commit()
-        db.refresh(new_device)
-        logger.info(f"Đã thêm thiết bị mới: {name} ({brand})")
+        logger.info(f"Đã thêm thiết bị mới: {name} ({brand}) cho user {user.user_id}")
         return {"status": "success", "message": f"Đã thêm: {name}"}
     except Exception as e:
         db.rollback()
@@ -148,10 +183,14 @@ async def add_device(id: str, name: str, brand: str, db: Session = Depends(get_d
         return {"status": "error", "message": f"Lỗi: {str(e)}"}
 
 @app.delete("/api/devices/{device_id}")
-async def delete_device(device_id: str, db: Session = Depends(get_db)):
-    # Dùng Depends(get_db) để session luôn được đóng (kể cả khi lỗi) — tránh leak.
+async def delete_device(device_id: str,
+                        user: CurrentUser = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
     try:
-        device = db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
+        device = (db.query(DeviceModel)
+                    .filter(DeviceModel.id == device_id,
+                            DeviceModel.user_id == user.user_id)
+                    .first())
         if device:
             db.delete(device)
             db.commit()
@@ -164,54 +203,61 @@ async def delete_device(device_id: str, db: Session = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 # =========================================================
-# CACHE TRẠNG THÁI NGẮN HẠN
-# Poll định kỳ từ nhiều card có thể gọi status liên tục -> cache ~3s để
-# giảm số lần gọi cloud (Tuya/VeSync), tăng tốc phản hồi. Bị xóa ngay sau
-# mỗi lệnh điều khiển để lần đọc kế tiếp lấy trạng thái mới.
+# CACHE TRẠNG THÁI NGẮN HẠN (key theo user để không rò rỉ giữa các user)
 # =========================================================
 _STATUS_CACHE_TTL = 3.0  # giây
-_status_cache: dict = {}  # {(brand, device_id): (monotonic_ts, data)}
+_status_cache: dict = {}  # {(user_id, brand, device_id): (monotonic_ts, data)}
 
-def _cache_get(brand: str, device_id: str):
-    entry = _status_cache.get((brand, device_id))
+def _cache_get(user_id: str, brand: str, device_id: str):
+    entry = _status_cache.get((user_id, brand, device_id))
     if entry and (time.monotonic() - entry[0]) < _STATUS_CACHE_TTL:
         return entry[1]
     return None
 
-def _cache_set(brand: str, device_id: str, data):
-    _status_cache[(brand, device_id)] = (time.monotonic(), data)
+def _cache_set(user_id: str, brand: str, device_id: str, data):
+    _status_cache[(user_id, brand, device_id)] = (time.monotonic(), data)
 
-def _cache_invalidate(brand: str, device_id: str):
-    _status_cache.pop((brand, device_id), None)
+def _cache_invalidate(user_id: str, brand: str, device_id: str):
+    _status_cache.pop((user_id, brand, device_id), None)
 
 # =========================================================
 # API - Test Control Device (Action & Mode)
 # =========================================================
 @app.get("/api/test-control/{brand}/{device_id}")
-async def test_control(brand: str, device_id: str, action: str = "on"):
+async def test_control(brand: str, device_id: str, action: str = "on",
+                       user: CurrentUser = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
     try:
-        connector = device_manager.get_connector(brand)
+        _get_owned_device(db, user, device_id)  # 404 nếu không phải thiết bị của user
+        connector = await connector_factory.get_user_connector(db, user.user_id, brand)
         if action == "on":
             ok = await connector.turn_on(device_id)
         else:
             ok = await connector.turn_off(device_id)
-        _cache_invalidate(brand, device_id)
+        _cache_invalidate(user.user_id, brand, device_id)
         if not ok:
             logger.warning(f"Lệnh {action} cho {device_id} qua {brand} không thành công")
             return {"status": "error", "message": f"Thiết bị {device_id} không nhận lệnh {action}"}
         logger.info(f"Đã thực hiện lệnh {action} cho thiết bị {device_id} qua {brand}")
         return {"status": "success", "message": f"Đã {action} thiết bị {device_id} ({brand})"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     except Exception as e:
         logger.error(f"Lỗi điều khiển {brand}: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/test-control/{brand}/{device_id}/mode")
-async def test_control_mode(brand: str, device_id: str, mode: str):
+async def test_control_mode(brand: str, device_id: str, mode: str,
+                            user: CurrentUser = Depends(get_current_user),
+                            db: Session = Depends(get_db)):
     try:
-        connector = device_manager.get_connector(brand)
+        _get_owned_device(db, user, device_id)
+        connector = await connector_factory.get_user_connector(db, user.user_id, brand)
         if hasattr(connector, 'set_mode'):
             ok = await connector.set_mode(device_id, mode)
-            _cache_invalidate(brand, device_id)
+            _cache_invalidate(user.user_id, brand, device_id)
             if not ok:
                 logger.warning(f"Đổi chế độ {mode} cho {device_id} qua {brand} không thành công")
                 return {"status": "error", "message": f"Thiết bị không nhận chế độ {mode}"}
@@ -219,6 +265,10 @@ async def test_control_mode(brand: str, device_id: str, mode: str):
             return {"status": "success", "message": f"Đã chuyển sang chế độ {mode}"}
         else:
             return {"status": "error", "message": "Thiết bị không hỗ trợ đổi chế độ"}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     except Exception as e:
         logger.error(f"Lỗi đổi chế độ {brand}: {e}")
         return {"status": "error", "message": str(e)}
@@ -227,23 +277,255 @@ async def test_control_mode(brand: str, device_id: str, mode: str):
 # API - Lấy trạng thái THẬT của thiết bị (query từ phần cứng)
 # =========================================================
 @app.get("/api/devices/{brand}/{device_id}/status")
-async def get_device_status(brand: str, device_id: str, fresh: bool = False):
+async def get_device_status(brand: str, device_id: str, fresh: bool = False,
+                            user: CurrentUser = Depends(get_current_user),
+                            db: Session = Depends(get_db)):
     try:
+        _get_owned_device(db, user, device_id)
         # fresh=1: bỏ qua cache (client gọi ngay sau lệnh điều khiển để lấy
         # trạng thái mới nhất). Poll định kỳ vẫn dùng cache bình thường.
         if not fresh:
-            cached = _cache_get(brand, device_id)
+            cached = _cache_get(user.user_id, brand, device_id)
             if cached is not None:
                 return {"status": "success", "data": cached, "cached": True}
-        connector = device_manager.get_connector(brand)
+        connector = await connector_factory.get_user_connector(db, user.user_id, brand)
         if not connector:
             return {"status": "error", "message": f"Không tìm thấy connector cho {brand}"}
         state = await connector.get_device_state(device_id)
-        _cache_set(brand, device_id, state)
+        _cache_set(user.user_id, brand, device_id, state)
         return {"status": "success", "data": state}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     except Exception as e:
         logger.error(f"Lỗi lấy trạng thái {brand}/{device_id}: {e}")
         return {"status": "error", "message": str(e)}
+
+# =========================================================
+# API - Tài khoản người dùng
+# =========================================================
+@app.get("/api/me")
+async def get_me(user: CurrentUser = Depends(get_current_user)):
+    return {"status": "success", "data": {
+        "user_id": user.user_id, "email": user.email, "is_admin": user.is_admin,
+    }}
+
+# =========================================================
+# Helper: vendor account + import thiết bị
+# =========================================================
+def _upsert_vendor_account(db: Session, user_id: str, brand: str, *,
+                           credentials: dict | None = None, tuya_uid: str | None = None,
+                           label: str = "", status: str = "connected") -> VendorAccountModel:
+    acc = (db.query(VendorAccountModel)
+             .filter(VendorAccountModel.user_id == user_id,
+                     VendorAccountModel.brand == brand).first())
+    if not acc:
+        acc = VendorAccountModel(user_id=user_id, brand=brand)
+        db.add(acc)
+    if credentials is not None:
+        acc.credentials_encrypted = encrypt_json(credentials)
+    if tuya_uid is not None:
+        acc.tuya_uid = tuya_uid
+    if label:
+        acc.label = label
+    acc.status = status
+    db.commit()
+    db.refresh(acc)
+    return acc
+
+def _import_devices_for(db: Session, user_id: str, items: list) -> dict:
+    """Thêm hàng loạt thiết bị cho user_id. Bỏ qua thiết bị đã thuộc user KHÁC."""
+    added, skipped = 0, 0
+    for it in items:
+        did = (it.get("id") or "").strip()
+        if not did:
+            skipped += 1
+            continue
+        existing = db.query(DeviceModel).filter(DeviceModel.id == did).first()
+        if existing:
+            skipped += 1
+            continue
+        db.add(DeviceModel(
+            id=did, user_id=user_id, name=(it.get("name") or did),
+            brand=(it.get("brand") or "").lower() or "tuya",
+            category=it.get("category"), is_active=True,
+        ))
+        added += 1
+    db.commit()
+    return {"added": added, "skipped": skipped}
+
+def _map_tuya_device(d: dict) -> dict:
+    cat = d.get("category") or ""
+    # Máy cho ăn thú cưng (cwwsq...) -> gợi ý brand rojeco; còn lại tuya.
+    suggested = "rojeco" if str(cat).startswith("cww") else "tuya"
+    return {
+        "id": d.get("id"), "name": d.get("name") or d.get("id"),
+        "category": cat, "product_name": d.get("product_name"),
+        "online": d.get("online"), "suggested_brand": suggested,
+    }
+
+# =========================================================
+# API - Kết nối nhà cung cấp & khám phá thiết bị
+# =========================================================
+class VeSyncConnect(BaseModel):
+    email: str
+    password: str
+
+class ImportItem(BaseModel):
+    id: str
+    name: str | None = None
+    brand: str
+    category: str | None = None
+
+class ImportBody(BaseModel):
+    devices: list[ImportItem]
+
+@app.get("/api/vendor/accounts")
+async def list_vendor_accounts(user: CurrentUser = Depends(get_current_user),
+                               db: Session = Depends(get_db)):
+    accs = db.query(VendorAccountModel).filter(VendorAccountModel.user_id == user.user_id).all()
+    return {"status": "success", "data": [{
+        "brand": a.brand, "label": a.label, "status": a.status,
+        "has_tuya_uid": bool(a.tuya_uid),
+    } for a in accs]}
+
+@app.post("/api/vendor/vesync/connect")
+async def vesync_connect(body: VeSyncConnect,
+                         user: CurrentUser = Depends(get_current_user),
+                         db: Session = Depends(get_db)):
+    """Đăng nhập VeSync, trả danh sách thiết bị để user chọn. Lưu credential mã hóa."""
+    try:
+        devices = await connector_factory.discover_vesync(body.email, body.password)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    except Exception as e:
+        logger.error(f"[VeSync Connect] {e}")
+        return {"status": "error", "message": "Lỗi kết nối VeSync."}
+    _upsert_vendor_account(db, user.user_id, "vesync",
+                           credentials={"email": body.email, "password": body.password},
+                           label=body.email)
+    connector_factory.invalidate_user(user.user_id)  # buộc dùng creds mới
+    return {"status": "success", "data": [{
+        "id": d["cid"], "name": d["name"], "brand": "vesync",
+        "device_type": d["device_type"],
+    } for d in devices if d.get("cid")]}
+
+@app.post("/api/devices/import")
+async def import_devices(body: ImportBody,
+                         user: CurrentUser = Depends(get_current_user),
+                         db: Session = Depends(get_db)):
+    result = _import_devices_for(db, user.user_id, [i.model_dump() for i in body.devices])
+    logger.info(f"Import thiết bị cho {user.user_id}: {result}")
+    return {"status": "success", "data": result}
+
+@app.get("/api/vendor/tuya/link-info")
+async def tuya_link_info(user: CurrentUser = Depends(get_current_user)):
+    """Hướng dẫn liên kết tài khoản Tuya/Smart Life vào project (QR ở Tuya console)."""
+    return {"status": "success", "data": {
+        "steps": [
+            "Mở app Smart Life / Tuya Smart trên điện thoại.",
+            "Vào Tôi (Me) → Cài đặt (⚙) → quét mã QR.",
+            "Quét mã QR 'Link App Account' mà quản trị viên cung cấp (từ Tuya IoT console).",
+            "Xác nhận đăng nhập. Sau đó báo quản trị viên để gán thiết bị của bạn vào tài khoản.",
+        ],
+        "note": "Do Tuya không còn API đăng nhập email/mật khẩu, bước liên kết QR này cần quản trị viên hỗ trợ 1 lần.",
+    }}
+
+@app.post("/api/vendor/tuya/discover")
+async def tuya_discover(user: CurrentUser = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    """Liệt kê thiết bị Tuya của user (cần đã có tuya_uid do admin gán)."""
+    acc = (db.query(VendorAccountModel)
+             .filter(VendorAccountModel.user_id == user.user_id,
+                     VendorAccountModel.brand == "tuya").first())
+    if not acc or not acc.tuya_uid:
+        return {"status": "error",
+                "message": "Chưa liên kết Tuya. Hãy quét QR & nhờ quản trị viên gán tài khoản."}
+    try:
+        tuya = device_manager.get_connector("tuya")
+        raw = await tuya.list_user_devices(acc.tuya_uid)
+        return {"status": "success", "data": [_map_tuya_device(d) for d in raw]}
+    except Exception as e:
+        logger.error(f"[Tuya Discover] {e}")
+        return {"status": "error", "message": "Lỗi lấy thiết bị Tuya."}
+
+# =========================================================
+# API - Admin (chỉ role admin)
+# =========================================================
+class AdminImportBody(BaseModel):
+    user_id: str
+    devices: list[ImportItem]
+
+class TuyaAssignBody(BaseModel):
+    user_id: str
+    tuya_uid: str
+
+@app.get("/api/admin/users")
+async def admin_list_users(_: CurrentUser = Depends(require_admin),
+                           db: Session = Depends(get_db)):
+    from sqlalchemy import func, text as _text
+    from app.core.database import IS_SQLITE
+    # Đếm thiết bị theo user
+    counts = dict(db.query(DeviceModel.user_id, func.count(DeviceModel.id))
+                    .group_by(DeviceModel.user_id).all())
+    users = []
+    if not IS_SQLITE:
+        rows = db.execute(_text(
+            "select id::text as id, email, display_name, role from public.profiles order by created_at"
+        )).mappings().all()
+        for r in rows:
+            users.append({"user_id": r["id"], "email": r["email"],
+                          "display_name": r["display_name"], "role": r["role"],
+                          "device_count": counts.get(r["id"], 0)})
+    else:
+        for uid, cnt in counts.items():
+            users.append({"user_id": uid, "email": None, "display_name": None,
+                          "role": None, "device_count": cnt})
+    return {"status": "success", "data": users}
+
+@app.get("/api/admin/users/{target_user_id}/devices")
+async def admin_user_devices(target_user_id: str,
+                             _: CurrentUser = Depends(require_admin),
+                             db: Session = Depends(get_db)):
+    devices = db.query(DeviceModel).filter(DeviceModel.user_id == target_user_id).all()
+    return {"status": "success", "data": [_device_to_dict(d) for d in devices]}
+
+@app.post("/api/admin/devices/import")
+async def admin_import_devices(body: AdminImportBody,
+                               _: CurrentUser = Depends(require_admin),
+                               db: Session = Depends(get_db)):
+    result = _import_devices_for(db, body.user_id, [i.model_dump() for i in body.devices])
+    return {"status": "success", "data": result}
+
+@app.get("/api/admin/tuya/linked")
+async def admin_tuya_linked(_: CurrentUser = Depends(require_admin)):
+    """Liệt kê các tài khoản Tuya đã liên kết vào project + thiết bị của từng account."""
+    schema = os.getenv("TUYA_APP_SCHEMA", "").strip()
+    if not schema:
+        return {"status": "error", "message": "Chưa cấu hình TUYA_APP_SCHEMA trong env."}
+    try:
+        tuya = device_manager.get_connector("tuya")
+        users = await tuya.list_app_users(schema)
+        out = []
+        for u in users:
+            uid = u.get("uid") or u.get("user_id")
+            devs = await tuya.list_user_devices(uid) if uid else []
+            out.append({"uid": uid, "raw": u,
+                        "devices": [_map_tuya_device(d) for d in devs]})
+        return {"status": "success", "data": out}
+    except Exception as e:
+        logger.error(f"[Admin Tuya Linked] {e}")
+        return {"status": "error", "message": "Lỗi lấy danh sách tài khoản Tuya."}
+
+@app.post("/api/admin/vendor/tuya/assign")
+async def admin_tuya_assign(body: TuyaAssignBody,
+                            _: CurrentUser = Depends(require_admin),
+                            db: Session = Depends(get_db)):
+    """Gán 1 tuya_uid (tài khoản Tuya đã liên kết) cho 1 app user."""
+    _upsert_vendor_account(db, body.user_id, "tuya", tuya_uid=body.tuya_uid,
+                           label=f"uid:{body.tuya_uid[:8]}")
+    return {"status": "success", "message": "Đã gán tài khoản Tuya cho người dùng."}
 
 # =========================================================
 # API - Nhận Lệnh Giọng Nói (AI OpenRouter)
@@ -272,7 +554,7 @@ def _verb_to_schedule_action(verb: str | None, mode: str | None) -> tuple[str | 
         return "mode", mode
     return None, None
 
-def _create_schedule_from_intent(action: dict, devices: list, db: Session) -> dict:
+def _create_schedule_from_intent(action: dict, devices: list, db: Session, user_id: str) -> dict:
     """
     Tạo lịch hẹn từ intent 'schedule' của local parser / AI.
     Trả về bubble chat {"device_name","action","success"} — KHÔNG chạm connector.
@@ -297,7 +579,7 @@ def _create_schedule_from_intent(action: dict, devices: list, db: Session) -> di
             bool(action.get("recurring_daily", False)), datetime.now(TZ),
         )
         sch = _create_schedule_row(
-            db, name="Tạo bởi trợ lý", brand=action.get("brand"), device_id=dev_id,
+            db, user_id=user_id, name="Tạo bởi trợ lý", brand=action.get("brand"), device_id=dev_id,
             action_type=action_type, action_value=action_value,
             time=action.get("time", ""), days=days,
             end_time=end_time, end_action_type=end_action_type,
@@ -324,9 +606,11 @@ class VoiceCommand(BaseModel):
     text: str
 
 @app.post("/api/ai/parse")
-async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_db)):
+async def parse_voice_command(command: VoiceCommand,
+                              user: CurrentUser = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
     # Depends(get_db): session tự đóng kể cả khi query lỗi — tránh leak.
-    devices = db.query(DeviceModel).all()
+    devices = db.query(DeviceModel).filter(DeviceModel.user_id == user.user_id).all()
 
     text_lower = command.text.lower()
     logger.info(f"Nhận lệnh giọng nói: '{command.text}'")
@@ -361,7 +645,7 @@ async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_d
     async def execute_single_action(action):
         # Ý ĐỊNH HẸN GIỜ: tạo lịch trong DB, TUYỆT ĐỐI không gọi connector.
         if action.get("intent") == "schedule":
-            return _create_schedule_from_intent(action, devices, db)
+            return _create_schedule_from_intent(action, devices, db, user.user_id)
 
         brand = action.get("brand")
         dev_id = action.get("id")
@@ -384,7 +668,8 @@ async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_d
 
         success = False
         try:
-            connector = device_manager.get_connector(brand)
+            # Chỉ điều khiển thiết bị THUỘC user (devices đã scope theo user_id).
+            connector = await connector_factory.get_user_connector(db, user.user_id, brand)
             if connector:
                 if is_off:
                     success = await connector.turn_off(dev_id)
@@ -394,7 +679,7 @@ async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_d
                     success = await connector.set_mode(dev_id, mode)
             # FIX: invalidate cache như các endpoint control — để lần đọc
             # trạng thái kế tiếp không dính bản cache cũ (~3s).
-            _cache_invalidate(brand, dev_id)
+            _cache_invalidate(user.user_id, brand, dev_id)
         except Exception as e:
             logger.error(f"[AI Execution Error] {e}")
 
@@ -484,7 +769,7 @@ def _validate_schedule_fields(action_type: str | None, action_value: str | None,
         return "Lịch khoảng cần đủ giờ kết thúc và hành động kết thúc"
     return None
 
-def _create_schedule_row(db: Session, *, name: str, brand: str, device_id: str,
+def _create_schedule_row(db: Session, *, user_id: str, name: str, brand: str, device_id: str,
                          action_type: str, action_value: str | None, time: str,
                          days: str = "", enabled: bool = True,
                          end_time: str | None = None, end_action_type: str | None = None,
@@ -497,7 +782,7 @@ def _create_schedule_row(db: Session, *, name: str, brand: str, device_id: str,
     if err:
         raise ValueError(err)
     sch = ScheduleModel(
-        name=name, brand=brand, device_id=device_id,
+        user_id=user_id, name=name, brand=brand, device_id=device_id,
         action_type=action_type, action_value=action_value,
         time=time, days=days, enabled=enabled,
         end_time=end_time, end_action_type=end_action_type,
@@ -523,21 +808,29 @@ def _schedule_to_dict(s: ScheduleModel) -> dict:
     }
 
 @app.get("/api/schedules")
-async def list_schedules(db: Session = Depends(get_db)):
-    schedules = db.query(ScheduleModel).order_by(ScheduleModel.time).all()
+async def list_schedules(user: CurrentUser = Depends(get_current_user),
+                         db: Session = Depends(get_db)):
+    schedules = (db.query(ScheduleModel)
+                   .filter(ScheduleModel.user_id == user.user_id)
+                   .order_by(ScheduleModel.time).all())
     return {"status": "success", "data": [_schedule_to_dict(s) for s in schedules]}
 
 @app.post("/api/schedules")
-async def create_schedule(body: ScheduleCreate, db: Session = Depends(get_db)):
+async def create_schedule(body: ScheduleCreate,
+                          user: CurrentUser = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
     try:
+        _get_owned_device(db, user, body.device_id)  # chỉ hẹn cho thiết bị của mình
         sch = _create_schedule_row(
-            db, name=body.name, brand=body.brand, device_id=body.device_id,
+            db, user_id=user.user_id, name=body.name, brand=body.brand, device_id=body.device_id,
             action_type=body.action_type, action_value=body.action_value,
             time=body.time, days=body.days, enabled=body.enabled,
             end_time=body.end_time, end_action_type=body.end_action_type,
             end_action_value=body.end_action_value, one_shot=body.one_shot,
         )
         return {"status": "success", "data": _schedule_to_dict(sch)}
+    except HTTPException:
+        raise
     except ValueError as e:
         return {"status": "error", "message": str(e)}
     except Exception as e:
@@ -546,8 +839,12 @@ async def create_schedule(body: ScheduleCreate, db: Session = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 @app.patch("/api/schedules/{schedule_id}")
-async def update_schedule(schedule_id: int, body: ScheduleUpdate, db: Session = Depends(get_db)):
-    sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
+async def update_schedule(schedule_id: int, body: ScheduleUpdate,
+                          user: CurrentUser = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    sch = (db.query(ScheduleModel)
+             .filter(ScheduleModel.id == schedule_id,
+                     ScheduleModel.user_id == user.user_id).first())
     if not sch:
         return {"status": "error", "message": "Không tìm thấy lịch."}
     fields = body.model_dump(exclude_unset=True)
@@ -584,8 +881,12 @@ async def update_schedule(schedule_id: int, body: ScheduleUpdate, db: Session = 
         return {"status": "error", "message": str(e)}
 
 @app.delete("/api/schedules/{schedule_id}")
-async def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
-    sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
+async def delete_schedule(schedule_id: int,
+                          user: CurrentUser = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    sch = (db.query(ScheduleModel)
+             .filter(ScheduleModel.id == schedule_id,
+                     ScheduleModel.user_id == user.user_id).first())
     if not sch:
         return {"status": "error", "message": "Không tìm thấy lịch."}
     try:
@@ -599,10 +900,14 @@ async def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/schedules/{schedule_id}/run")
-async def run_schedule_now(schedule_id: int, part: str = "start", db: Session = Depends(get_db)):
+async def run_schedule_now(schedule_id: int, part: str = "start",
+                           user: CurrentUser = Depends(get_current_user),
+                           db: Session = Depends(get_db)):
     """Chạy NGAY hành động của lịch (để test), không ảnh hưởng last_fired_date.
     part=end: chạy hành động KẾT THÚC của lịch khoảng."""
-    sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
+    sch = (db.query(ScheduleModel)
+             .filter(ScheduleModel.id == schedule_id,
+                     ScheduleModel.user_id == user.user_id).first())
     if not sch:
         return {"status": "error", "message": "Không tìm thấy lịch."}
     if part == "end" and not sch.end_time:
@@ -611,7 +916,7 @@ async def run_schedule_now(schedule_id: int, part: str = "start", db: Session = 
     action_value = sch.end_action_value if part == "end" else sch.action_value
     try:
         ok = await execute_schedule_action(
-            sch.brand, sch.device_id, action_type, action_value,
+            db, sch.user_id, sch.brand, sch.device_id, action_type, action_value,
             invalidate_cache=_cache_invalidate,
         )
         if not ok:

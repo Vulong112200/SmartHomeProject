@@ -8,6 +8,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 
 import '../core/config.dart';
 import '../core/websocket_provider.dart';
+import '../core/auth_service.dart';
 import '../theme/app_colors.dart';
 import 'chat_bubble.dart';
 
@@ -164,7 +165,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/ai/parse'),
-            headers: {"Content-Type": "application/json"},
+            headers: AuthService.authHeaders(jsonBody: true),
             body: jsonEncode({"text": text}),
           )
           .timeout(const Duration(seconds: 30)); // AI + IoT có thể chậm, nhưng không treo vô hạn

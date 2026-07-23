@@ -39,6 +39,9 @@ dependencies:
   # Lưu cấu hình cục bộ (thứ tự sắp xếp thiết bị trên dashboard)
   shared_preferences: ^2.2.2
 
+  # Đăng nhập/đăng ký + phiên (Supabase Auth). Tự lưu session & tự refresh token.
+  supabase_flutter: ^2.8.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -15,4 +15,15 @@ class AppConfig {
 
   /// Timeout dài cho lần ping /health đầu (Render cold start 30-50s).
   static const Duration healthTimeout = Duration(seconds: 35);
+
+  /// Supabase (Auth + Postgres). Lấy ở Dashboard > Settings > API.
+  /// Có thể override khi build: --dart-define=SUPABASE_URL=... --dart-define=SUPABASE_ANON_KEY=...
+  static const String supabaseUrl = String.fromEnvironment(
+    'SUPABASE_URL',
+    defaultValue: 'https://YOUR-PROJECT.supabase.co',
+  );
+  static const String supabaseAnonKey = String.fromEnvironment(
+    'SUPABASE_ANON_KEY',
+    defaultValue: 'YOUR-ANON-KEY',
+  );
 }

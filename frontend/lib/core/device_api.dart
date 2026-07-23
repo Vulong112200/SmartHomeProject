@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'config.dart';
+import 'auth_service.dart';
 
 /// Lớp helper dùng CHUNG cho việc gọi API điều khiển & đọc trạng thái thiết bị.
 /// Được tái dùng bởi Dashboard (SmartDeviceCard) và Shortcut handler để tránh
@@ -19,7 +20,8 @@ class DeviceApi {
       // trạng thái mới nhất từ cloud, tránh đọc trúng bản cache cũ).
       final q = fresh ? '?fresh=1' : '';
       final res = await http
-          .get(Uri.parse('$baseUrl/api/devices/$brand/$deviceId/status$q'))
+          .get(Uri.parse('$baseUrl/api/devices/$brand/$deviceId/status$q'),
+              headers: AuthService.authHeaders())
           .timeout(_timeout);
       if (res.statusCode == 200) {
         final body = json.decode(utf8.decode(res.bodyBytes));
@@ -37,7 +39,7 @@ class DeviceApi {
   static Future<List<Map<String, dynamic>>?> fetchDevices() async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/api/devices'))
+          .get(Uri.parse('$baseUrl/api/devices'), headers: AuthService.authHeaders())
           .timeout(_timeout);
       if (res.statusCode == 200) {
         final body = json.decode(utf8.decode(res.bodyBytes));
@@ -69,7 +71,8 @@ class DeviceApi {
   static Future<bool> sendAction(String brand, String deviceId, String action) async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId?action=$action'))
+          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId?action=$action'),
+              headers: AuthService.authHeaders())
           .timeout(_timeout);
       return _isOk(res);
     } catch (_) {
@@ -82,7 +85,8 @@ class DeviceApi {
   static Future<bool> sendMode(String brand, String deviceId, String mode) async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$mode'))
+          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$mode'),
+              headers: AuthService.authHeaders())
           .timeout(_timeout);
       return _isOk(res);
     } catch (_) {

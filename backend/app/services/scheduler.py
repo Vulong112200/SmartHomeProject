@@ -17,9 +17,11 @@ from datetime import datetime
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.orm import Session
+
 from app.core.database import SessionLocal
 from app.models.schedule import ScheduleModel
-from .connector_manager import device_manager
+from .connector_factory import get_user_connector
 
 logger = logging.getLogger("SmartHome.Scheduler")
 
@@ -28,15 +30,15 @@ TICK_SECONDS = 30
 GRACE_SECONDS = 120
 
 
-async def execute_schedule_action(brand: str, device_id: str, action_type: str,
-                                  action_value: Optional[str],
+async def execute_schedule_action(db: Session, user_id: str, brand: str, device_id: str,
+                                  action_type: str, action_value: Optional[str],
                                   invalidate_cache: Optional[Callable] = None) -> bool:
     """
-    Thực thi hành động của 1 lịch qua connector tương ứng.
-    Tái dùng đúng primitive hiện có (turn_on/turn_off/set_mode) và invalidate
-    cache trạng thái để app đọc được trạng thái mới ngay (giống endpoint control).
+    Thực thi hành động của 1 lịch qua connector CỦA ĐÚNG USER (VeSync per-user;
+    Tuya/Rojeco dùng project chung). Tái dùng primitive turn_on/turn_off/set_mode
+    và invalidate cache trạng thái để app đọc được trạng thái mới ngay.
     """
-    connector = device_manager.get_connector(brand)
+    connector = await get_user_connector(db, user_id, brand)
     ok = False
     if action_type == "on":
         ok = await connector.turn_on(device_id)
@@ -45,7 +47,7 @@ async def execute_schedule_action(brand: str, device_id: str, action_type: str,
     elif action_type == "mode" and hasattr(connector, "set_mode"):
         ok = await connector.set_mode(device_id, action_value or "")
     if invalidate_cache:
-        invalidate_cache(brand, device_id)
+        invalidate_cache(user_id, brand, device_id)
     return ok
 
 
@@ -139,8 +141,8 @@ async def scheduler_loop(invalidate_cache: Optional[Callable] = None):
                         logger.info(f"⏰ Kích hoạt lịch #{sch.id} '{label}': {sch.action_type} {sch.action_value or ''} lúc {sch.time}")
                         try:
                             ok = await execute_schedule_action(
-                                sch.brand, sch.device_id, sch.action_type, sch.action_value,
-                                invalidate_cache,
+                                db, sch.user_id, sch.brand, sch.device_id,
+                                sch.action_type, sch.action_value, invalidate_cache,
                             )
                             if not ok:
                                 logger.warning(f"⏰ Lịch #{sch.id}: thiết bị KHÔNG nhận lệnh.")
@@ -155,8 +157,8 @@ async def scheduler_loop(invalidate_cache: Optional[Callable] = None):
                         logger.info(f"⏰ Kích hoạt lịch #{sch.id} '{label}' (kết thúc): {sch.end_action_type} {sch.end_action_value or ''} lúc {sch.end_time}")
                         try:
                             ok = await execute_schedule_action(
-                                sch.brand, sch.device_id, sch.end_action_type, sch.end_action_value,
-                                invalidate_cache,
+                                db, sch.user_id, sch.brand, sch.device_id,
+                                sch.end_action_type, sch.end_action_value, invalidate_cache,
                             )
                             if not ok:
                                 logger.warning(f"⏰ Lịch #{sch.id} (kết thúc): thiết bị KHÔNG nhận lệnh.")

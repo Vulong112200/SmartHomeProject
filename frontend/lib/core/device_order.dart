@@ -1,23 +1,29 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'auth_service.dart';
+
 /// Lưu & áp thứ tự hiển thị thiết bị trên dashboard (CỤC BỘ trên máy).
 ///
 /// Thứ tự chỉ là tuỳ biến hiển thị phía client — backend `DeviceModel` không có
 /// cột thứ tự. Lưu danh sách `id` theo đúng thứ tự người dùng kéo-thả vào
 /// SharedPreferences; khi tải lại thì sắp `devices` theo danh sách này.
+/// Key gắn theo user để nhiều tài khoản trên cùng máy không đè thứ tự của nhau.
 class DeviceOrder {
-  static const String _key = 'device_order_v1';
+  static String _key() {
+    final uid = AuthService.user?.id ?? 'anon';
+    return 'device_order_v1_$uid';
+  }
 
   /// Đọc thứ tự đã lưu (danh sách id). Rỗng nếu chưa từng sắp xếp.
   static Future<List<String>> load() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getStringList(_key) ?? const [];
+    return prefs.getStringList(_key()) ?? const [];
   }
 
   /// Lưu thứ tự hiện tại (danh sách id theo đúng thứ tự hiển thị).
   static Future<void> save(List<String> ids) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_key, ids);
+    await prefs.setStringList(_key(), ids);
   }
 
   /// Sắp `devices` theo `order` đã lưu. Thiết bị CHƯA có trong `order` (mới thêm
