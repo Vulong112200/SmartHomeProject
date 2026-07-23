@@ -40,9 +40,26 @@ class VeSyncConnector(DeviceConnector):
                     return val
         return default
 
+    def list_devices(self) -> list:
+        """
+        Trả về danh sách TẤT CẢ thiết bị trong tài khoản (cho luồng khám phá).
+        Mỗi phần tử: {cid, name, device_type}. Gọi sau connect().
+        """
+        out = []
+        for dev in getattr(self.manager, 'devices', []) or []:
+            cid = getattr(dev, 'cid', None) or getattr(dev, 'device_name', None)
+            out.append({
+                "cid": cid,
+                "name": getattr(dev, 'device_name', '?'),
+                "device_type": str(getattr(dev, 'device_type', '')),
+            })
+        return out
+
     async def connect(self) -> bool:
         print(f"[VeSync] Đang kết nối với tài khoản: {self.email}...")
-        self.manager = VeSync(self.email, self.password, self.time_zone)
+        # FIX: pyvesync 3.x tham số vị trí thứ 3 là country_code, KHÔNG phải
+        # time_zone — truyền qua keyword để không nhét timezone nhầm chỗ.
+        self.manager = VeSync(self.email, self.password, time_zone=self.time_zone)
         
         login_success = await self._safe_call(self.manager.login)
 

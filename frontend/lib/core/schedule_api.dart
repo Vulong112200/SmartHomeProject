@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'config.dart';
+import 'auth_service.dart';
 
 /// Một lịch hẹn giờ (khớp bảng `schedules` phía backend).
 class Schedule {
@@ -60,7 +61,9 @@ class ScheduleApi {
 
   static Future<List<Schedule>?> fetchSchedules() async {
     try {
-      final res = await http.get(Uri.parse(_base)).timeout(AppConfig.apiTimeout);
+      final res = await http
+          .get(Uri.parse(_base), headers: AuthService.authHeaders())
+          .timeout(AppConfig.apiTimeout);
       if (res.statusCode == 200) {
         final body = json.decode(utf8.decode(res.bodyBytes));
         if (body['status'] == 'success') {
@@ -93,7 +96,7 @@ class ScheduleApi {
     return _send(
       () => http.post(
         Uri.parse(_base),
-        headers: {'Content-Type': 'application/json'},
+        headers: AuthService.authHeaders(jsonBody: true),
         body: json.encode({
           'name': name,
           'brand': brand,
@@ -116,20 +119,23 @@ class ScheduleApi {
     return _send(
       () => http.patch(
         Uri.parse('$_base/$id'),
-        headers: {'Content-Type': 'application/json'},
+        headers: AuthService.authHeaders(jsonBody: true),
         body: json.encode(fields),
       ),
     );
   }
 
   static Future<String?> deleteSchedule(int id) async {
-    return _send(() => http.delete(Uri.parse('$_base/$id')));
+    return _send(() => http.delete(Uri.parse('$_base/$id'),
+        headers: AuthService.authHeaders()));
   }
 
   /// Chạy NGAY hành động của lịch (test). Trả lỗi hoặc null nếu thành công.
   /// [end] = true: chạy hành động KẾT THÚC của lịch khoảng.
   static Future<String?> runNow(int id, {bool end = false}) async {
-    return _send(() => http.post(Uri.parse('$_base/$id/run${end ? '?part=end' : ''}')),
+    return _send(
+        () => http.post(Uri.parse('$_base/$id/run${end ? '?part=end' : ''}'),
+            headers: AuthService.authHeaders()),
         timeout: const Duration(seconds: 20)); // lệnh IoT thật có thể chậm hơn API thường
   }
 
