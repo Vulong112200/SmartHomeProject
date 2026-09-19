@@ -26,7 +26,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | Hẹn giờ thiết bị (đơn + KHOẢNG start→end, qua đêm, one-shot) | ✅ | `services/scheduler.py`, `models/schedule.py`, `main.py` `/api/schedules`, `screens/schedule_tab.dart`, `core/schedule_api.dart` |
 | Lưu dữ liệu bền (Postgres/Supabase) | 🚧 code xong, chưa bật production | `core/database.py`, `docs/supabase_schema.sql`, `docs/SUPABASE_SETUP.md` |
 | Đăng nhập (Supabase Auth) + AuthGate 5 trạng thái | 🚧 code xong, chưa bật production | `core/auth_service.dart`, `screens/{auth_gate,login_screen,pending_screen}.dart`, `core/auth.py` |
-| Khu vực + thành viên + phân quyền theo khu | 🚧 backend xong, UI quản trị ở Phase 3 | `core/household.py` (nơi DUY NHẤT quyết định quyền), `core/auth.py`, `models/{member,zone}.py`, `main.py` `/api/{me,zones,members}` |
+| Khu vực + thành viên + phân quyền theo khu | 🚧 code xong, chưa bật production | `core/household.py` (nơi DUY NHẤT quyết định quyền), `core/auth.py`, `models/{member,zone}.py`, `main.py` `/api/{me,zones,members}`, `screens/admin_screen.dart`, `core/household_api.dart` |
 | Automation engine | 📋 (đóng băng) | `services/automation_engine.py` (comment trong `main.py`) |
 
 ## API Endpoints Summary (`backend/app/main.py`)
@@ -85,6 +85,8 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 - `frontend/lib/core/config.dart` — nơi DUY NHẤT khai báo baseUrl/wsUrl/timeout + khóa Supabase (`--dart-define`); `authEnabled` false khi chưa có khóa ⇒ app bỏ qua đăng nhập.
 - `frontend/lib/core/auth_service.dart` — `accessToken()` (Supabase → fallback **app-token**), `headers()` ném lỗi rõ thay vì im lặng bỏ header, `handleUnauthorized()`; `HouseholdProfile` + `fetchMe()`.
 - `frontend/lib/screens/auth_gate.dart` — 5 trạng thái `loading|signedOut|pending|offline|ready`, quyết định hiện màn nào.
+- `frontend/lib/screens/admin_screen.dart` — 2 tab quản trị (Thành viên: pending ghim đầu, đổi vai/trạng thái/tick khu; Khu vực: CRUD + gán thiết bị, pseudo-zone "Chưa phân khu" ghim cuối).
+- `frontend/lib/core/household_api.dart` — client `/api/zones`, `/api/members`, `PATCH /api/devices/{id}`; `Zone`/`Member` model.
 - `frontend/lib/core/shortcut_handler.dart` — điều phối hành vi shortcut + `ShortcutIcons` (map trạng thái → tên drawable).
 - `frontend/lib/core/shortcut_service.dart` — MethodChannel `smarthome/shortcuts` ↔ native, quick_actions iOS.
 - `frontend/android/.../MainActivity.kt` — build/pin/update shortcut, `resolveIcon()`.

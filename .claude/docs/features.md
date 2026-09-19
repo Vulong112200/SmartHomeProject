@@ -132,7 +132,7 @@
 ### Khu vực + thành viên + phân quyền theo khu
 - **Status:** 🚧 backend xong, chưa có UI (Phase 2-3 mới làm màn hình đăng nhập/quản trị)
 - **Backend:** `core/household.py` · `core/auth.py` · `models/member.py`, `models/zone.py` · `devices.zone_id`, `schedules.created_by` · `main.py` `/api/me`, `/api/zones`, `/api/members`, `PATCH /api/devices/{id}` + rescope toàn bộ endpoint cũ · test `tests/test_household_scope.py`
-- **Frontend:** chưa có. App hiện tại vẫn chạy bình thường vì xác thực đang TẮT.
+- **Frontend:** `core/household_api.dart` (Zone/Member model + CRUD) · `screens/admin_screen.dart` (2 tab) · lối vào ở menu tài khoản trên `dashboard_tab.dart`, chỉ hiện khi `can_admin` · test `test/admin_screen_test.dart`
 - **Key logic:**
   - **Mô hình:** thiết bị thuộc **khu vực**, thành viên được cấp quyền theo **khu**. Không phải `devices.user_id` sở hữu phẳng — mô hình đó không chia sẻ được thiết bị, mà cả nhà vốn dùng chung cửa cuốn và máy lọc khí.
   - **Không có bảng `homes`.** Một cột luôn bằng 1 trên mọi bảng là trả giá ngay để dùng sau nhiều năm. Điều làm "nhiều nhà" rẻ về sau là dồn hết scoping vào `core/household.py`: lúc cần chỉ thêm cột `home_id` + sửa 2 hàm, không đụng endpoint nào.
@@ -146,6 +146,9 @@
   - **Lịch hẹn là của CẢ NHÀ**: `schedule_query` lọc theo THIẾT BỊ (ai thấy thiết bị thì thấy lịch của nó), không theo `created_by`. Cột `created_by` chỉ dùng để chặn kid sửa lịch bố mẹ đặt.
   - **Chặn tự khóa mình ở tầng API** (không chỉ UI — app bản cũ hoặc request gõ tay vẫn đi thẳng vào): không tự hạ vai, không tự chặn mình, không hạ vai/chặn `owner` cuối cùng.
   - **Hai bug sẵn có sửa cùng lúc:** `DELETE /api/devices/{id}` giờ xóa luôn lịch của thiết bị (trước đây lịch mồ côi vẫn được scheduler bắn vào thiết bị không tồn tại, mỗi ngày, mãi mãi); `POST /api/devices` idempotent (id trùng = "đã có trong nhà").
+  - **UI quản trị (Phase 3):** tab **Thành viên** ghim người chờ duyệt lên đầu — đó là việc cần làm, không phải danh sách để cuộn tìm; **ẩn ô tick khu với owner/adult** vì hai vai này thấy mọi khu theo luật vai, tick vào chẳng đổi gì mà lại khiến chủ nhà tưởng mình cấp thiếu. Tab **Khu vực** ghim pseudo-zone "Chưa phân khu" ở CUỐI và mặc định mở: thiết bị mới import rơi vào `zone_id NULL`, không hiện ở đâu thì chủ nhà không biết chúng tồn tại.
+  - **Menu tài khoản LUÔN hiện**, kể cả khi chưa bật đăng nhập: chủ nhà cần vào Quản trị **chia phòng trước** rồi mới bật xác thực — ngược lại thì lúc duyệt trẻ em không có khu nào để cấp.
+  - Chốt *"không hạ vai chủ nhà cuối cùng"* trong `update_member` hiện **không chạm tới được**: người thao tác bắt buộc đã là owner/active nên hạ vai owner khác thì luôn còn ≥2 owner, còn tự hạ vai đã bị chốt "chính mình" bắt trước. Giữ làm backstop; test ghim **bất biến** "nhà không bao giờ mất chủ" chứ không ghim nhánh code đó.
   - ⚠️ **Xác thực TỰ SUY** — xem section "Cấu hình & bảo mật (env)".
 
 ### Lưu dữ liệu bền (Postgres/Supabase)

@@ -72,6 +72,7 @@ frontend/
 │   ├── core/
 │   │   ├── config.dart             # AppConfig: baseUrl / wsUrl / timeout — nơi DUY NHẤT khai báo địa chỉ backend
 │   │   │                           # + supabaseUrl/anonKey qua --dart-define; authEnabled=false ⇒ app bỏ qua đăng nhập
+│   │   ├── household_api.dart      # Zone/Member model + CRUD khu vực, duyệt/đổi vai/cấp khu, gán thiết bị vào khu
 │   │   ├── auth_service.dart       # accessToken() Supabase → fallback app-token (isolate nền), headers() ném
 │   │   │                           # NotAuthenticatedException, handleUnauthorized(); HouseholdProfile + fetchMe()
 │   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus / sendMode / sendAction + PurifierCycle
@@ -83,6 +84,8 @@ frontend/
 │   │   ├── shortcut_handler.dart   # Điều phối khi bấm shortcut (purifier cycle / door toggle / feeder); ShortcutIcons map trạng thái→drawable; appNavigatorKey
 │   │   └── websocket_provider.dart # Kết nối WebSocket wss (AppConfig.wsUrl); Live chỉ sau channel.ready; cap 200 msg
 │   ├── screens/
+│   │   ├── admin_screen.dart       # 2 tab quản trị: Thành viên (pending ghim đầu) + Khu vực (CRUD + gán thiết bị,
+│   │   │                           # pseudo-zone "Chưa phân khu" ghim cuối để thiết bị mới import không mất dấu)
 │   │   ├── auth_gate.dart          # 5 trạng thái loading|signedOut|pending|offline|ready; chọn màn hiển thị
 │   │   ├── login_screen.dart       # Đăng nhập/đăng ký email+mật khẩu (Supabase Auth), dịch lỗi sang tiếng Việt
 │   │   ├── pending_screen.dart     # Màn chờ chủ nhà duyệt + OfflineScreen (mất mạng ≠ hết phiên)
