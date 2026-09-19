@@ -71,6 +71,9 @@ frontend/
 │   ├── main.dart                   # Entry: khởi động app, đăng ký ShortcutHandler, MaterialApp + appNavigatorKey, 3 tab (Home/AI/Hẹn giờ) + isVisible cho Dashboard
 │   ├── core/
 │   │   ├── config.dart             # AppConfig: baseUrl / wsUrl / timeout — nơi DUY NHẤT khai báo địa chỉ backend
+│   │   │                           # + supabaseUrl/anonKey qua --dart-define; authEnabled=false ⇒ app bỏ qua đăng nhập
+│   │   ├── auth_service.dart       # accessToken() Supabase → fallback app-token (isolate nền), headers() ném
+│   │   │                           # NotAuthenticatedException, handleUnauthorized(); HouseholdProfile + fetchMe()
 │   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus / sendMode / sendAction + PurifierCycle
 │   │   ├── device_type.dart        # deviceTypeOf(name): suy loại thiết bị từ tên (nơi duy nhất, dùng chung dashboard/widget/schedule)
 │   │   ├── schedule_api.dart       # Schedule model + ScheduleApi: fetch/create/update/delete/runNow (/api/schedules)
@@ -80,6 +83,9 @@ frontend/
 │   │   ├── shortcut_handler.dart   # Điều phối khi bấm shortcut (purifier cycle / door toggle / feeder); ShortcutIcons map trạng thái→drawable; appNavigatorKey
 │   │   └── websocket_provider.dart # Kết nối WebSocket wss (AppConfig.wsUrl); Live chỉ sau channel.ready; cap 200 msg
 │   ├── screens/
+│   │   ├── auth_gate.dart          # 5 trạng thái loading|signedOut|pending|offline|ready; chọn màn hiển thị
+│   │   ├── login_screen.dart       # Đăng nhập/đăng ký email+mật khẩu (Supabase Auth), dịch lỗi sang tiếng Việt
+│   │   ├── pending_screen.dart     # Màn chờ chủ nhà duyệt + OfflineScreen (mất mạng ≠ hết phiên)
 │   │   ├── dashboard_tab.dart      # UI danh sách thiết bị, nút điều khiển + nút "Tạo icon xử lý nhanh"; poll pause theo isVisible/lifecycle
 │   │   ├── ai_assistant_tab.dart   # Trợ lý giọng nói (speech-to-text → /api/ai/parse)
 │   │   ├── schedule_tab.dart       # Tab Hẹn giờ: danh sách lịch + form thêm/sửa (bottom sheet)

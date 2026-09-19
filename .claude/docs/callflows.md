@@ -278,3 +278,50 @@ Vai và grant đọc từ DB **mỗi request** ⇒ chủ nhà duyệt/đổi vai
 lực ngay ở request kế tiếp, không cần đăng nhập lại. Chi phí:
 `get_current_member` = 1 select theo PK, `require_device_access` = 1 select có
 index. Dashboard poll 6s cho 3 card ≈ 1.5 req/s.
+
+## 8. Khởi động app có đăng nhập (AuthGate) + isolate nền
+
+```
+main()
+  AppConfig.authEnabled?   (có SUPABASE_URL + SUPABASE_ANON_KEY từ --dart-define)
+    KHÔNG → bỏ qua init Supabase             # bản build hiện tại trên máy cả nhà
+    CÓ    → await AuthService.init()         # TRƯỚC runApp, nếu không AuthGate
+                                             # sẽ nháy màn đăng nhập ở cold start
+  runApp → AuthGate
+
+AuthGate._bootstrap()
+  !authEnabled                  → ready(HouseholdProfile.openHouse)   # chạy như cũ
+  chưa đăng nhập & không app-token → signedOut → LoginScreen
+  ngược lại:
+    GET /api/me
+      200 + status active   → ready(profile) → MainScreen  (+ refreshAppToken nền)
+      200 + pending/blocked → pending        → PendingScreen
+      401                   → handleUnauthorized() → signedOut
+      lỗi mạng / 5xx        → offline        → OfflineScreen   # KHÔNG đăng xuất
+
+LoginScreen.signIn()
+  Supabase signInWithPassword
+    → AuthService.refreshAppToken():
+        POST /api/auth/app-token  (Bearer = access token Supabase)
+        → lưu SharedPreferences['app_token_v1']
+  → onSignedIn → _bootstrap() lại
+```
+
+### Isolate NỀN (Home Widget, shortcut đã pin)
+
+```
+Người dùng bấm nút trên Home Widget khi app ĐÃ TẮT
+  → Android khởi động isolate nền (@pragma('vm:entry-point'))
+      ⚠️ Supabase.instance CHƯA init ở đây, và không được init
+         (hai isolate refresh song song -> Supabase xoay vòng refresh token
+          -> isolate này vô hiệu hóa token của isolate kia -> đăng xuất ngẫu nhiên)
+  → WidgetService._performAction → DeviceApi.sendMode(...)
+      → DeviceApi._headers() → AuthService.headers() → accessToken()
+          _supabaseReady == false (static của isolate mới)  -> bỏ qua Supabase
+          → readAppToken() từ SharedPreferences             -> Bearer <app-token>
+  → backend verify app-token (iss="smarthome-app") → điều khiển thiết bị
+```
+
+Thiếu app-token thì nhánh này trả `{}` không có header ⇒ 401 ⇒ widget hiện
+"Không rõ" và nút bấm **không làm gì, không báo lỗi**. Đó là lý do
+`test/auth_service_test.dart` chạy đúng trong điều kiện Supabase CHƯA init.

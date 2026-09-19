@@ -114,6 +114,21 @@
 - **Backend:** `automation_engine.py` — không được import trong `main.py`.
 - **Key logic:** chưa kích hoạt; tính năng Hẹn giờ dùng `services/scheduler.py` riêng (persist DB) thay vì engine này (rule in-memory).
 
+### Đăng nhập (Supabase Auth) + AuthGate
+- **Status:** 🚧 code xong, chưa bật production (chờ tạo project Supabase và build APK kèm khóa)
+- **Backend:** `core/auth.py` (`issue_app_token`, chấp nhận app-token trong `get_current_user`) · `POST /api/auth/app-token`
+- **Frontend:** `core/auth_service.dart` · `screens/auth_gate.dart` · `screens/login_screen.dart` · `screens/pending_screen.dart` (+ `OfflineScreen`) · header gắn ở `device_api`/`schedule_api`/`ai_assistant_tab`/`dashboard_tab` · `main.dart` init Supabase trước `runApp` · test `test/auth_service_test.dart`, `test/widget_test.dart`
+- **Key logic:**
+  - **⚠️ Isolate nền là đường hỏng ÂM THẦM của phase này.** `widgetBackgroundCallback` (`@pragma('vm:entry-point')`) và shortcut handler chạy ở **isolate riêng**, nơi `Supabase.instance` chưa từng được khởi tạo ⇒ không lấy được access token ⇒ Home Widget hiện "Không rõ" và nút bấm **không làm gì, không báo lỗi, không crash**. Ba cách sai đã loại: (a) init Supabase trong isolate → hai isolate refresh song song, mà Supabase **xoay vòng refresh token** ⇒ isolate này vô hiệu hóa token của isolate kia, cả nhà bị đăng xuất ngẫu nhiên; (b) cache access token 1 giờ → hỏng mỗi khi bấm widget sau 1 giờ, tức hầu như luôn; (c) bỏ qua → mất 2 tính năng đầu bảng. **Giải:** `POST /api/auth/app-token` cấp JWT dài hạn do backend ký (`iss="smarthome-app"`), lưu SharedPreferences — đọc được ở mọi isolate. Thu hồi = đổi `APP_TOKEN_SECRET`.
+  - `accessToken()` thử Supabase trước (tự refresh khi hết hạn), rồi rơi xuống app-token. Cờ `_supabaseReady` là static của isolate nên ở isolate nền nó false và Supabase bị bỏ qua thay vì ném lỗi.
+  - **`headers()` NÉM `NotAuthenticatedException`** thay vì im lặng bỏ header. Hành vi cũ khiến server trả 401 và UI báo "Mất kết nối máy chủ" — sai chẩn đoán, sai cách phục hồi.
+  - **`AuthGate` 5 trạng thái** `loading | signedOut | pending | offline | ready`. `loading` tồn tại vì thiếu nó thì cold start **nháy màn đăng nhập** trong lúc session đã lưu chưa resolve xong. `offline` tồn tại vì rớt mạng **khác** hết phiên — đăng xuất người dùng chỉ vì Render đang ngủ là bắt gõ lại mật khẩu vô cớ. `dispose()` cancel `StreamSubscription` (thiếu là setState trên widget đã chết).
+  - **401 ≠ 403.** 401 = phiên chết → đăng xuất. 403 = "chờ chủ nhà duyệt" hoặc "ngoài khu được cấp" → hiện thông báo, **không** đăng xuất.
+  - **Chuyển tiếp an toàn:** `AppConfig.authEnabled` false khi chưa truyền `--dart-define=SUPABASE_URL/SUPABASE_ANON_KEY` ⇒ AuthGate vào thẳng app với `HouseholdProfile.openHouse`, khớp backend đang để xác thực TẮT. Không có nhánh này thì bản build thiếu khóa **kẹt ở màn login vĩnh viễn**.
+  - **Mọi call site đều phải có header.** `dashboard_tab.fetchDevices` trước đây gọi `http.get` thẳng — call site duy nhất thiếu token; bật xác thực lên là dashboard trống trơn trong khi mọi thứ khác vẫn chạy. Nay đi qua `DeviceApi`.
+  - anon key nằm trong APK nên **không phải bí mật**; an toàn đến từ RLS deny-all trên mọi bảng.
+  - Giữ luồng **đăng ký** ở `login_screen`: ăn khớp cơ chế chờ-duyệt ở backend. Bỏ nó thì chủ nhà phải tự tạo tài khoản và đặt lại mật khẩu cho từng người trong dashboard Supabase.
+
 ### Khu vực + thành viên + phân quyền theo khu
 - **Status:** 🚧 backend xong, chưa có UI (Phase 2-3 mới làm màn hình đăng nhập/quản trị)
 - **Backend:** `core/household.py` · `core/auth.py` · `models/member.py`, `models/zone.py` · `devices.zone_id`, `schedules.created_by` · `main.py` `/api/me`, `/api/zones`, `/api/members`, `PATCH /api/devices/{id}` + rescope toàn bộ endpoint cũ · test `tests/test_household_scope.py`
