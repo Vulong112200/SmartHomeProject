@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import 'auth_service.dart';
 import 'config.dart';
 
 /// Một lịch hẹn giờ (khớp bảng `schedules` phía backend).
@@ -58,9 +59,21 @@ class Schedule {
 class ScheduleApi {
   static const String _base = '${AppConfig.baseUrl}/api/schedules';
 
+  /// Header xác thực; {} khi chưa đăng nhập (backend có thể đang chạy mở).
+  static Future<Map<String, String>> _headers({bool jsonBody = false}) async {
+    try {
+      return await AuthService.headers(jsonBody: jsonBody);
+    } on NotAuthenticatedException {
+      return jsonBody ? const {'Content-Type': 'application/json'} : const {};
+    }
+  }
+
   static Future<List<Schedule>?> fetchSchedules() async {
     try {
-      final res = await http.get(Uri.parse(_base)).timeout(AppConfig.apiTimeout);
+      final res = await http
+          .get(Uri.parse(_base), headers: await _headers())
+          .timeout(AppConfig.apiTimeout);
+      if (res.statusCode == 401) AuthService.handleUnauthorized();
       if (res.statusCode == 200) {
         final body = json.decode(utf8.decode(res.bodyBytes));
         if (body['status'] == 'success') {
@@ -90,10 +103,11 @@ class ScheduleApi {
     String? endActionType,
     String? endActionValue,
   }) async {
+    final headers = await _headers(jsonBody: true);
     return _send(
       () => http.post(
         Uri.parse(_base),
-        headers: {'Content-Type': 'application/json'},
+        headers: headers,
         body: json.encode({
           'name': name,
           'brand': brand,
@@ -113,23 +127,28 @@ class ScheduleApi {
 
   /// Sửa lịch (chỉ gửi các field cần đổi). Trả lỗi hoặc null nếu thành công.
   static Future<String?> updateSchedule(int id, Map<String, dynamic> fields) async {
+    final headers = await _headers(jsonBody: true);
     return _send(
       () => http.patch(
         Uri.parse('$_base/$id'),
-        headers: {'Content-Type': 'application/json'},
+        headers: headers,
         body: json.encode(fields),
       ),
     );
   }
 
   static Future<String?> deleteSchedule(int id) async {
-    return _send(() => http.delete(Uri.parse('$_base/$id')));
+    final headers = await _headers();
+    return _send(() => http.delete(Uri.parse('$_base/$id'), headers: headers));
   }
 
   /// Chạy NGAY hành động của lịch (test). Trả lỗi hoặc null nếu thành công.
   /// [end] = true: chạy hành động KẾT THÚC của lịch khoảng.
   static Future<String?> runNow(int id, {bool end = false}) async {
-    return _send(() => http.post(Uri.parse('$_base/$id/run${end ? '?part=end' : ''}')),
+    final headers = await _headers();
+    return _send(
+        () => http.post(Uri.parse('$_base/$id/run${end ? '?part=end' : ''}'),
+            headers: headers),
         timeout: const Duration(seconds: 20)); // lệnh IoT thật có thể chậm hơn API thường
   }
 
@@ -138,7 +157,16 @@ class ScheduleApi {
       {Duration? timeout}) async {
     try {
       final res = await request().timeout(timeout ?? AppConfig.apiTimeout);
+      if (res.statusCode == 401) {
+        AuthService.handleUnauthorized();
+        return 'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.';
+      }
       final body = json.decode(utf8.decode(res.bodyBytes));
+      // 403 KHÁC 401: chờ duyệt / ngoài khu được cấp -> hiện thông báo, KHÔNG
+      // đăng xuất. FastAPI trả lỗi trong field `detail`.
+      if (res.statusCode == 403) {
+        return '${body['detail'] ?? 'Bạn không có quyền làm việc này.'}';
+      }
       if (res.statusCode == 200 && body['status'] == 'success') return null;
       return '${body['message'] ?? 'Lỗi máy chủ (HTTP ${res.statusCode})'}';
     } catch (_) {

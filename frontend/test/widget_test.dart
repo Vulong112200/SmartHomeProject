@@ -1,30 +1,82 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:frontend/main.dart';
+import 'package:frontend/core/auth_service.dart';
+import 'package:frontend/screens/auth_gate.dart';
+import 'package:frontend/screens/pending_screen.dart';
 
+/// Test cho AuthGate. (File này trước đây là template đếm số mặc định của
+/// Flutter — không liên quan gì tới app và sẽ fail nếu chạy.)
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const SmartHomeApp());
+  TestWidgetsFlutterBinding.ensureInitialized();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+  setUp(() => SharedPreferences.setMockInitialValues({}));
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+  testWidgets('chưa cấu hình Supabase thì vào thẳng app, không kẹt ở màn login',
+      (tester) async {
+    // AppConfig.authEnabled = false khi build không truyền --dart-define.
+    // Đây là bản build hiện tại đang chạy trên điện thoại cả nhà.
+    await tester.pumpWidget(MaterialApp(
+      home: AuthGate(
+        builder: (profile) => Scaffold(
+          body: Text('APP ${profile.role}'),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('APP owner'), findsOneWidget);
+  });
+
+  testWidgets('PendingScreen hiện lý do chờ duyệt kèm email', (tester) async {
+    const profile = HouseholdProfile(
+      userId: 'u1',
+      email: 'con@x.test',
+      displayName: 'Con',
+      role: 'guest',
+      status: 'pending',
+      canAdmin: false,
+      canSchedule: false,
+      zoneIds: [],
+      zones: [],
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: PendingScreen(
+        profile: profile,
+        onRetry: () async {},
+        onSignOut: () {},
+      ),
+    ));
+
+    expect(find.text('Đang chờ chủ nhà duyệt'), findsOneWidget);
+    expect(find.textContaining('con@x.test'), findsOneWidget);
+  });
+
+  testWidgets('bị chặn thì hiện thông báo khác, không có nút kiểm tra lại',
+      (tester) async {
+    const profile = HouseholdProfile(
+      userId: 'u2',
+      email: 'x@x.test',
+      displayName: 'X',
+      role: 'guest',
+      status: 'blocked',
+      canAdmin: false,
+      canSchedule: false,
+      zoneIds: [],
+      zones: [],
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: PendingScreen(
+        profile: profile,
+        onRetry: () async {},
+        onSignOut: () {},
+      ),
+    ));
+
+    expect(find.text('Tài khoản đã bị chặn'), findsOneWidget);
+    expect(find.text('Kiểm tra lại'), findsNothing);
   });
 }

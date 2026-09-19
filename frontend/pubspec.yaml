@@ -36,8 +36,12 @@ dependencies:
   # Home Screen Widget (App Widget) hiển thị trạng thái sống + điều khiển nền
   home_widget: ^0.7.0
 
-  # Lưu cấu hình cục bộ (thứ tự sắp xếp thiết bị trên dashboard)
+  # Lưu cấu hình cục bộ (thứ tự thiết bị, app-token cho isolate nền)
   shared_preferences: ^2.2.2
+
+  # Đăng nhập (Supabase Auth). Backend chỉ verify JWT, toàn bộ luồng đăng
+  # nhập/đăng ký do SDK này lo.
+  supabase_flutter: ^2.8.0
 
 dev_dependencies:
   flutter_test:

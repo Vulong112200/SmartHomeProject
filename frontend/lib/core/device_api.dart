@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import 'auth_service.dart';
 import 'config.dart';
 
 /// Lớp helper dùng CHUNG cho việc gọi API điều khiển & đọc trạng thái thiết bị.
@@ -9,6 +10,23 @@ import 'config.dart';
 class DeviceApi {
   static const String baseUrl = AppConfig.baseUrl;
   static const Duration _timeout = AppConfig.apiTimeout;
+
+  /// Header xác thực. Trả {} khi chưa đăng nhập để request vẫn đi — backend
+  /// đang chạy xác thực TẮT thì vẫn phục vụ bình thường; nếu BẬT thì trả 401
+  /// và `_check401` sẽ đưa người dùng về màn đăng nhập.
+  static Future<Map<String, String>> _headers() async {
+    try {
+      return await AuthService.headers();
+    } on NotAuthenticatedException {
+      return const {};
+    }
+  }
+
+  /// 401 = phiên chết -> đăng xuất. KHÔNG áp dụng cho 403: 403 là "chờ chủ nhà
+  /// duyệt" hoặc "ngoài khu được cấp", đăng xuất ở đó là sai và gây khó chịu.
+  static void _check401(http.Response res) {
+    if (res.statusCode == 401) AuthService.handleUnauthorized();
+  }
 
   /// Lấy trạng thái THẬT của thiết bị từ backend (query phần cứng).
   /// Trả về map data (vd {status, mode, speed} cho máy lọc; {door_state, position}
@@ -19,8 +37,10 @@ class DeviceApi {
       // trạng thái mới nhất từ cloud, tránh đọc trúng bản cache cũ).
       final q = fresh ? '?fresh=1' : '';
       final res = await http
-          .get(Uri.parse('$baseUrl/api/devices/$brand/$deviceId/status$q'))
+          .get(Uri.parse('$baseUrl/api/devices/$brand/$deviceId/status$q'),
+              headers: await _headers())
           .timeout(_timeout);
+      _check401(res);
       if (res.statusCode == 200) {
         final body = json.decode(utf8.decode(res.bodyBytes));
         if (body['status'] == 'success') {
@@ -37,8 +57,9 @@ class DeviceApi {
   static Future<List<Map<String, dynamic>>?> fetchDevices() async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/api/devices'))
+          .get(Uri.parse('$baseUrl/api/devices'), headers: await _headers())
           .timeout(_timeout);
+      _check401(res);
       if (res.statusCode == 200) {
         final body = json.decode(utf8.decode(res.bodyBytes));
         if (body['status'] == 'success') {
@@ -69,8 +90,10 @@ class DeviceApi {
   static Future<bool> sendAction(String brand, String deviceId, String action) async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId?action=$action'))
+          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId?action=$action'),
+              headers: await _headers())
           .timeout(_timeout);
+      _check401(res);
       return _isOk(res);
     } catch (_) {
       return false;
@@ -82,8 +105,10 @@ class DeviceApi {
   static Future<bool> sendMode(String brand, String deviceId, String mode) async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$mode'))
+          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$mode'),
+              headers: await _headers())
           .timeout(_timeout);
+      _check401(res);
       return _isOk(res);
     } catch (_) {
       return false;

@@ -480,3 +480,73 @@ def test_auth_disabled_1_ep_tat_du_co_secret(monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "1")
     monkeypatch.setenv("SUPABASE_JWT_SECRET", "s3cret")
     assert auth.auth_disabled() is True
+
+
+# =========================================================
+# app-token — đường sống của Home Widget / shortcut ở isolate nền
+# =========================================================
+def test_app_token_duoc_chap_nhan_nhu_dang_nhap(monkeypatch, tmp_path):
+    """
+    Isolate nền không có Supabase nên chỉ có app-token. Backend PHẢI nhận nó,
+    nếu không Home Widget hiện "Không rõ" và nút bấm im lặng không làm gì.
+    """
+    monkeypatch.setenv("AUTH_DISABLED", "0")
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "test-secret")
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@x.test")
+
+    from app.core.auth import issue_app_token
+    from app.core.database import get_db
+    from app.main import app as fastapi_app
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'tok.db'}")
+    init_db(engine)
+    TempSession = sessionmaker(bind=engine)
+
+    def _override_get_db():
+        s = TempSession()
+        try:
+            yield s
+        finally:
+            s.close()
+
+    fastapi_app.dependency_overrides[get_db] = _override_get_db
+    try:
+        token = issue_app_token("u-boss", "boss@x.test")
+
+        async def go():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=fastapi_app), base_url="http://t"
+            ) as c:
+                return await c.get(
+                    "/api/devices", headers={"Authorization": f"Bearer {token}"}
+                )
+
+        r = asyncio.run(go())
+        assert r.status_code == 200
+    finally:
+        fastapi_app.dependency_overrides.clear()
+
+
+def test_app_token_ky_bang_secret_khac_bi_tu_choi(monkeypatch):
+    """Thu hồi = đổi secret. Token cũ phải hết hiệu lực ngay."""
+    from app.core import auth
+
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "secret-cu")
+    token = auth.issue_app_token("u-1", "a@x.test")
+    assert auth._decode_app_token(token) is not None
+
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "secret-moi")
+    assert auth._decode_app_token(token) is None
+
+
+def test_app_token_khong_nham_voi_token_supabase(monkeypatch):
+    """app-token có `iss` riêng — token Supabase không được lọt qua đường này."""
+    import jwt as pyjwt
+
+    from app.core import auth
+
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "s")
+    supabase_like = pyjwt.encode(
+        {"sub": "u", "aud": "authenticated"}, "s", algorithm="HS256"
+    )
+    assert auth._decode_app_token(supabase_like) is None

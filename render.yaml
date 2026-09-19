@@ -45,3 +45,7 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
+      # Ky token dai han cho Home Widget / shortcut (isolate nen). Khong dat
+      # thi dung chung SUPABASE_JWT_SECRET. Thu hoi = doi gia tri nay.
+      - key: APP_TOKEN_SECRET
+        sync: false

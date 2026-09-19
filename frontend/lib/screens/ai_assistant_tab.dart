@@ -6,6 +6,7 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:http/http.dart' as http;
 import 'package:flutter_animate/flutter_animate.dart';
 
+import '../core/auth_service.dart';
 import '../core/config.dart';
 import '../core/websocket_provider.dart';
 import '../theme/app_colors.dart';
@@ -161,10 +162,18 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
     ref.read(webSocketProvider.notifier).sendMessage("Bạn: $text");
 
     try {
+      // Header xác thực: backend scope thiết bị theo khu của người đang hỏi,
+      // nên thiếu token là parser không thấy thiết bị nào.
+      Map<String, String> headers;
+      try {
+        headers = await AuthService.headers(jsonBody: true);
+      } on NotAuthenticatedException {
+        headers = const {"Content-Type": "application/json"};
+      }
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/ai/parse'),
-            headers: {"Content-Type": "application/json"},
+            headers: headers,
             body: jsonEncode({"text": text}),
           )
           .timeout(const Duration(seconds: 30)); // AI + IoT có thể chậm, nhưng không treo vô hạn

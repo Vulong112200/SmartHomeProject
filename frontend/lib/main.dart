@@ -7,11 +7,26 @@ import 'theme/app_colors.dart';
 import 'screens/dashboard_tab.dart';
 import 'screens/ai_assistant_tab.dart';
 import 'screens/schedule_tab.dart';
+import 'core/auth_service.dart';
+import 'core/config.dart';
 import 'core/shortcut_handler.dart';
 import 'core/widget_service.dart';
+import 'screens/auth_gate.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Khởi tạo Supabase TRƯỚC runApp để session đã lưu kịp resolve — nếu không,
+  // AuthGate sẽ nháy màn đăng nhập ở lần mở app đầu tiên.
+  // Chưa cấu hình khóa thì bỏ qua: app chạy y như trước khi có đăng nhập.
+  if (AppConfig.authEnabled) {
+    try {
+      await AuthService.init();
+    } catch (e) {
+      debugPrint('Không khởi tạo được Supabase: $e');
+    }
+  }
+
   runApp(const ProviderScope(child: SmartHomeApp()));
   // Lắng nghe khi người dùng bấm icon shortcut trên home screen.
   ShortcutHandler.register();
@@ -29,13 +44,16 @@ class SmartHomeApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       navigatorKey: appNavigatorKey, // Cho phép shortcut hiện dialog/snackbar
       theme: AppTheme.darkTheme, // Áp dụng theme mới
-      home: const MainScreen(),
+      // AuthGate quyết định: đang tải / chưa đăng nhập / chờ duyệt / mất mạng
+      // / vào app. Hồ sơ được truyền xuống để không màn nào phải fetch lại.
+      home: AuthGate(builder: (profile) => MainScreen(profile: profile)),
     );
   }
 }
 
 class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+  final HouseholdProfile profile;
+  const MainScreen({super.key, required this.profile});
 
   @override
   State<MainScreen> createState() => _MainScreenState();
@@ -43,6 +61,11 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
+
+  Future<void> _signOut() async {
+    await AuthService.signOut();
+    // AuthGate lắng nghe onAuthStateChange nên tự chuyển về màn đăng nhập.
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -53,7 +76,13 @@ class _MainScreenState extends State<MainScreen> {
       body: IndexedStack(
         index: _currentIndex,
         children: [
-          DashboardTab(isVisible: _currentIndex == 0),
+          DashboardTab(
+            isVisible: _currentIndex == 0,
+            profile: widget.profile,
+            // Chỉ hiện nút Đăng xuất khi thật sự có đăng nhập; bản build chưa
+            // cấu hình Supabase thì nút đó không làm được gì.
+            onSignOut: AppConfig.authEnabled ? _signOut : null,
+          ),
           const AIAssistantTab(),
           const ScheduleTab(),
         ],

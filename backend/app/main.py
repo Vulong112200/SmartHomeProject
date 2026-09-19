@@ -38,7 +38,7 @@ from app.services.vn_time_parser import resolve_target_days
 # from app.services.automation_engine import automation_engine, AutomationRule
 
 # Import Database
-from app.core.auth import auth_status
+from app.core.auth import auth_status, issue_app_token
 from app.core.database import SessionLocal, get_db, init_db, IS_SQLITE
 from app.core.household import (
     accessible_zones,
@@ -865,6 +865,21 @@ async def whoami(
             "zones": zones,
         },
     }
+
+
+@app.post("/api/auth/app-token")
+async def create_app_token(
+    member: MemberModel = Depends(get_current_member),
+):
+    """
+    Cấp token dài hạn cho app lưu vào SharedPreferences.
+
+    Dùng cho isolate nền của Android (Home Widget, shortcut đã pin) — nơi
+    Supabase chưa được khởi tạo nên không lấy được access token. Xem
+    `core/auth.py::issue_app_token` để biết vì sao không dùng cách khác.
+    """
+    token = issue_app_token(member.user_id, member.email)
+    return {"status": "success", "data": {"app_token": token}}
 
 
 # =========================================================
