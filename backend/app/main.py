@@ -70,34 +70,15 @@ if hasattr(sys.stderr, "reconfigure"):
 # =========================================================
 # Tạo Database
 # =========================================================
-# ⚠️ KHÔNG khởi tạo DB ở tầng import: exception ở đây làm uvicorn chết với
-# "Error loading ASGI app" — không route nào chạy, kể cả /health, nên không thể
-# phân biệt "lỗi DB" với "app chết". Việc này được gọi trong lifespan (bọc
-# try/except) để app còn boot ở chế độ degraded và /health nói rõ nguyên nhân.
-db_ready = False
-
-
-def init_db() -> None:
-    """Tạo bảng + thêm cột thiếu. Gọi từ lifespan, KHÔNG gọi lúc import."""
-    Base.metadata.create_all(bind=engine)
-    run_startup_migrations(engine)  # thêm cột mới vào bảng cũ (create_all không ALTER)
+logger.info("Đang khởi tạo Database...")
+Base.metadata.create_all(bind=engine)
+run_startup_migrations(engine)  # thêm cột mới vào bảng cũ (create_all không ALTER)
 
 # =========================================================
 # Lifespan: khởi động connector + vòng lặp Hẹn giờ (Scheduler)
 # =========================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db_ready
-    logger.info("Đang khởi tạo Database...")
-    try:
-        init_db()
-        db_ready = True
-        logger.info("✅ Database sẵn sàng.")
-    except Exception as e:
-        # Boot degraded: /health vẫn trả lời để UptimeRobot không flatline và
-        # để log nói rõ đây là lỗi DB, không phải app chết.
-        logger.error(f"❌ Khởi tạo DB thất bại — app chạy ở chế độ degraded: {e}")
-
     logger.info("Bắt đầu khởi động các connector...")
 
     async def _init_connector(brand: str, factory):
@@ -119,23 +100,16 @@ async def lifespan(app: FastAPI):
     await _init_connector("rojeco", RojecoConnector)
 
     # --- Vòng lặp Hẹn giờ (server luôn thức nhờ UptimeRobot ping /health) ---
-    # DB chết thì KHÔNG chạy scheduler: tick 30s sẽ log stack trace vĩnh viễn.
-    scheduler_task = (
-        asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
-        if db_ready else None
-    )
-    if scheduler_task is None:
-        logger.warning("⏰ Scheduler KHÔNG khởi động vì DB chưa sẵn sàng.")
+    scheduler_task = asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
 
     yield
 
     # Shutdown: dừng scheduler sạch sẽ
-    if scheduler_task is not None:
-        scheduler_task.cancel()
-        try:
-            await scheduler_task
-        except asyncio.CancelledError:
-            pass
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
     logger.info("Đã dừng scheduler & shutdown app.")
 
 app = FastAPI(title="Smart Home System API", lifespan=lifespan)
@@ -676,11 +650,8 @@ async def root():
 async def health_check():
     """
     Endpoint chuyên biệt cho việc kiểm tra trạng thái hệ thống.
-
-    LUÔN trả 200 để UptimeRobot không báo động đỏ mỗi lần DB chớp; trạng thái
-    DB nằm trong body (`db: false` = app sống nhưng DB chưa khởi tạo được).
     """
-    return {"status": "online", "db": db_ready}
+    return {"status": "online"}
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon(): 

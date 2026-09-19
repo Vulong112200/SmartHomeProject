@@ -7,7 +7,7 @@
 ```
 backend/
 ├── app/
-│   ├── main.py                     # FastAPI app: endpoints (devices/control/status/ai/schedules), init_db() + lifespan (khởi tạo DB → connectors → scheduler task), cờ db_ready, middleware đo thời gian
+│   ├── main.py                     # FastAPI app: endpoints (devices/control/status/ai/schedules), lifespan (connectors + scheduler task), middleware đo thời gian
 │   ├── core/
 │   │   └── database.py             # SQLAlchemy engine + SessionLocal + Base + get_db (SQLite smarthome.db) + run_startup_migrations (ALTER TABLE cột mới, idempotent)
 │   ├── models/
@@ -29,18 +29,8 @@ backend/
 │   └── test_scheduler_helpers.py   # pytest _is_time_due/_is_time_missed/_end_days (grace, thứ, qua đêm)
 ├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY) — gitignored
 ├── .env.example                    # Mẫu biến môi trường
-├── requirements.txt                # Python deps THẬT (UTF-8; tzdata cho zoneinfo, PyJWT + psycopg2-binary)
+├── requirements.txt                # Python deps (UTF-8; có tzdata cho zoneinfo)
 └── smarthome.db                    # SQLite DB
-```
-
-## Root (`./`)
-
-```
-./
-├── render.yaml                     # Blueprint Render: rootDir backend, build/start command, healthCheckPath /health, PYTHON_VERSION 3.13.5
-│                                   # ⚠️ chỉ có tác dụng với service quản lý bằng Blueprint; service tạo tay dùng cấu hình trên dashboard
-└── requirements.txt                # CON TRỎ `-r backend/requirements.txt` — KHÔNG phải danh sách thật.
-                                    # Trước đây là bản sao UTF-16 lệch phía sau và đã gây sập production (thiếu PyJWT).
 ```
 
 ## Frontend (`frontend/`)

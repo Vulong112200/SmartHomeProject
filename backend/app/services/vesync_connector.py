@@ -42,7 +42,7 @@ class VeSyncConnector(DeviceConnector):
 
     async def connect(self) -> bool:
         print(f"[VeSync] Đang kết nối với tài khoản: {self.email}...")
-        self.manager = VeSync(self.email, self.password, time_zone=self.time_zone)
+        self.manager = VeSync(self.email, self.password, self.time_zone)
         
         login_success = await self._safe_call(self.manager.login)
 
