@@ -9,7 +9,8 @@ backend/
 ├── app/
 │   ├── main.py                     # FastAPI app: endpoints (devices/control/status/ai/schedules), init_db() + lifespan (khởi tạo DB → connectors → scheduler task), cờ db_ready, middleware đo thời gian
 │   ├── core/
-│   │   └── database.py             # SQLAlchemy engine + SessionLocal + Base + get_db (SQLite smarthome.db) + run_startup_migrations (ALTER TABLE cột mới, idempotent)
+│   │   └── database.py             # Chọn DB theo DATABASE_URL (Postgres/Supabase; rỗng → SQLite smarthome.db): normalize_database_url + make_engine (pool pre_ping/recycle cho Postgres),
+│   │                               # SessionLocal + Base + get_db, init_db() = create_all → run_startup_migrations (2 dialect) → verify_schema → enable_rls → seed_defaults
 │   ├── models/
 │   │   ├── device.py               # DeviceModel (bảng devices: id, name, brand, is_active)
 │   │   └── schedule.py             # ScheduleModel (bảng schedules: time HH:MM, days CSV, action, last_fired_date + lịch KHOẢNG end_time/end_action_*/last_end_fired_date, one_shot)
@@ -24,13 +25,17 @@ backend/
 │       ├── ai_parser.py            # parse_command_with_ai: gọi LLM (OpenRouter) cho câu phức (có few-shot intent schedule); client lazy (thiếu key vẫn boot)
 │       ├── scheduler.py            # scheduler_loop: vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh); bắn start+end độc lập, qua đêm _end_days +1, one-shot tự tắt
 │       └── automation_engine.py    # Automation rules (đang đóng băng, không import trong main.py)
+├── docs/
+│   ├── supabase_schema.sql         # DDL Postgres idempotent (devices + schedules + index + seed 3 thiết bị giữ NGUYÊN id + ENABLE RLS); chạy 1 lần trong Supabase SQL Editor
+│   └── SUPABASE_SETUP.md           # Hướng dẫn 5 bước tạo Supabase → lấy Session pooler (IPv4) → set DATABASE_URL trên Render → verify; kèm bảng sự cố thường gặp
 ├── tests/
 │   ├── test_vn_time_parser.py      # pytest bảng ví dụ parse giờ + resolve_target_days
-│   └── test_scheduler_helpers.py   # pytest _is_time_due/_is_time_missed/_end_days (grace, thứ, qua đêm)
-├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY) — gitignored
-├── .env.example                    # Mẫu biến môi trường
-├── requirements.txt                # Python deps THẬT (UTF-8; tzdata cho zoneinfo, PyJWT + psycopg2-binary)
-└── smarthome.db                    # SQLite DB
+│   ├── test_scheduler_helpers.py   # pytest _is_time_due/_is_time_missed/_end_days (grace, thứ, qua đêm)
+│   └── test_database_schema.py     # pytest chọn DB theo env, seed/idempotent/không ghi đè, migration cột, verify_schema, RLS no-op trên SQLite
+├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL) — gitignored
+├── .env.example                    # Mẫu biến môi trường (có DATABASE_URL + ghi chú bẫy Session pooler)
+├── requirements.txt                # Python deps THẬT (UTF-8; tzdata cho zoneinfo, PyJWT + psycopg2-binary, pytest + httpx)
+└── smarthome.db                    # SQLite DB — chỉ dùng khi KHÔNG đặt DATABASE_URL (dev local). Đang bị track trong git nên redeploy Render ghi đè nó.
 ```
 
 ## Root (`./`)

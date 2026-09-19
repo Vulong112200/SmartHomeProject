@@ -195,3 +195,38 @@ Kéo đổi chỗ:
     → _onReorder: devices.removeAt/insert (setState)
     → DeviceOrder.save([ids theo thứ tự mới])   # chỉ lưu cục bộ, không gọi backend
 ```
+
+## 6. Khởi động backend (lifespan → init_db)
+
+```
+uvicorn app.main:app
+  → import app.main
+      core/database.py (tầng import):
+        DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", ""))
+          rỗng          → "sqlite:///./smarthome.db"
+          "postgres://" → đổi thành "postgresql://"   # SQLAlchemy 2.x chỉ nhận dạng này
+        engine = make_engine(url)
+          sqlite   → connect_args check_same_thread=False
+          postgres → pool_pre_ping + pool_recycle=1800 + pool_size=5
+      ⚠️ KHÔNG chạm DB ở tầng import: exception ở đây làm uvicorn chết với
+         "Error loading ASGI app", không route nào chạy, kể cả /health.
+
+  → lifespan(app)  [try/except → cờ db_ready]
+      log "Đang khởi tạo Database (SQLite|Postgres)..."
+      init_db():
+        1. Base.metadata.create_all(bind)        # checkfirst=True → no-op nếu SQL file đã apply
+        2. run_startup_migrations(bind)          # ALTER TABLE cột thiếu; DDL theo dialect
+        3. verify_schema(bind)                   # raise kèm tên bảng/cột thiếu
+        4. enable_rls(bind)                      # chỉ Postgres; ENABLE RLS, KHÔNG viết policy
+        5. seed_defaults(bind)                   # 3 thiết bị nếu bảng devices rỗng, giữ nguyên id
+        ⚠️ verify (3) phải TRƯỚC seed (5): ngược lại schema lệch làm seed ném
+           OperationalError thô, che mất thông báo nói rõ thiếu cột nào.
+      thành công → db_ready=True; nếu IS_SQLITE → log WARNING cảnh báo mất dữ liệu khi redeploy
+      thất bại   → db_ready=False, KHÔNG raise (boot degraded)
+
+  → khởi động connector (mỗi hãng bọc try/except riêng — 1 hãng lỗi không sập app)
+  → scheduler_task = create_task(scheduler_loop()) CHỈ KHI db_ready
+       (db lỗi mà vẫn chạy thì tick 30s log stack trace vĩnh viễn)
+
+  → GET /health → {"status":"online", "db": db_ready}   # LUÔN 200
+```

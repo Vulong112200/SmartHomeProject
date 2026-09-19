@@ -114,6 +114,23 @@
 - **Backend:** `automation_engine.py` — không được import trong `main.py`.
 - **Key logic:** chưa kích hoạt; tính năng Hẹn giờ dùng `services/scheduler.py` riêng (persist DB) thay vì engine này (rule in-memory).
 
+### Lưu dữ liệu bền (Postgres/Supabase)
+- **Status:** 🚧 code xong, chưa bật trên production (chờ đặt `DATABASE_URL` trên Render — bước 4 của `backend/docs/SUPABASE_SETUP.md`)
+- **Backend:** `core/database.py` · `docs/supabase_schema.sql` · `docs/SUPABASE_SETUP.md` · `tests/test_database_schema.py`
+- **Frontend:** không đổi gì — app không cần build lại.
+- **Key logic:**
+  - **Vấn đề:** ổ đĩa Render free là ephemeral; container dựng lại mỗi lần deploy nên `backend/smarthome.db` (đang bị track trong git) bị ghi đè bằng bản chụp trong repo ⇒ **mọi lịch hẹn người dùng tạo đều mất sau mỗi lần deploy**. Postgres nằm ngoài container nên không bị.
+  - `DATABASE_URL` quyết định DB. Không đặt → fallback SQLite y như cũ (dev offline không đổi gì). `normalize_database_url` đổi `postgres://` → `postgresql://` (SQLAlchemy 2.x chỉ nhận dạng sau; thiếu bước này thì lỗi mơ hồ `NoSuchModuleError`).
+  - `normalize_database_url` / `make_engine` tách thành hàm thuần để test được **mà không phải reload module** — reload tạo `Base` mới, models đã nằm trong `sys.modules` nên không đăng ký lại ⇒ `create_all` không tạo gì.
+  - Pool Postgres: `pool_pre_ping` (Render ngủ → kết nối chết) + `pool_recycle=1800` (Supabase pooler cắt kết nối cũ).
+  - `init_db()` theo thứ tự: `create_all` → `run_startup_migrations` → `verify_schema` → `enable_rls` → `seed_defaults`. **verify phải TRƯỚC seed**: ngược lại thì schema lệch làm seed ném `OperationalError` thô, che mất thông báo nói rõ thiếu cột nào.
+  - `run_startup_migrations` chạy cho **cả hai dialect**; DDL tách riêng vì Boolean của SQLite là `INTEGER` còn Postgres là `BOOLEAN` — dùng chung một DDL sẽ lỗi trên Postgres.
+  - `verify_schema()` raise kèm tên bảng/cột thiếu → `lifespan` bắt → boot degraded, `/health` trả `db:false`. Không có nó thì schema lệch chỉ lộ ra ở request 500 đầu tiên.
+  - `enable_rls()` bật RLS trên Postgres nhưng **không viết policy**: Supabase grant sẵn quyền cho role `anon`/`authenticated` mà anon key nằm ngay trong APK; bật RLS không policy = deny-all, còn backend nối bằng role `postgres` nên bỏ qua RLS và vẫn chạy.
+  - `seed_defaults()` nạp 3 thiết bị nếu bảng `devices` rỗng, **giữ NGUYÊN id** (shortcut đã pin và slot Home Widget lưu theo `brand`+`id`, đổi id là hỏng cả hai mà không báo lỗi). Chỉ chạy khi rỗng ⇒ không ghi đè tên người dùng đã sửa hay thiết bị đã xóa.
+  - ⚠️ Bẫy kết nối: phải dùng chuỗi **Session pooler** của Supabase (IPv4, port 5432). Direct connection chỉ có IPv6 mà Render free không hỗ trợ → `Network is unreachable`.
+  - Phase 1a **chỉ đổi chỗ lưu**. Chưa có đăng nhập, chưa có phân quyền, chưa có bảng thành viên/khu vực.
+
 ### Cấu hình & bảo mật (env)
 - **Status:** ✅ done
 - **Backend:** `load_dotenv()` đầu `main.py` · `backend/.env` (thật, gitignore) · `backend/.env.example` (mẫu).
@@ -125,5 +142,8 @@
 
 | Table | Status | Ghi chú |
 |---|---|---|
-| devices (`DeviceModel`) | ✅ | id, name, brand, is_active. Thiếu icon/category. |
-| schedules (`ScheduleModel`) | ✅ | id, name, brand, device_id, action_type, action_value, time, days, enabled, last_fired_date + end_time, end_action_type, end_action_value, last_end_fired_date, one_shot (lịch khoảng/one-shot; cột mới qua `run_startup_migrations`). ⚠️ Ephemeral trên Render free (mất khi redeploy). |
+| devices (`DeviceModel`) | ✅ | id, name, brand, is_active. Thiếu icon/category. `seed_defaults()` nạp 3 thiết bị khi bảng rỗng, giữ nguyên id. |
+| schedules (`ScheduleModel`) | ✅ | id, name, brand, device_id, action_type, action_value, time, days, enabled, last_fired_date + end_time, end_action_type, end_action_value, last_end_fired_date, one_shot (lịch khoảng/one-shot; cột mới qua `run_startup_migrations`, chạy được trên cả SQLite lẫn Postgres). |
+
+**Nơi lưu:** `DATABASE_URL` → Postgres (Supabase); không đặt → SQLite `backend/smarthome.db`.
+⚠️ Còn chạy SQLite trên Render thì **lịch hẹn mất mỗi lần redeploy** (ổ đĩa ephemeral + file DB bị track trong git). Log lúc boot nói rõ đang dùng loại nào và cảnh báo nếu là SQLite. Cách khắc phục: `backend/docs/SUPABASE_SETUP.md`.
