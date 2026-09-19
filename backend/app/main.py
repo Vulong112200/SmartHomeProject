@@ -1014,7 +1014,10 @@ async def update_member(
         if fields.get("status", target.status) != "active":
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Không thể tự chặn chính mình.")
 
-    # Không để nhà mất chủ: hạ vai hoặc chặn owner cuối cùng thì không còn ai quản trị.
+    # Backstop cho "nhà mất chủ". Hiện tại KHÔNG chạm tới được: người thao tác
+    # bắt buộc là owner/active (require_owner), nên hạ vai một owner khác thì
+    # luôn còn ít nhất 2 owner, còn tự hạ vai đã bị chốt phía trên bắt. Giữ lại
+    # vì nó rẻ và sẽ thành đường chạy thật nếu sau này nới chốt tự-hạ-vai.
     losing_owner = target.role == "owner" and (
         fields.get("role", "owner") != "owner" or fields.get("status", "active") != "active"
     )

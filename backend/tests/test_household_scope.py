@@ -550,3 +550,213 @@ def test_app_token_khong_nham_voi_token_supabase(monkeypatch):
         {"sub": "u", "aud": "authenticated"}, "s", algorithm="HS256"
     )
     assert auth._decode_app_token(supabase_like) is None
+
+
+# =========================================================
+# Endpoint quản trị: khu vực + thành viên
+# =========================================================
+@pytest.fixture
+def owner_client(tmp_path, monkeypatch):
+    """Client đăng nhập sẵn bằng chủ nhà, trên DB tạm."""
+    monkeypatch.setenv("AUTH_DISABLED", "1")
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@x.test")
+
+    from app.core.database import get_db
+    from app.main import app as fastapi_app
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'admin.db'}")
+    init_db(engine)
+    TempSession = sessionmaker(bind=engine)
+
+    def _override_get_db():
+        s = TempSession()
+        try:
+            yield s
+        finally:
+            s.close()
+
+    fastapi_app.dependency_overrides[get_db] = _override_get_db
+
+    def _client():
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=fastapi_app), base_url="http://t"
+        )
+
+    setup = TempSession()
+    yield _client, setup
+    setup.close()
+    fastapi_app.dependency_overrides.clear()
+
+
+def _call(client_factory, method, path, **kw):
+    async def go():
+        async with client_factory() as c:
+            return await c.request(method, path, **kw)
+    return asyncio.run(go())
+
+
+def test_tao_va_liet_ke_khu_vuc(owner_client):
+    make, _db = owner_client
+    r = _call(make, "POST", "/api/zones", json={"name": "Phòng ngủ", "sort_order": 1})
+    assert r.status_code == 200
+    r = _call(make, "GET", "/api/zones")
+    names = [z["name"] for z in r.json()["data"]]
+    assert "Phòng ngủ" in names
+    assert "Nhà" in names  # khu seed mặc định
+
+
+def test_ten_khu_rong_bi_tu_choi(owner_client):
+    make, _db = owner_client
+    r = _call(make, "POST", "/api/zones", json={"name": "   "})
+    assert r.status_code == 400
+
+
+def test_xoa_khu_thi_thiet_bi_ve_hop_thu_den_chu_khong_bi_xoa(owner_client):
+    """Xóa thiết bị theo khu là mất luôn cả lịch hẹn của chúng."""
+    make, db = owner_client
+    zone_id = db.query(ZoneModel).first().id
+    before = db.query(DeviceModel).count()
+
+    r = _call(make, "DELETE", f"/api/zones/{zone_id}")
+    assert r.status_code == 200
+
+    db.expire_all()
+    assert db.query(DeviceModel).count() == before      # không mất thiết bị nào
+    assert all(d.zone_id is None for d in db.query(DeviceModel).all())
+
+
+def test_gan_thiet_bi_vao_khu(owner_client):
+    make, db = owner_client
+    r = _call(make, "POST", "/api/zones", json={"name": "Bếp"})
+    assert r.status_code == 200
+    bep = db.query(ZoneModel).filter(ZoneModel.name == "Bếp").first()
+
+    r = _call(make, "PATCH", "/api/devices/a32aae46a67dbe52860pza",
+              json={"zone_id": bep.id})
+    assert r.status_code == 200
+    assert r.json()["data"]["zone_name"] == "Bếp"
+
+
+def test_gan_vao_khu_khong_ton_tai_bi_tu_choi(owner_client):
+    make, _db = owner_client
+    r = _call(make, "PATCH", "/api/devices/a32aae46a67dbe52860pza",
+              json={"zone_id": 9999})
+    assert r.status_code == 400
+
+
+def test_zone_id_null_tuong_minh_dua_ve_hop_thu_den(owner_client):
+    make, db = owner_client
+    r = _call(make, "PATCH", "/api/devices/a32aae46a67dbe52860pza",
+              json={"zone_id": None})
+    assert r.status_code == 200
+    assert r.json()["data"]["zone_id"] is None
+
+
+def test_duyet_thanh_vien_va_cap_khu(owner_client):
+    make, db = owner_client
+    db.add(MemberModel(user_id="kid9", email="kid9@x.test", display_name="Kid",
+                       role="guest", status="pending"))
+    db.commit()
+    zone_id = db.query(ZoneModel).first().id
+
+    r = _call(make, "PATCH", "/api/members/kid9",
+              json={"role": "kid", "status": "active", "zone_ids": [zone_id]})
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert data["status"] == "active"
+    assert data["zone_ids"] == [zone_id]
+
+
+def test_zone_ids_thay_ca_bo_khong_phai_them_bot(owner_client):
+    make, db = owner_client
+    z1 = db.query(ZoneModel).first().id
+    _call(make, "POST", "/api/zones", json={"name": "Kho"})
+    z2 = db.query(ZoneModel).filter(ZoneModel.name == "Kho").first().id
+
+    db.add(MemberModel(user_id="k2", email="k2@x.test", display_name="",
+                       role="kid", status="active"))
+    db.commit()
+
+    _call(make, "PATCH", "/api/members/k2", json={"zone_ids": [z1, z2]})
+    r = _call(make, "PATCH", "/api/members/k2", json={"zone_ids": [z2]})
+    assert r.json()["data"]["zone_ids"] == [z2]  # z1 bị gỡ, không cộng dồn
+
+
+def test_khong_the_tu_ha_vai_chinh_minh(owner_client):
+    """Chặn ở API chứ không chỉ UI — app bản cũ vẫn gọi thẳng vào đây được."""
+    make, _db = owner_client
+    from app.core.auth import DEV_USER_ID
+
+    _call(make, "GET", "/api/me")  # tạo hàng members cho user dev
+    r = _call(make, "PATCH", f"/api/members/{DEV_USER_ID}", json={"role": "kid"})
+    assert r.status_code == 400
+    assert "chính mình" in r.json()["detail"]
+
+
+def test_khong_the_tu_chan_chinh_minh(owner_client):
+    make, _db = owner_client
+    from app.core.auth import DEV_USER_ID
+
+    _call(make, "GET", "/api/me")
+    r = _call(make, "PATCH", f"/api/members/{DEV_USER_ID}", json={"status": "blocked"})
+    assert r.status_code == 400
+
+
+def test_nha_khong_bao_gio_mat_chu(owner_client):
+    """
+    Bất biến thật: sau mọi thao tác hợp lệ, nhà vẫn còn ít nhất 1 owner active.
+
+    Hai chốt cộng lại đủ đảm bảo điều đó, và chốt "owner cuối cùng" trong
+    update_member là BACKSTOP chứ không phải đường chạy chính: người đang thao
+    tác bắt buộc đã là owner/active (qua require_owner), nên khi họ hạ vai một
+    owner KHÁC thì luôn còn ít nhất 2 owner; còn tự hạ vai thì chốt "chính
+    mình" bắt trước. Test này ghim bất biến, không ghim đường đi.
+    """
+    make, db = owner_client
+    _call(make, "GET", "/api/me")  # user dev được tạo thành owner/active
+
+    db.add(MemberModel(user_id="boss3", email="boss3@x.test", display_name="",
+                       role="owner", status="active"))
+    db.commit()
+
+    # Hạ vai owner khác: cho phép, vì người thao tác vẫn là owner.
+    r = _call(make, "PATCH", "/api/members/boss3", json={"role": "adult"})
+    assert r.status_code == 200
+
+    db.expire_all()
+    remaining = db.query(MemberModel).filter(
+        MemberModel.role == "owner", MemberModel.status == "active").count()
+    assert remaining >= 1
+
+
+def test_vai_khong_hop_le_bi_tu_choi(owner_client):
+    make, db = owner_client
+    db.add(MemberModel(user_id="k3", email="k3@x.test", display_name="",
+                       role="kid", status="active"))
+    db.commit()
+    r = _call(make, "PATCH", "/api/members/k3", json={"role": "superadmin"})
+    assert r.status_code == 400
+
+
+def test_xoa_thiet_bi_xoa_luon_lich_cua_no(owner_client):
+    """Lịch mồ côi sẽ bắn vào thiết bị không tồn tại mỗi ngày, mãi mãi."""
+    make, db = owner_client
+    db.add(ScheduleModel(brand="tuya", device_id="a32aae46a67dbe52860pza",
+                         action_type="on", time="07:00", days="", enabled=True))
+    db.commit()
+    assert db.query(ScheduleModel).count() == 1
+
+    r = _call(make, "DELETE", "/api/devices/a32aae46a67dbe52860pza")
+    assert r.status_code == 200
+    db.expire_all()
+    assert db.query(ScheduleModel).count() == 0
+
+
+def test_them_thiet_bi_trung_id_la_idempotent(owner_client):
+    make, db = owner_client
+    r = _call(make, "POST",
+              "/api/devices?id=a32aae46a67dbe52860pza&name=X&brand=tuya")
+    assert r.json()["status"] == "success"
+    assert "đã có trong nhà" in r.json()["message"]
+    assert db.query(DeviceModel).filter(
+        DeviceModel.id == "a32aae46a67dbe52860pza").count() == 1
