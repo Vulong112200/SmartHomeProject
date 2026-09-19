@@ -38,7 +38,7 @@ from app.services.vn_time_parser import resolve_target_days
 # from app.services.automation_engine import automation_engine, AutomationRule
 
 # Import Database
-from app.core.database import SessionLocal, engine, Base, get_db, run_startup_migrations
+from app.core.database import SessionLocal, get_db, init_db, IS_SQLITE
 from app.models.device import DeviceModel
 from app.models.schedule import ScheduleModel  # đăng ký bảng schedules với Base
 
@@ -77,10 +77,8 @@ if hasattr(sys.stderr, "reconfigure"):
 db_ready = False
 
 
-def init_db() -> None:
-    """Tạo bảng + thêm cột thiếu. Gọi từ lifespan, KHÔNG gọi lúc import."""
-    Base.metadata.create_all(bind=engine)
-    run_startup_migrations(engine)  # thêm cột mới vào bảng cũ (create_all không ALTER)
+# init_db() nằm ở app/core/database.py: create_all -> thêm cột thiếu -> bật RLS
+# (Postgres) -> seed thiết bị nếu rỗng -> verify_schema (raise nếu lệch).
 
 # =========================================================
 # Lifespan: khởi động connector + vòng lặp Hẹn giờ (Scheduler)
@@ -88,11 +86,18 @@ def init_db() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_ready
-    logger.info("Đang khởi tạo Database...")
+    logger.info("Đang khởi tạo Database (%s)...", "SQLite" if IS_SQLITE else "Postgres")
     try:
         init_db()
         db_ready = True
         logger.info("✅ Database sẵn sàng.")
+        if IS_SQLITE:
+            # Trên Render ổ đĩa là ephemeral: container dựng lại mỗi lần deploy
+            # nên file SQLite bị ghi đè -> lịch hẹn của người dùng mất sạch.
+            logger.warning(
+                "⚠️ Đang dùng SQLite. Nếu đây là Render, lịch hẹn sẽ MẤT mỗi lần "
+                "deploy — đặt DATABASE_URL trỏ tới Postgres (xem docs/SUPABASE_SETUP.md)."
+            )
     except Exception as e:
         # Boot degraded: /health vẫn trả lời để UptimeRobot không flatline và
         # để log nói rõ đây là lỗi DB, không phải app chết.
