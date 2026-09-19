@@ -29,3 +29,10 @@ services:
       # --- OpenRouter (AI parse lenh giong noi) ---
       - key: OPENROUTER_API_KEY
         sync: false
+      # --- Postgres (Supabase) ---
+      # Khong dat -> app fallback SQLite, ma o dia Render la ephemeral nen lich
+      # hen MAT moi lan deploy. Phai dung chuoi "Session pooler" (IPv4): Direct
+      # connection cua Supabase chi co IPv6, Render free khong ho tro.
+      # Huong dan: backend/docs/SUPABASE_SETUP.md
+      - key: DATABASE_URL
+        sync: false
