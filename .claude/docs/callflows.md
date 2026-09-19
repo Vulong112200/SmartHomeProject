@@ -230,3 +230,51 @@ uvicorn app.main:app
 
   → GET /health → {"status":"online", "db": db_ready}   # LUÔN 200
 ```
+
+## 7. Phân quyền theo khu vực (mọi request đã đăng nhập)
+
+```
+Request có Bearer token
+  → core/auth.py get_current_user()
+      auth_disabled()?  (AUTH_DISABLED tường minh > suy từ SUPABASE_JWT_SECRET)
+        TẮT  → CurrentUser giả, is_admin=True     # giai đoạn chưa gắn đăng nhập
+        BẬT  → jwt.decode(HS256, aud="authenticated") -> sub + email
+               thiếu/sai token -> 401
+      is_admin = email ∈ ADMIN_EMAILS
+
+  → core/household.py get_member()  [Depends]
+      provision_member(db, user):
+        chưa có hàng members -> tạo guest/pending (người lạ lần đầu)
+        email ∈ ADMIN_EMAILS       -> LUÔN nâng owner/active (cứu hộ)
+
+  → get_current_member()  [Depends, dùng ở MỌI endpoint trừ /api/me]
+        status blocked -> 403 "Tài khoản đã bị chặn."
+        status pending -> 403 "Đang chờ chủ nhà phê duyệt."   # app hiện màn chờ
+
+  → endpoint gọi ĐÚNG MỘT trong các hàm sau (quyền không nằm trong thân endpoint):
+
+     device_query(db, member)              # GET /api/devices, POST /api/ai/parse
+       owner|adult -> query(DeviceModel)                       # thấy cả zone_id NULL
+       kid|guest   -> INNER JOIN member_zone_access ON zone_id  # NULL tự rơi ra
+
+     require_device_access(db, member, id) # control, status, tạo lịch
+       thấy được        -> trả DeviceModel
+       có trong nhà      -> 403   # ngoài khu của mình; trong nhà không giấu nhau
+       không có trong nhà -> 404
+
+     schedule_query(db, member)            # GET /api/schedules
+       lọc theo THIẾT BỊ, KHÔNG theo created_by — lịch là của cả nhà
+
+     require_schedule_write(db, member, id) # PATCH/DELETE /api/schedules
+       require_can_schedule  (guest -> 403)
+       + thấy được lịch      (ngoài khu -> 403)
+       + owner|adult, HOẶC created_by == mình  (kid sửa lịch người khác -> 403)
+
+     require_owner(member)                 # POST/PATCH/DELETE devices, zones, members
+       không phải owner -> 403
+```
+
+Vai và grant đọc từ DB **mỗi request** ⇒ chủ nhà duyệt/đổi vai/chặn thì có hiệu
+lực ngay ở request kế tiếp, không cần đăng nhập lại. Chi phí:
+`get_current_member` = 1 select theo PK, `require_device_access` = 1 select có
+index. Dashboard poll 6s cho 3 card ≈ 1.5 req/s.

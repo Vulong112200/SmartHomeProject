@@ -9,11 +9,21 @@ backend/
 ├── app/
 │   ├── main.py                     # FastAPI app: endpoints (devices/control/status/ai/schedules), init_db() + lifespan (khởi tạo DB → connectors → scheduler task), cờ db_ready, middleware đo thời gian
 │   ├── core/
+│   │   ├── auth.py                 # Verify JWT Supabase -> CurrentUser; CỐ TÌNH sạch model + sạch DB.
+│   │   │                           # auth_disabled() TỰ SUY từ SUPABASE_JWT_SECRET khi AUTH_DISABLED không đặt
+│   │   ├── household.py            # NƠI DUY NHẤT quyết định quyền: provision_member, get_current_member,
+│   │   │                           # require_owner, device_query/schedule_query (lọc theo khu),
+│   │   │                           # require_device_access (403 vs 404), require_schedule_write
 │   │   └── database.py             # Chọn DB theo DATABASE_URL (Postgres/Supabase; rỗng → SQLite smarthome.db): normalize_database_url + make_engine (pool pre_ping/recycle cho Postgres),
 │   │                               # SessionLocal + Base + get_db, init_db() = create_all → run_startup_migrations (2 dialect) → verify_schema → enable_rls → seed_defaults
 │   ├── models/
-│   │   ├── device.py               # DeviceModel (bảng devices: id, name, brand, is_active)
-│   │   └── schedule.py             # ScheduleModel (bảng schedules: time HH:MM, days CSV, action, last_fired_date + lịch KHOẢNG end_time/end_action_*/last_end_fired_date, one_shot)
+│   │   ├── device.py               # DeviceModel (devices: id = id HÃNG làm PK, name, brand, is_active,
+│   │   │                           # zone_id FK ON DELETE SET NULL — NULL = "hộp thư đến", category)
+│   │   ├── member.py               # MemberModel (members: user_id = auth.users.id dạng text, email,
+│   │   │                           # display_name, role owner|adult|kid|guest, status pending|active|blocked)
+│   │   ├── zone.py                 # ZoneModel (zones: id, name, sort_order) + MemberZoneAccessModel
+│   │   │                           # (member_zone_access: grant theo khu, CHỈ cho kid/guest)
+│   │   └── schedule.py             # ScheduleModel (bảng schedules: time HH:MM, days CSV, action, last_fired_date + lịch KHOẢNG end_time/end_action_*/last_end_fired_date, one_shot, created_by)
 │   └── services/
 │       ├── base_connector.py       # Lớp trừu tượng: connect/turn_on/turn_off/get_device_state (+set_mode tùy chọn)
 │       ├── connector_manager.py    # device_manager: register_connector / get_connector theo brand
@@ -26,13 +36,18 @@ backend/
 │       ├── scheduler.py            # scheduler_loop: vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh); bắn start+end độc lập, qua đêm _end_days +1, one-shot tự tắt
 │       └── automation_engine.py    # Automation rules (đang đóng băng, không import trong main.py)
 ├── docs/
-│   ├── supabase_schema.sql         # DDL Postgres idempotent (devices + schedules + index + seed 3 thiết bị giữ NGUYÊN id + ENABLE RLS); chạy 1 lần trong Supabase SQL Editor
+│   ├── supabase_schema.sql         # DDL Postgres idempotent (zones, members, member_zone_access, devices, schedules
+│   │                               # + index + seed 3 thiết bị giữ NGUYÊN id + khu 'Nhà' + ENABLE RLS); chạy 1 lần trong SQL Editor
 │   └── SUPABASE_SETUP.md           # Hướng dẫn 5 bước tạo Supabase → lấy Session pooler (IPv4) → set DATABASE_URL trên Render → verify; kèm bảng sự cố thường gặp
 ├── tests/
 │   ├── test_vn_time_parser.py      # pytest bảng ví dụ parse giờ + resolve_target_days
 │   ├── test_scheduler_helpers.py   # pytest _is_time_due/_is_time_missed/_end_days (grace, thứ, qua đêm)
-│   └── test_database_schema.py     # pytest chọn DB theo env, seed/idempotent/không ghi đè, migration cột, verify_schema, RLS no-op trên SQLite
-├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL) — gitignored
+│   ├── test_database_schema.py     # pytest chọn DB theo env, seed/idempotent/không ghi đè, migration cột, verify_schema, RLS no-op trên SQLite
+│   └── test_household_scope.py     # pytest ma trận quyền: device_query theo khu, 403-vs-404, pending/blocked,
+│                                   # lịch lọc theo thiết bị chứ không theo người tạo, quy tắc bật/tắt xác thực,
+│                                   # + test qua HTTP để bắt lỗi QUÊN GẮN dependency vào endpoint
+├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL,
+│                                   # SUPABASE_JWT_SECRET, ADMIN_EMAILS, AUTH_DISABLED) — gitignored
 ├── .env.example                    # Mẫu biến môi trường (có DATABASE_URL + ghi chú bẫy Session pooler)
 ├── requirements.txt                # Python deps THẬT (UTF-8; tzdata cho zoneinfo, PyJWT + psycopg2-binary, pytest + httpx)
 └── smarthome.db                    # SQLite DB — chỉ dùng khi KHÔNG đặt DATABASE_URL (dev local). Đang bị track trong git nên redeploy Render ghi đè nó.
