@@ -73,6 +73,9 @@ _SEED_DEVICES = [
     ("a32e6ab42d076b8bb5bbrh", "Máy cho mèo ăn tự động", "rojeco"),
 ]
 
+# Khu mặc định cho lần chạy đầu. Chủ nhà chia phòng thật sau ở tab Khu vực.
+_DEFAULT_ZONE_NAME = "Nhà"
+
 # Cột thêm sau khi bảng đã tồn tại. create_all KHÔNG bao giờ ALTER bảng cũ,
 # nên phải tự thêm ở đây. Kiểu khác nhau giữa 2 dialect: Boolean của SQLite là
 # INTEGER, của Postgres là BOOLEAN — dùng chung một DDL sẽ lỗi trên Postgres.
@@ -86,17 +89,30 @@ _WANTED_COLUMNS = {
             "sqlite": "INTEGER DEFAULT 0",
             "postgresql": "BOOLEAN DEFAULT FALSE",
         },
+        # Phase 1b — chỉ để audit và chặn kid sửa lịch người khác.
+        "created_by": {"sqlite": "TEXT", "postgresql": "TEXT"},
+    },
+    "devices": {
+        # Phase 1b — NULL = "hộp thư đến", chỉ owner/adult thấy.
+        # Không đặt FK trong ALTER: SQLite không thêm được FK sau khi tạo bảng,
+        # và bảng mới thì create_all đã gắn FK đầy đủ rồi.
+        "zone_id": {"sqlite": "INTEGER", "postgresql": "INTEGER"},
+        "category": {"sqlite": "TEXT", "postgresql": "TEXT"},
     },
 }
 
 # verify_schema kiểm đúng những cột mà code thật sự đọc/ghi.
 _REQUIRED_SCHEMA = {
-    "devices": {"id", "name", "brand", "is_active"},
+    "devices": {"id", "name", "brand", "is_active", "zone_id", "category"},
     "schedules": {
         "id", "name", "brand", "device_id", "action_type", "action_value",
         "time", "days", "enabled", "last_fired_date", "end_time",
         "end_action_type", "end_action_value", "last_end_fired_date", "one_shot",
+        "created_by",
     },
+    "members": {"user_id", "email", "display_name", "role", "status"},
+    "zones": {"id", "name", "sort_order"},
+    "member_zone_access": {"user_id", "zone_id"},
 }
 
 
@@ -152,23 +168,44 @@ def enable_rls(bind=None) -> None:
 
 def seed_defaults(bind=None) -> None:
     """
-    Nạp 3 thiết bị đang dùng nếu bảng `devices` rỗng. Chỉ chạy khi rỗng nên
-    không bao giờ ghi đè dữ liệu người dùng đã sửa (đổi tên, xóa bớt).
+    Nạp dữ liệu tối thiểu để nhà chạy được ngay:
+      - 3 thiết bị đang dùng, nếu bảng `devices` rỗng;
+      - một khu vực 'Nhà', nếu bảng `zones` rỗng, rồi gán mọi thiết bị chưa
+        phân khu vào đó.
+
+    Cả hai bước chỉ chạy khi bảng tương ứng RỖNG, nên không bao giờ ghi đè
+    dữ liệu người dùng đã sửa (đổi tên thiết bị, xóa bớt, chia phòng lại).
     """
     bind = bind if bind is not None else engine
     with bind.begin() as conn:
-        count = conn.execute(text("SELECT COUNT(*) FROM devices")).scalar()
-        if count:
-            return
-        for device_id, name, brand in _SEED_DEVICES:
+        if not conn.execute(text("SELECT COUNT(*) FROM devices")).scalar():
+            for device_id, name, brand in _SEED_DEVICES:
+                conn.execute(
+                    text(
+                        "INSERT INTO devices (id, name, brand, is_active) "
+                        "VALUES (:id, :name, :brand, :active)"
+                    ),
+                    {"id": device_id, "name": name, "brand": brand, "active": True},
+                )
+            logger.info("Đã seed %d thiết bị mặc định.", len(_SEED_DEVICES))
+
+        # Khu mặc định: nếu không có, mọi thiết bị cũ sẽ nằm ở "hộp thư đến"
+        # (zone_id IS NULL) và kid/guest không thể được cấp quyền cho chúng.
+        if not conn.execute(text("SELECT COUNT(*) FROM zones")).scalar():
             conn.execute(
-                text(
-                    "INSERT INTO devices (id, name, brand, is_active) "
-                    "VALUES (:id, :name, :brand, :active)"
-                ),
-                {"id": device_id, "name": name, "brand": brand, "active": True},
+                text("INSERT INTO zones (name, sort_order) VALUES (:name, 0)"),
+                {"name": _DEFAULT_ZONE_NAME},
             )
-    logger.info("Đã seed %d thiết bị mặc định (bảng devices trước đó rỗng).", len(_SEED_DEVICES))
+            zone_id = conn.execute(
+                text("SELECT id FROM zones WHERE name = :name"),
+                {"name": _DEFAULT_ZONE_NAME},
+            ).scalar()
+            conn.execute(
+                text("UPDATE devices SET zone_id = :zid WHERE zone_id IS NULL"),
+                {"zid": zone_id},
+            )
+            logger.info("Đã tạo khu mặc định '%s' và gán thiết bị chưa phân khu vào đó.",
+                        _DEFAULT_ZONE_NAME)
 
 
 def verify_schema(bind=None) -> None:
@@ -212,7 +249,7 @@ def init_db(bind=None) -> None:
     bind = bind if bind is not None else engine
 
     # import để models đăng ký vào Base.metadata trước khi create_all
-    from app.models import device, schedule  # noqa: F401
+    from app.models import device, member, schedule, zone  # noqa: F401
 
     Base.metadata.create_all(bind=bind)
     run_startup_migrations(bind)

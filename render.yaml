@@ -36,3 +36,12 @@ services:
       # Huong dan: backend/docs/SUPABASE_SETUP.md
       - key: DATABASE_URL
         sync: false
+      # --- Dang nhap & phan quyen (Phase 1b/2) ---
+      # CHUA dat SUPABASE_JWT_SECRET -> xac thuc TU TAT (moi request coi nhu
+      # chu nha). Dat vao -> xac thuc tu BAT. Khong can AUTH_DISABLED.
+      # Chi dat SUPABASE_JWT_SECRET SAU KHI app da co dang nhap va da cai len
+      # het dien thoai trong nha, neu khong ca nha bi 401.
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false

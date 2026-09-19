@@ -26,3 +26,8 @@ class ScheduleModel(Base):
     end_action_value = Column(String, nullable=True)
     last_end_fired_date = Column(String, nullable=True)  # chống bắn trùng cho hành động kết thúc
     one_shot = Column(Boolean, default=False)         # chạy 1 lần: tự enabled=False sau hành động cuối
+
+    # Ai tạo lịch — CHỈ để audit và để chặn kid sửa lịch người khác.
+    # Lịch hẹn là của CẢ NHÀ, không phải của một người: scheduler bắn thay mặt
+    # cả nhà, nên không lọc lịch theo cột này.
+    created_by = Column(String, nullable=True)

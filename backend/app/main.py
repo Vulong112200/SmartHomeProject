@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from pydantic import BaseModel
-from fastapi import FastAPI, WebSocket, Depends
+from fastapi import FastAPI, WebSocket, Depends, HTTPException, status
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -38,7 +38,23 @@ from app.services.vn_time_parser import resolve_target_days
 # from app.services.automation_engine import automation_engine, AutomationRule
 
 # Import Database
+from app.core.auth import auth_status
 from app.core.database import SessionLocal, get_db, init_db, IS_SQLITE
+from app.core.household import (
+    accessible_zones,
+    device_query,
+    get_current_member,
+    get_member,
+    member_to_dict,
+    require_can_schedule,
+    require_device_access,
+    require_owner,
+    require_schedule_write,
+    schedule_query,
+    zone_ids_of,
+)
+from app.models.member import ROLES, STATUSES, MemberModel
+from app.models.zone import MemberZoneAccessModel, ZoneModel
 from app.models.device import DeviceModel
 from app.models.schedule import ScheduleModel  # đăng ký bảng schedules với Base
 
@@ -103,6 +119,17 @@ async def lifespan(app: FastAPI):
         # để log nói rõ đây là lỗi DB, không phải app chết.
         logger.error(f"❌ Khởi tạo DB thất bại — app chạy ở chế độ degraded: {e}")
 
+    # Xác thực: nói to lúc boot. Chạy mở mà không ai biết là kịch bản tệ nhất.
+    auth_on, why = auth_status()
+    if auth_on:
+        logger.info("🔒 Xác thực BẬT (%s).", why)
+    else:
+        logger.warning(
+            "🔓 Xác thực TẮT (%s) — mọi request được coi là chủ nhà. "
+            "Đúng cho giai đoạn chưa gắn đăng nhập; đặt SUPABASE_JWT_SECRET để bật.",
+            why,
+        )
+
     logger.info("Bắt đầu khởi động các connector...")
 
     async def _init_connector(brand: str, factory):
@@ -156,21 +183,83 @@ app.add_middleware(
 # =========================================================
 # API - Get Devices
 # =========================================================
+class DeviceUpdate(BaseModel):
+    """PATCH /api/devices/{id} — chỉ field nào gửi mới được sửa (exclude_unset)."""
+    name: str | None = None
+    zone_id: int | None = None   # null tường minh = đưa về "hộp thư đến"
+    category: str | None = None
+
+
+class ZoneCreate(BaseModel):
+    name: str
+    sort_order: int = 0
+
+
+class ZoneUpdate(BaseModel):
+    name: str | None = None
+    sort_order: int | None = None
+
+
+class MemberUpdate(BaseModel):
+    """PATCH /api/members/{user_id} — zone_ids thay CẢ BỘ, không phải add/remove."""
+    role: str | None = None
+    status: str | None = None
+    display_name: str | None = None
+    zone_ids: list[int] | None = None
+
+
+def _device_to_dict(d: DeviceModel, zone_name: str | None = None) -> dict:
+    return {
+        "id": d.id,
+        "name": d.name,
+        "brand": d.brand,
+        "is_active": d.is_active,
+        "zone_id": d.zone_id,
+        "zone_name": zone_name,
+        "category": d.category,
+    }
+
+
 @app.get("/api/devices")
-async def get_all_devices(db: Session = Depends(get_db)):
-    devices = db.query(DeviceModel).all()
-    return {"status": "success", "data": devices}
+async def get_all_devices(
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    # device_query đã lọc theo khu được cấp — kid/guest không thấy khu khác,
+    # và thiết bị chưa phân khu (zone_id NULL) tự rơi ra ngoài INNER JOIN.
+    rows = (
+        device_query(db, member)
+        .outerjoin(ZoneModel, ZoneModel.id == DeviceModel.zone_id)
+        .with_entities(DeviceModel, ZoneModel.name)
+        .order_by(ZoneModel.sort_order, DeviceModel.name)
+        .all()
+    )
+    return {"status": "success", "data": [_device_to_dict(d, zn) for d, zn in rows]}
 
 # =========================================================
-# API - Add & Delete Device
+# API - Add & Delete Device (chỉ chủ nhà)
 # =========================================================
 @app.post("/api/devices")
-async def add_device(id: str, name: str, brand: str, db: Session = Depends(get_db)):
+async def add_device(
+    id: str,
+    name: str,
+    brand: str,
+    zone_id: int | None = None,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(require_owner),
+):
     try:
-        new_device = DeviceModel(id=id, name=name, brand=brand, is_active=True)
-        db.add(new_device)
+        # Idempotent: thêm lại id đã có = "đã có trong nhà", không phải lỗi.
+        # Client retry (mạng chập chờn) không nên báo đỏ.
+        existing = db.query(DeviceModel).filter(DeviceModel.id == id).first()
+        if existing:
+            return {"status": "success", "message": f"Thiết bị đã có trong nhà: {existing.name}"}
+
+        if zone_id is not None and not db.query(ZoneModel).filter(ZoneModel.id == zone_id).first():
+            return {"status": "error", "message": "Khu vực không tồn tại."}
+
+        db.add(DeviceModel(id=id, name=name, brand=brand, is_active=True, zone_id=zone_id))
         db.commit()
-        db.refresh(new_device)
         logger.info(f"Đã thêm thiết bị mới: {name} ({brand})")
         return {"status": "success", "message": f"Đã thêm: {name}"}
     except Exception as e:
@@ -178,17 +267,62 @@ async def add_device(id: str, name: str, brand: str, db: Session = Depends(get_d
         logger.error(f"Lỗi thêm thiết bị: {e}")
         return {"status": "error", "message": f"Lỗi: {str(e)}"}
 
+
+@app.patch("/api/devices/{device_id}")
+async def update_device(
+    device_id: str,
+    body: DeviceUpdate,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(require_owner),
+):
+    """Đổi tên / gán khu vực / đặt loại. Đây là cách thiết bị được gán phòng."""
+    device = db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
+    if device is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy thiết bị.")
+
+    fields = body.model_dump(exclude_unset=True)
+    if "zone_id" in fields and fields["zone_id"] is not None:
+        if not db.query(ZoneModel).filter(ZoneModel.id == fields["zone_id"]).first():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Khu vực không tồn tại.")
+
+    for key, value in fields.items():
+        setattr(device, key, value)
+    db.commit()
+    db.refresh(device)
+
+    zone_name = None
+    if device.zone_id is not None:
+        zone = db.query(ZoneModel).filter(ZoneModel.id == device.zone_id).first()
+        zone_name = zone.name if zone else None
+    return {"status": "success", "data": _device_to_dict(device, zone_name)}
+
+
 @app.delete("/api/devices/{device_id}")
-async def delete_device(device_id: str, db: Session = Depends(get_db)):
+async def delete_device(
+    device_id: str,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(require_owner),
+):
     # Dùng Depends(get_db) để session luôn được đóng (kể cả khi lỗi) — tránh leak.
     try:
         device = db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
-        if device:
-            db.delete(device)
-            db.commit()
-            logger.info(f"Đã xóa thiết bị {device_id}")
-            return {"status": "success", "message": f"Đã xóa thiết bị {device_id}"}
-        return {"status": "error", "message": "Không tìm thấy thiết bị để xóa."}
+        if not device:
+            return {"status": "error", "message": "Không tìm thấy thiết bị để xóa."}
+
+        # Xóa luôn lịch của thiết bị. Không làm thì lịch mồ côi vẫn được
+        # scheduler bắn vào một thiết bị không còn tồn tại, mỗi ngày, mãi mãi.
+        orphans = db.query(ScheduleModel).filter(ScheduleModel.device_id == device_id).count()
+        if orphans:
+            db.query(ScheduleModel).filter(ScheduleModel.device_id == device_id).delete()
+
+        db.delete(device)
+        db.commit()
+        logger.info(f"Đã xóa thiết bị {device_id} (kèm {orphans} lịch hẹn)")
+        return {
+            "status": "success",
+            "message": f"Đã xóa thiết bị {device_id}"
+            + (f" và {orphans} lịch hẹn của nó" if orphans else ""),
+        }
     except Exception as e:
         db.rollback()
         logger.error(f"Lỗi xóa thiết bị: {e}")
@@ -219,7 +353,14 @@ def _cache_invalidate(brand: str, device_id: str):
 # API - Test Control Device (Action & Mode)
 # =========================================================
 @app.get("/api/test-control/{brand}/{device_id}")
-async def test_control(brand: str, device_id: str, action: str = "on"):
+async def test_control(
+    brand: str,
+    device_id: str,
+    action: str = "on",
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    require_device_access(db, member, device_id)
     try:
         connector = device_manager.get_connector(brand)
         if action == "on":
@@ -237,7 +378,14 @@ async def test_control(brand: str, device_id: str, action: str = "on"):
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/test-control/{brand}/{device_id}/mode")
-async def test_control_mode(brand: str, device_id: str, mode: str):
+async def test_control_mode(
+    brand: str,
+    device_id: str,
+    mode: str,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    require_device_access(db, member, device_id)
     try:
         connector = device_manager.get_connector(brand)
         if hasattr(connector, 'set_mode'):
@@ -258,7 +406,14 @@ async def test_control_mode(brand: str, device_id: str, mode: str):
 # API - Lấy trạng thái THẬT của thiết bị (query từ phần cứng)
 # =========================================================
 @app.get("/api/devices/{brand}/{device_id}/status")
-async def get_device_status(brand: str, device_id: str, fresh: bool = False):
+async def get_device_status(
+    brand: str,
+    device_id: str,
+    fresh: bool = False,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    require_device_access(db, member, device_id)
     try:
         # fresh=1: bỏ qua cache (client gọi ngay sau lệnh điều khiển để lấy
         # trạng thái mới nhất). Poll định kỳ vẫn dùng cache bình thường.
@@ -303,7 +458,8 @@ def _verb_to_schedule_action(verb: str | None, mode: str | None) -> tuple[str | 
         return "mode", mode
     return None, None
 
-def _create_schedule_from_intent(action: dict, devices: list, db: Session) -> dict:
+def _create_schedule_from_intent(action: dict, devices: list, db: Session,
+                                 created_by: str | None = None) -> dict:
     """
     Tạo lịch hẹn từ intent 'schedule' của local parser / AI.
     Trả về bubble chat {"device_name","action","success"} — KHÔNG chạm connector.
@@ -333,6 +489,7 @@ def _create_schedule_from_intent(action: dict, devices: list, db: Session) -> di
             time=action.get("time", ""), days=days,
             end_time=end_time, end_action_type=end_action_type,
             end_action_value=end_action_value, one_shot=one_shot,
+            created_by=created_by,
         )
         prefix = "ngày mai " if (rolled or int(action.get("day_offset", 0) or 0) > 0) else ""
         label = _action_label_vn(action_type, action_value)
@@ -355,9 +512,15 @@ class VoiceCommand(BaseModel):
     text: str
 
 @app.post("/api/ai/parse")
-async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_db)):
+async def parse_voice_command(
+    command: VoiceCommand,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
     # Depends(get_db): session tự đóng kể cả khi query lỗi — tránh leak.
-    devices = db.query(DeviceModel).all()
+    # device_query: scoping theo khu là TỰ ĐỘNG — parser chỉ nhìn thấy thiết bị
+    # member được phép dùng, nên "bật đèn" của kid không chạm được khu khác.
+    devices = device_query(db, member).all()
 
     text_lower = command.text.lower()
     logger.info(f"Nhận lệnh giọng nói: '{command.text}'")
@@ -392,7 +555,7 @@ async def parse_voice_command(command: VoiceCommand, db: Session = Depends(get_d
     async def execute_single_action(action):
         # Ý ĐỊNH HẸN GIỜ: tạo lịch trong DB, TUYỆT ĐỐI không gọi connector.
         if action.get("intent") == "schedule":
-            return _create_schedule_from_intent(action, devices, db)
+            return _create_schedule_from_intent(action, devices, db, member.user_id)
 
         brand = action.get("brand")
         dev_id = action.get("id")
@@ -520,7 +683,8 @@ def _create_schedule_row(db: Session, *, name: str, brand: str, device_id: str,
                          days: str = "", enabled: bool = True,
                          end_time: str | None = None, end_action_type: str | None = None,
                          end_action_value: str | None = None,
-                         one_shot: bool = False) -> ScheduleModel:
+                         one_shot: bool = False,
+                         created_by: str | None = None) -> ScheduleModel:
     """Validate + tạo 1 lịch. Dùng chung cho POST /api/schedules và trợ lý AI.
     Lỗi validate -> raise ValueError(thông báo tiếng Việt)."""
     err = _validate_schedule_fields(action_type, action_value, time, days,
@@ -533,6 +697,7 @@ def _create_schedule_row(db: Session, *, name: str, brand: str, device_id: str,
         time=time, days=days, enabled=enabled,
         end_time=end_time, end_action_type=end_action_type,
         end_action_value=end_action_value, one_shot=one_shot,
+        created_by=created_by,
     )
     db.add(sch)
     db.commit()
@@ -551,15 +716,27 @@ def _schedule_to_dict(s: ScheduleModel) -> dict:
         "end_action_value": s.end_action_value,
         "last_end_fired_date": s.last_end_fired_date,
         "one_shot": bool(s.one_shot),
+        "created_by": s.created_by,
     }
 
 @app.get("/api/schedules")
-async def list_schedules(db: Session = Depends(get_db)):
-    schedules = db.query(ScheduleModel).order_by(ScheduleModel.time).all()
+async def list_schedules(
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    # Lọc theo THIẾT BỊ, không theo người tạo: lịch là của cả nhà, ai thấy
+    # thiết bị thì thấy lịch của nó.
+    schedules = schedule_query(db, member).order_by(ScheduleModel.time).all()
     return {"status": "success", "data": [_schedule_to_dict(s) for s in schedules]}
 
 @app.post("/api/schedules")
-async def create_schedule(body: ScheduleCreate, db: Session = Depends(get_db)):
+async def create_schedule(
+    body: ScheduleCreate,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    require_can_schedule(member)
+    require_device_access(db, member, body.device_id)
     try:
         sch = _create_schedule_row(
             db, name=body.name, brand=body.brand, device_id=body.device_id,
@@ -567,6 +744,7 @@ async def create_schedule(body: ScheduleCreate, db: Session = Depends(get_db)):
             time=body.time, days=body.days, enabled=body.enabled,
             end_time=body.end_time, end_action_type=body.end_action_type,
             end_action_value=body.end_action_value, one_shot=body.one_shot,
+            created_by=member.user_id,
         )
         return {"status": "success", "data": _schedule_to_dict(sch)}
     except ValueError as e:
@@ -577,10 +755,13 @@ async def create_schedule(body: ScheduleCreate, db: Session = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 @app.patch("/api/schedules/{schedule_id}")
-async def update_schedule(schedule_id: int, body: ScheduleUpdate, db: Session = Depends(get_db)):
-    sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
-    if not sch:
-        return {"status": "error", "message": "Không tìm thấy lịch."}
+async def update_schedule(
+    schedule_id: int,
+    body: ScheduleUpdate,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    sch = require_schedule_write(db, member, schedule_id)
     fields = body.model_dump(exclude_unset=True)
     # Validate trên giá trị ĐÃ MERGE (giá trị mới nếu có, không thì giá trị hiện tại)
     # để so chéo start/end chính xác với PATCH từng phần.
@@ -615,10 +796,12 @@ async def update_schedule(schedule_id: int, body: ScheduleUpdate, db: Session = 
         return {"status": "error", "message": str(e)}
 
 @app.delete("/api/schedules/{schedule_id}")
-async def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
-    sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
-    if not sch:
-        return {"status": "error", "message": "Không tìm thấy lịch."}
+async def delete_schedule(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    sch = require_schedule_write(db, member, schedule_id)
     try:
         db.delete(sch)
         db.commit()
@@ -630,12 +813,19 @@ async def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/schedules/{schedule_id}/run")
-async def run_schedule_now(schedule_id: int, part: str = "start", db: Session = Depends(get_db)):
+async def run_schedule_now(
+    schedule_id: int,
+    part: str = "start",
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
     """Chạy NGAY hành động của lịch (để test), không ảnh hưởng last_fired_date.
     part=end: chạy hành động KẾT THÚC của lịch khoảng."""
-    sch = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
+    # Chạy tay = điều khiển thiết bị, nên chỉ cần quyền dùng thiết bị đó,
+    # không cần quyền sửa lịch (kid bấm chạy thử lịch bố mẹ đặt là hợp lý).
+    sch = schedule_query(db, member).filter(ScheduleModel.id == schedule_id).first()
     if not sch:
-        return {"status": "error", "message": "Không tìm thấy lịch."}
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy lịch.")
     if part == "end" and not sch.end_time:
         return {"status": "error", "message": "Lịch này không có hành động kết thúc."}
     action_type = sch.end_action_type if part == "end" else sch.action_type
@@ -651,6 +841,208 @@ async def run_schedule_now(schedule_id: int, part: str = "start", db: Session = 
     except Exception as e:
         logger.error(f"Lỗi chạy lịch #{schedule_id}: {e}")
         return {"status": "error", "message": str(e)}
+
+# =========================================================
+# API - Tôi là ai (app gọi ngay sau đăng nhập để biết vào màn hình nào)
+# =========================================================
+@app.get("/api/me")
+async def whoami(
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_member),
+):
+    """
+    Dùng get_member (KHÔNG chặn pending) — app phải đọc được trạng thái của
+    chính mình để biết hiện màn hình chờ duyệt hay màn hình chính.
+    """
+    zones = [
+        {"id": z.id, "name": z.name, "sort_order": z.sort_order}
+        for z in accessible_zones(db, member)
+    ]
+    return {
+        "status": "success",
+        "data": {
+            **member_to_dict(member, zone_ids_of(db, member.user_id)),
+            "zones": zones,
+        },
+    }
+
+
+# =========================================================
+# API - Khu vực (chỉ chủ nhà sửa; ai cũng đọc được khu của mình)
+# =========================================================
+@app.get("/api/zones")
+async def list_zones(
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    zones = accessible_zones(db, member)
+    return {
+        "status": "success",
+        "data": [{"id": z.id, "name": z.name, "sort_order": z.sort_order} for z in zones],
+    }
+
+
+@app.post("/api/zones")
+async def create_zone(
+    body: ZoneCreate,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(require_owner),
+):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Tên khu vực không được để trống.")
+    zone = ZoneModel(name=name, sort_order=body.sort_order)
+    db.add(zone)
+    db.commit()
+    db.refresh(zone)
+    logger.info(f"Đã tạo khu vực #{zone.id}: {zone.name}")
+    return {
+        "status": "success",
+        "data": {"id": zone.id, "name": zone.name, "sort_order": zone.sort_order},
+    }
+
+
+@app.patch("/api/zones/{zone_id}")
+async def update_zone(
+    zone_id: int,
+    body: ZoneUpdate,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(require_owner),
+):
+    zone = db.query(ZoneModel).filter(ZoneModel.id == zone_id).first()
+    if zone is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy khu vực.")
+    fields = body.model_dump(exclude_unset=True)
+    if "name" in fields:
+        if not (fields["name"] or "").strip():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Tên khu vực không được để trống.")
+        fields["name"] = fields["name"].strip()
+    for key, value in fields.items():
+        setattr(zone, key, value)
+    db.commit()
+    db.refresh(zone)
+    return {
+        "status": "success",
+        "data": {"id": zone.id, "name": zone.name, "sort_order": zone.sort_order},
+    }
+
+
+@app.delete("/api/zones/{zone_id}")
+async def delete_zone(
+    zone_id: int,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(require_owner),
+):
+    zone = db.query(ZoneModel).filter(ZoneModel.id == zone_id).first()
+    if zone is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy khu vực.")
+
+    # Thiết bị KHÔNG bị xóa theo — chúng về "hộp thư đến" (zone_id NULL) để chủ
+    # nhà gán lại. Xóa thiết bị theo khu là mất luôn cả lịch hẹn của chúng.
+    moved = db.query(DeviceModel).filter(DeviceModel.zone_id == zone_id).count()
+    db.query(DeviceModel).filter(DeviceModel.zone_id == zone_id).update({"zone_id": None})
+    db.query(MemberZoneAccessModel).filter(MemberZoneAccessModel.zone_id == zone_id).delete()
+    db.delete(zone)
+    db.commit()
+    logger.info(f"Đã xóa khu vực #{zone_id}; {moved} thiết bị về hộp thư đến")
+    message = "Đã xóa khu vực"
+    if moved:
+        message += f"; {moved} thiết bị chuyển về mục chưa phân khu"
+    return {"status": "success", "message": message}
+
+
+# =========================================================
+# API - Thành viên (chỉ chủ nhà)
+# =========================================================
+@app.get("/api/members")
+async def list_members(
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(require_owner),
+):
+    rows = db.query(MemberModel).order_by(MemberModel.status, MemberModel.email).all()
+    return {
+        "status": "success",
+        "data": [member_to_dict(m, zone_ids_of(db, m.user_id)) for m in rows],
+    }
+
+
+@app.patch("/api/members/{user_id}")
+async def update_member(
+    user_id: str,
+    body: MemberUpdate,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(require_owner),
+):
+    """Duyệt / đổi vai / cấp khu. `zone_ids` thay CẢ BỘ grant, không phải add-remove."""
+    target = db.query(MemberModel).filter(MemberModel.user_id == user_id).first()
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy thành viên.")
+
+    fields = body.model_dump(exclude_unset=True)
+
+    if "role" in fields and fields["role"] not in ROLES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Vai không hợp lệ. Hợp lệ: {list(ROLES)}"
+        )
+    if "status" in fields and fields["status"] not in STATUSES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Trạng thái không hợp lệ. Hợp lệ: {list(STATUSES)}"
+        )
+
+    # Tự hạ vai / tự chặn mình = tự khóa mình khỏi nhà mình. Chặn ở API chứ không
+    # chỉ ở UI: app bản cũ hoặc request gõ tay vẫn đi thẳng vào đây được.
+    if target.user_id == member.user_id:
+        if fields.get("role", target.role) != "owner":
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Không thể tự hạ vai của chính mình."
+            )
+        if fields.get("status", target.status) != "active":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Không thể tự chặn chính mình.")
+
+    # Không để nhà mất chủ: hạ vai hoặc chặn owner cuối cùng thì không còn ai quản trị.
+    losing_owner = target.role == "owner" and (
+        fields.get("role", "owner") != "owner" or fields.get("status", "active") != "active"
+    )
+    if losing_owner:
+        remaining = (
+            db.query(MemberModel)
+            .filter(
+                MemberModel.role == "owner",
+                MemberModel.status == "active",
+                MemberModel.user_id != target.user_id,
+            )
+            .count()
+        )
+        if remaining == 0:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Đây là chủ nhà duy nhất — hãy chỉ định chủ nhà khác trước.",
+            )
+
+    zone_ids = fields.pop("zone_ids", None)
+    for key, value in fields.items():
+        setattr(target, key, value)
+
+    if zone_ids is not None:
+        valid = {z.id for z in db.query(ZoneModel).filter(ZoneModel.id.in_(zone_ids)).all()}
+        unknown = set(zone_ids) - valid
+        if unknown:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, f"Khu vực không tồn tại: {sorted(unknown)}"
+            )
+        db.query(MemberZoneAccessModel).filter(
+            MemberZoneAccessModel.user_id == user_id
+        ).delete()
+        for zid in valid:
+            db.add(MemberZoneAccessModel(user_id=user_id, zone_id=zid))
+
+    db.commit()
+    db.refresh(target)
+    logger.info(
+        f"Đã cập nhật thành viên {target.email}: vai={target.role} trạng thái={target.status}"
+    )
+    return {"status": "success", "data": member_to_dict(target, zone_ids_of(db, user_id))}
+
 
 # =========================================================
 # WebSocket (Giữ kết nối cho App)
