@@ -103,6 +103,19 @@ def _extract_device_actions(text: str, devices_list: list) -> list:
     return actions
 
 
+def match_scene(text: str, scenes: list):
+    """
+    Kịch bản được nhắc tên trong câu ("ra khỏi nhà", "chạy kịch bản đi ngủ").
+    Tên dài nhất thắng (tránh "Ngủ" ăn mất "Đi ngủ trưa"). Câu có GIỜ hẹn thì
+    không khớp — hẹn giờ kịch bản chưa hỗ trợ, không được chạy ngay thay vào.
+    """
+    text = text.lower()
+    if extract_schedule_times(text) is not None:
+        return None
+    hits = [s for s in scenes if len((s.name or "").strip()) >= 3 and s.name.strip().lower() in text]
+    return max(hits, key=lambda s: len(s.name.strip()), default=None)
+
+
 def _default_end_action(start: dict):
     """
     Hành động kết thúc MẶC ĐỊNH khi câu khoảng chỉ nói 1 hành động:

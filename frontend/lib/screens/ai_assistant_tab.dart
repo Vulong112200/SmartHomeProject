@@ -5,9 +5,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:http/http.dart' as http;
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../core/auth_service.dart';
 import '../core/config.dart';
+import '../core/voice_feedback.dart';
 import '../core/websocket_provider.dart';
 import '../theme/app_colors.dart';
 import 'chat_bubble.dart';
@@ -33,6 +35,9 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
 
   Timer? _silenceTimer;
   bool _commandSentThisSession = false;
+  // initialize() chỉ cần 1 lần (trước đây gọi lại MỖI lần bấm mic). Lần trước
+  // thất bại (chưa cấp quyền) thì lần bấm sau thử lại.
+  bool _speechReady = false;
 
   final String baseUrl = AppConfig.baseUrl;
 
@@ -57,6 +62,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
     // (speech có thể giữ session mic nếu không stop).
     _silenceTimer?.cancel();
     _speech.stop();
+    VoiceFeedback.stop();
     _commandController.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -79,9 +85,33 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
     });
   }
 
+  void _addBotMessage(String text) {
+    setState(() => messages.add({"isUser": false, "text": text, "actions": []}));
+    _scrollToBottom();
+  }
+
+  /// Micro không dùng được: nói rõ lý do + cách sửa, thay vì im lặng như trước.
+  Future<void> _explainMicUnavailable() async {
+    final status = await Permission.microphone.status;
+    if (!mounted) return;
+    if (status.isPermanentlyDenied || status.isRestricted) {
+      _addBotMessage("Ứng dụng chưa được cấp quyền micro. Vào Cài đặt > Quyền > Micro để bật.");
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Cần quyền micro để ra lệnh bằng giọng nói'),
+        action: SnackBarAction(label: 'Mở Cài đặt', onPressed: openAppSettings),
+      ));
+    } else if (status.isDenied) {
+      _addBotMessage("Bạn đã từ chối quyền micro. Bấm mic lần nữa và chọn Cho phép nhé.");
+    } else {
+      _addBotMessage("Máy này chưa có dịch vụ nhận giọng nói (Google). Bạn vẫn có thể gõ lệnh.");
+    }
+  }
+
   void _listen() async {
     if (!_isListening) {
-      bool available = await _speech.initialize(
+      // Đang đọc phản hồi mà bật mic thì mic thu lại chính giọng đọc.
+      await VoiceFeedback.stop();
+      final bool available = _speechReady || await _speech.initialize(
         onStatus: (status) {
           // Bỏ hàm gửi tự động ở đây để tránh bị duplicate lệnh
           // Callback của plugin có thể tới SAU khi tab đã dispose.
@@ -94,6 +124,11 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
       );
 
       if (!mounted) return;
+      _speechReady = available;
+      if (!available) {
+        await _explainMicUnavailable();
+        return;
+      }
       if (available) {
         // RESET CÁC BIẾN KHI BẮT ĐẦU NGHE MỚI
         _hasGreetedThisSession = false;
@@ -195,7 +230,9 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
 
         setState(() {
           _isTyping = false;
-          List parsedActions = resData['execution_results'] ?? [];
+          final raw = resData['execution_results'];
+          final List parsedActions = raw is List ? raw : const [];
+          VoiceFeedback.speak(VoiceFeedback.summarize(parsedActions));
 
           if (parsedActions.isEmpty) {
             messages.add({"isUser": false, "text": "Tôi chưa hiểu lệnh này, bạn có thể nói rõ hơn không?", "actions": []});

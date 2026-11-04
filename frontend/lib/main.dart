@@ -12,6 +12,7 @@ import 'core/auth_service.dart';
 import 'core/config.dart';
 import 'core/shortcut_handler.dart';
 import 'core/theme_controller.dart';
+import 'core/voice_feedback.dart';
 import 'core/widget_service.dart';
 import 'screens/auth_gate.dart';
 
@@ -31,6 +32,7 @@ Future<void> main() async {
 
   // Đọc sáng/tối đã chọn TRƯỚC runApp để không nháy theme sai lúc mở app.
   await ThemeController.load();
+  await VoiceFeedback.load();
 
   runApp(const ProviderScope(child: SmartHomeApp()));
   // Lắng nghe khi người dùng bấm icon shortcut trên home screen.

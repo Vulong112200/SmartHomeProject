@@ -134,3 +134,37 @@ def test_api_me_bao_quyen_sua_kich_ban(api):
     me = lambda u, a=False: _req(api.as_user(u, is_admin=a), "GET", "/api/me").json()["data"]
     assert me("owner1", True)["can_edit_scenes"] is True
     assert me("kid1")["can_edit_scenes"] is False
+
+
+# =========================================================
+# Kịch bản bằng giọng nói
+# =========================================================
+def _say(api, user, text, is_admin=False):
+    return _req(api.as_user(user, is_admin=is_admin), "POST", "/api/ai/parse", json={"text": text}).json()
+
+
+def test_noi_ten_kich_ban_thi_chay(api):
+    _create(api)
+    res = _say(api, "owner1", "Ra khỏi nhà nhé", is_admin=True)
+    assert api.sent == [("tuya", "door-a", "mode", "close"), ("tuya", "lamp-b", "off", None)]
+    assert all(r["success"] for r in res["execution_results"])
+
+
+def test_kich_ban_mo_cua_khong_chay_bang_giong_noi(api):
+    _create(api, body={"name": "Về nhà", "actions": [{"device_id": "door-a", "action_type": "mode", "action_value": "open"}]})
+    res = _say(api, "owner1", "về nhà", is_admin=True)
+    assert api.sent == []
+    assert res["execution_results"][0]["success"] is False
+
+
+def test_cau_co_gio_hen_khong_chay_kich_ban_ngay(api):
+    _create(api)
+    _say(api, "owner1", "8 giờ tối ra khỏi nhà", is_admin=True)
+    assert api.sent == []
+
+
+def test_kid_noi_kich_ban_chi_chay_phan_minh_va_bao_bo_qua(api):
+    _create(api)
+    res = _say(api, "kid1", "ra khỏi nhà")
+    assert api.sent == [("tuya", "door-a", "mode", "close")]
+    assert any("Bỏ qua 1" in r["action"] for r in res["execution_results"])

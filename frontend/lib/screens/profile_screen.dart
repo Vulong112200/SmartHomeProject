@@ -4,6 +4,7 @@ import '../core/auth_service.dart';
 import '../core/avatar.dart';
 import '../core/household_api.dart';
 import '../core/theme_controller.dart';
+import '../core/voice_feedback.dart';
 import '../theme/app_colors.dart';
 
 /// Hồ sơ của CHÍNH MÌNH: tên hiển thị, màu avatar, giao diện sáng/tối.
@@ -182,6 +183,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   selected: {mode},
                   showSelectedIcon: false,
                   onSelectionChanged: (s) => ThemeController.set(s.first),
+                ),
+              ),
+            ),
+            _section(
+              'TRỢ LÝ GIỌNG NÓI',
+              ValueListenableBuilder<bool>(
+                valueListenable: VoiceFeedback.enabled,
+                // Row + Switch (không dùng SwitchListTile: khung có nền màu sẽ che hiệu ứng chạm của ListTile).
+                builder: (context, on, _) => Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Đọc to phản hồi', style: TextStyle(color: p.textMain)),
+                          Text('"Đã tắt Máy bơm tăng áp"', style: TextStyle(color: p.textSub, fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                    Switch.adaptive(value: on, onChanged: VoiceFeedback.setEnabled),
+                  ],
                 ),
               ),
             ),

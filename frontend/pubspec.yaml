@@ -42,6 +42,7 @@ dependencies:
   # Đăng nhập (Supabase Auth). Backend chỉ verify JWT, toàn bộ luồng đăng
   # nhập/đăng ký do SDK này lo.
   supabase_flutter: ^2.8.0
+  flutter_tts: ^4.2.5
 
 dev_dependencies:
   flutter_test:

@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 # Import các Connector và Manager
-from app.services.local_parser import parse_command_locally
+from app.services.local_parser import match_scene, parse_command_locally
 from app.services.connector_manager import device_manager
 from app.services.tuya_connector import TuyaConnector
 from app.services.vesync_connector import VeSyncConnector
@@ -58,7 +58,7 @@ from app.core.household import (
 )
 from app.models.member import ROLES, STATUSES, MemberModel
 from app.models.zone import MemberZoneAccessModel, ZoneModel
-from app.models.device import DEVICE_CATEGORIES, DeviceModel
+from app.models.device import DEVICE_CATEGORIES, DeviceModel, device_kind
 from app.models.schedule import ScheduleModel  # đăng ký bảng schedules với Base
 from app.models.scene import SceneModel
 
@@ -584,6 +584,33 @@ async def parse_voice_command(
     text_lower = command.text.lower()
     logger.info(f"Nhận lệnh giọng nói: '{command.text}'")
     actions = []
+
+    # ---------------------------------------------------------
+    # KỊCH BẢN: "ra khỏi nhà", "chạy kịch bản đi ngủ"... — xét TRƯỚC tường lửa
+    # từ khóa thiết bị (tên kịch bản thường không chứa tên thiết bị nào).
+    # ---------------------------------------------------------
+    scene = match_scene(text_lower, db.query(SceneModel).all())
+    if scene is not None:
+        devices_by_id = {d.id: d for d in devices}
+        opens_door = any(
+            a.get("action_value") == "open" and a.get("device_id") in devices_by_id
+            and device_kind(devices_by_id[a["device_id"]]) == "curtain"
+            for a in json.loads(scene.actions or "[]")
+        )
+        # Nhận dạng giọng nói nghe nhầm là có: kịch bản MỞ CỬA chỉ chạy từ màn
+        # hình (có hộp xác nhận), không chạy bằng giọng nói.
+        if opens_door:
+            return {"status": "success", "ai_understood": [], "execution_results": [{
+                "device_name": scene.name, "success": False,
+                "action": "Kịch bản này mở cửa — hãy chạy trên màn hình chính để xác nhận",
+            }]}
+        data = await _run_scene(db, member, scene)
+        results = data["results"] + ([{
+            "device_name": scene.name, "success": False,
+            "action": f"Bỏ qua {data['skipped']} thiết bị ngoài khu của bạn",
+        }] if data["skipped"] else [])
+        return {"status": "success", "ai_understood": [{"intent": "scene", "id": scene.id}],
+                "execution_results": results}
     
     # ---------------------------------------------------------
     # BỨC TƯỜNG LỬA: KIỂM TRA TỪ KHÓA THIẾT BỊ
