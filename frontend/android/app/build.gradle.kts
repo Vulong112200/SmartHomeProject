@@ -46,4 +46,6 @@ flutter {
 dependencies {
     // Cần cho ShortcutManagerCompat / ShortcutInfoCompat (pinned shortcut).
     implementation("androidx.core:core-ktx:1.13.1")
+    // Làm mới Home Widget định kỳ khi app đóng (WidgetRefreshWorker).
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 }

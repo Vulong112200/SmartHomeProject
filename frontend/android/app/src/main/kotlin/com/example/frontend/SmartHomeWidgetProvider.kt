@@ -17,12 +17,27 @@ import es.antonborri.home_widget.HomeWidgetProvider
  */
 class SmartHomeWidgetProvider : HomeWidgetProvider() {
 
+    // Widget đầu tiên được đặt ra màn hình -> bật làm mới nền định kỳ.
+    override fun onEnabled(context: Context) {
+        super.onEnabled(context)
+        WidgetRefreshWorker.schedule(context)
+    }
+
+    // Gỡ widget cuối cùng -> tắt, không tốn pin/quota API vô ích.
+    override fun onDisabled(context: Context) {
+        super.onDisabled(context)
+        WidgetRefreshWorker.cancel(context)
+    }
+
     override fun onUpdate(
         context: Context,
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray,
         widgetData: SharedPreferences
     ) {
+        // Widget đã đặt TRƯỚC bản cập nhật này không nhận onEnabled lần nữa ->
+        // đăng ký ở đây cho chắc (KEEP: gọi lặp không tạo job mới).
+        WidgetRefreshWorker.schedule(context)
         appWidgetIds.forEach { widgetId ->
             val views = RemoteViews(context.packageName, R.layout.smart_home_widget).apply {
                 // Bấm tiêu đề → mở app.
