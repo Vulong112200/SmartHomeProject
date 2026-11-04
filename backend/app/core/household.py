@@ -25,6 +25,7 @@ Hai tính chất đáng chú ý:
      `device_query` / `require_device_access` / `require_owner`.
 """
 from fastapi import Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser, get_current_user
@@ -70,7 +71,14 @@ def provision_member(db: Session, user: CurrentUser) -> MemberModel:
             status="active" if user.is_admin else "pending",
         )
         db.add(member)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # App mở lần đầu bắn vài request song song: request khác đã tạo
+            # hàng này trước -> dùng hàng đó thay vì 500.
+            db.rollback()
+            member = db.query(MemberModel).filter(MemberModel.user_id == user.user_id).one()
+            return member
         db.refresh(member)
         return member
 

@@ -4,6 +4,8 @@ import logging
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
+from app.models.device import device_kind
+
 # ==========================================
 # CẤU HÌNH LOGGER CHO AI
 # ==========================================
@@ -17,6 +19,15 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 if not OPENROUTER_API_KEY:
     logger.error("⚠️ Không tìm thấy OPENROUTER_API_KEY! Hãy kiểm tra lại biến môi trường trên Render.")
+
+# Nhãn loại thiết bị cho prompt: cửa cuốn và máy bơm đều là hãng Tuya, AI chỉ
+# phân biệt được nhờ LOẠI (trước đây prompt chỉ có ID/Tên/Hãng).
+_KIND_LABEL = {
+    "purifier": "máy lọc không khí (on/off, mode 1|2|3|auto|sleep)",
+    "curtain": "cửa cuốn (CHỈ set_mode open|close|stop, KHÔNG on/off)",
+    "feeder": "máy cho ăn (CHỈ set_mode số phần 1|2|3)",
+    "switch": "công tắc / máy bơm (on/off)",
+}
 
 # Khởi tạo client trỏ thẳng vào server của OpenRouter.
 # LƯU Ý: khởi tạo LƯỜI (lazy) — nếu thiếu key, app vẫn boot bình thường
@@ -41,7 +52,8 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
     # 1. Gom thông tin thiết bị đang có trong nhà bạn để đưa cho AI
     device_context = []
     for dev in devices_list:
-        device_context.append(f"- ID: {dev.id}, Tên: {dev.name}, Hãng: {dev.brand}")
+        kind = _KIND_LABEL.get(device_kind(dev), "thiết bị (on/off)")
+        device_context.append(f"- ID: {dev.id}, Tên: {dev.name}, Hãng: {dev.brand}, Loại: {kind}")
     
     devices_str = "\n".join(device_context)
 
@@ -54,7 +66,10 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
     Quy tắc TỐI THƯỢNG:
     1. CHỈ điều khiển thiết bị được người dùng nhắc đến đích danh.
     2. NẾU câu nói không có nghĩa, hoặc KHÔNG nhắc đến bất kỳ thiết bị nào (ví dụ: 'bận nó không thấy mất tự động', 'hôm nay trời đẹp', v.v.), BẮT BUỘC trả về mảng rỗng: []
-    3. Trả về DUY NHẤT JSON.
+    3. Trả về DUY NHẤT một mảng JSON (dùng null, không dùng None).
+    3b. CHỈ dùng ID có trong danh sách trên và hành động đúng với "Loại" của thiết bị.
+    3c. "Tắt hết / tắt tất cả": CHỈ tắt máy lọc và công tắc/máy bơm — KHÔNG đụng cửa cuốn, máy cho ăn.
+        "Bật tất cả" là mơ hồ: trả về [].
     4. NẾU câu có GIỜ HẸN (hẹn, lúc X giờ, X giờ sáng/chiều/tối, ngày mai, từ X đến Y...):
        KHÔNG thi hành ngay mà trả về intent "schedule" với các trường:
        "time"/"end_time" dạng "HH:MM" 24 giờ; "day_offset": 0 (hôm nay) hoặc 1 (ngày mai);
@@ -62,7 +77,8 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
        mà người dùng không nói hành động kết thúc thì "end_action": "turn_off".
 
     Ví dụ:
-    - "Bật máy lọc": [{{ "brand": "vesync", "id": "<id>", "action": "on", "mode": None }}]
+    - "Bật máy lọc": [{{ "brand": "vesync", "id": "<id>", "action": "on", "mode": null }}]
+    - "Tắt máy bơm": [{{ "brand": "tuya", "id": "<id công tắc>", "action": "off", "mode": null }}]
     - "Đóng cửa": [{{ "brand": "tuya", "id": "<id>", "action": "set_mode", "mode": "close" }}]
     - "Cho mèo ăn": [{{ "brand": "rojeco", "id": "<id>", "action": "set_mode", "mode": "1" }}]
     - "Hẹn 16 giờ 30 bật quạt mức cao": [{{ "intent": "schedule", "brand": "vesync", "id": "<id>", "action": "set_mode", "mode": "3", "time": "16:30", "end_time": null, "end_action": null, "end_mode": null, "day_offset": 0, "recurring_daily": false }}]
@@ -112,7 +128,10 @@ async def parse_command_with_ai(command_text: str, devices_list: list) -> list:
                 
             actions = json.loads(result_text.strip())
             logger.info(f"Phân tích thành công: {actions}")
-            return actions
+            # Model có thể trả object/null thay vì mảng -> coi như không hiểu.
+            if not isinstance(actions, list):
+                return []
+            return [a for a in actions if isinstance(a, dict)]
         except json.JSONDecodeError as e:
             logger.error(f"❌ AI trả về định dạng JSON sai: {result_text}")
             return [] # Trả về mảng rỗng thay vì làm sập server

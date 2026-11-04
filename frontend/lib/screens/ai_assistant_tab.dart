@@ -77,6 +77,8 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
       bool available = await _speech.initialize(
         onStatus: (status) {
           // Bỏ hàm gửi tự động ở đây để tránh bị duplicate lệnh
+          // Callback của plugin có thể tới SAU khi tab đã dispose.
+          if (!mounted) return;
           if (status == 'notListening' && _isListening) {
             setState(() => _isListening = false);
             _silenceTimer?.cancel();
@@ -84,6 +86,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
         },
       );
 
+      if (!mounted) return;
       if (available) {
         // RESET CÁC BIẾN KHI BẮT ĐẦU NGHE MỚI
         _hasGreetedThisSession = false;
@@ -92,6 +95,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
 
         _speech.listen(
           onResult: (val) {
+            if (!mounted) return;
             String currentWords = val.recognizedWords.toLowerCase().trim();
 
             // 1. Wake word "Tom có nghe không"
@@ -124,7 +128,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
             _silenceTimer?.cancel();
             _silenceTimer = Timer(const Duration(milliseconds: 1500), () {
               // Nếu bạn im lặng đúng 1.5s sau từ cuối cùng -> Tự động chốt
-              if (_isListening) {
+              if (mounted && _isListening) {
                 _speech.stop();
                 _executeSend(); // GỌI HÀM CHỐT CHẶN
               }

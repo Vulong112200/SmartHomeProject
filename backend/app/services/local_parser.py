@@ -12,6 +12,10 @@ _KIND_HINT = {"purifier": "máy lọc", "curtain": "cửa", "feeder": "cho ăn",
 _FEEDER_RE = re.compile(r"\b(mèo|chó|ăn|hạt|đói)\b")
 
 
+_ALL_OFF_PHRASES = ("tắt hết", "tắt tất cả", "tắt toàn bộ")
+_ALL_ON_PHRASES = ("bật hết", "bật tất cả", "bật toàn bộ", "mở hết", "mở tất cả")
+
+
 def _first_of_kind(devices_list: list, kind: str):
     """Thiết bị ĐẦU TIÊN thuộc loại `kind`. Chọn theo loại chứ không theo hãng:
     cửa cuốn và máy bơm đều là Tuya, lấy theo hãng sẽ gửi nhầm lệnh."""
@@ -25,6 +29,15 @@ def _extract_device_actions(text: str, devices_list: list) -> list:
     """
     text = text.lower()
     actions = []
+
+    # 0. "TẮT HẾT": chỉ thiết bị bật/tắt an toàn (máy lọc, công tắc/máy bơm).
+    # KHÔNG đụng cửa cuốn (tắt = đóng cửa) hay máy cho ăn. "Bật hết" mơ hồ
+    # (mở cửa? cho ăn?) -> không đoán, trả rỗng.
+    if any(kw in text for kw in _ALL_OFF_PHRASES):
+        return [{"brand": d.brand, "id": d.id, "action": "turn_off", "mode": None}
+                for d in devices_list if device_kind(d) in ("purifier", "switch")]
+    if any(kw in text for kw in _ALL_ON_PHRASES):
+        return []
 
     # 1. MÁY LỌC KHÔNG KHÍ (VeSync)
     # Từ khóa nhận diện: lọc, quạt, máy khí, không khí

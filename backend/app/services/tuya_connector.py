@@ -3,7 +3,7 @@ import os
 import time
 from tuya_connector import TuyaOpenAPI
 from .base_connector import DeviceConnector
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # =========================================================
 # Tên DP (data point) ứng viên cho cửa cuốn/rèm — tùy model Tuya khác nhau.
@@ -28,6 +28,10 @@ _WORK_STATE_MAP = {
 # "Đang mở..."/"Đang đóng...".
 _DOOR_TRAVEL_SECONDS = 30
 
+# tuya-connector-python gọi requests KHÔNG có timeout: 1 call treo là treo luôn
+# scheduler (các hành động chạy nối tiếp). Cắt ở mốc này.
+_CALL_TIMEOUT_SECONDS = 15
+
 # Category Tuya của công tắc/ổ cắm bật-tắt đơn (vd. máy bơm tăng áp dùng 'tdq').
 # Thiết bị thuộc các loại này điều khiển bằng DP 'switch_1' thay vì 'control'.
 _SWITCH_CATEGORIES = ("kg", "tdq", "cz", "pc", "dlq")
@@ -48,18 +52,36 @@ class TuyaConnector(DeviceConnector):
         # device_id -> category Tuya. Loại thiết bị không đổi nên tra 1 lần là đủ.
         self._categories: Dict[str, str] = {}
 
-    async def _is_switch(self, device_id: str) -> bool:
-        """Thiết bị là công tắc (switch_1) hay cửa cuốn (control)? Tra category 1 lần."""
+    async def _call(self, fn, *args):
+        """Client đồng bộ (requests) -> chạy trong thread (không block event loop), có timeout."""
+        return await asyncio.wait_for(asyncio.to_thread(fn, *args), _CALL_TIMEOUT_SECONDS)
+
+    async def _ensure_connected(self) -> None:
+        if not self.is_connected:
+            result = await self._call(self.openapi.connect)
+            self.is_connected = bool(result.get("success")) if isinstance(result, dict) else True
+
+    async def _is_switch(self, device_id: str) -> Optional[bool]:
+        """
+        Công tắc (switch_1) hay cửa cuốn (control)? Tra category 1 lần rồi cache.
+        None = KHÔNG BIẾT (Tuya lỗi/timeout): người gọi phải từ chối gửi lệnh —
+        đoán "là cửa" từng khiến máy bơm nhận lệnh control:open.
+        """
         if device_id not in self._categories:
-            info = await asyncio.to_thread(self.openapi.get, f'/v1.0/devices/{device_id}')
+            try:
+                await self._ensure_connected()
+                info = await self._call(self.openapi.get, f'/v1.0/devices/{device_id}')
+            except Exception as e:
+                print(f"[Tuya] Lỗi tra loại thiết bị {device_id}: {e}")
+                return None
             if not info.get('success'):
-                return False  # không cache: lần sau thử lại
+                return None  # không cache: lần sau thử lại
             self._categories[device_id] = str((info.get('result') or {}).get('category', ''))
         return self._categories[device_id] in _SWITCH_CATEGORIES
 
     async def _switch_state(self, device_id: str) -> Dict[str, Any]:
         """Công tắc: 1 lần gọi /v1.0/devices/{id} trả cả online lẫn DP switch_1."""
-        info = await asyncio.to_thread(self.openapi.get, f'/v1.0/devices/{device_id}')
+        info = await self._call(self.openapi.get, f'/v1.0/devices/{device_id}')
         result = info.get('result') or {}
         if not info.get('success') or not result.get('online'):
             return {"device_id": device_id, "status": "offline"}
@@ -72,14 +94,14 @@ class TuyaConnector(DeviceConnector):
     async def _send_switch(self, device_id: str, on: bool) -> bool:
         commands = {'commands': [{'code': 'switch_1', 'value': on}]}
         endpoint = f'/v1.0/iot-03/devices/{device_id}/commands'
-        response = await asyncio.to_thread(self.openapi.post, endpoint, commands)
+        response = await self._call(self.openapi.post, endpoint, commands)
         print(f"[Tuya Switch] Gửi switch_1={on}: {response}")
         return response.get('success', False)
 
     async def connect(self) -> bool:
         try:
             # Client đồng bộ (requests) -> chạy trong thread, không block event loop.
-            result = await asyncio.to_thread(self.openapi.connect)
+            result = await self._call(self.openapi.connect)
             print("[Tuya Token Response]", result)
             # Chỉ đánh dấu connected khi Tuya thật sự cấp token thành công.
             self.is_connected = bool(result.get("success")) if isinstance(result, dict) else True
@@ -99,17 +121,19 @@ class TuyaConnector(DeviceConnector):
         Lưu ý: tên DP tùy thiết bị. In log 1 lần để xác nhận nếu map chưa đúng.
         """
         try:
-            if not self.is_connected:
-                await asyncio.to_thread(self.openapi.connect)
+            await self._ensure_connected()
 
-            if await self._is_switch(device_id):
+            is_switch = await self._is_switch(device_id)
+            if is_switch is None:
+                return {"device_id": device_id, "status": "offline"}
+            if is_switch:
                 return await self._switch_state(device_id)
 
             # shadow/properties trả kèm THỜI ĐIỂM mỗi DP được báo lần cuối — cần để
             # biết lệnh 'control' cuối đã đủ lâu cho cửa chạy xong hay chưa.
             # tuya-connector-python là client đồng bộ (requests) -> chạy trong thread
             # để không block event loop, tránh các request khác xếp hàng nối tiếp.
-            response = await asyncio.to_thread(
+            response = await self._call(
                 self.openapi.get, f'/v2.0/cloud/thing/{device_id}/shadow/properties'
             )
             print(f"[Tuya Door] Status raw: {response}")
@@ -181,45 +205,47 @@ class TuyaConnector(DeviceConnector):
             return {"device_id": device_id, "status": "offline", "door_state": "unknown"}
 
     async def turn_on(self, device_id: str) -> bool:
-        return await self.set_mode(device_id, "on" if await self._safe_is_switch(device_id) else "open")
+        is_switch = await self._is_switch(device_id)
+        if is_switch is None:
+            return False  # không biết loại -> không đoán, không gửi gì
+        return await self.set_mode(device_id, "on" if is_switch else "open")
 
     async def turn_off(self, device_id: str) -> bool:
-        return await self.set_mode(device_id, "off" if await self._safe_is_switch(device_id) else "close")
-
-    async def _safe_is_switch(self, device_id: str) -> bool:
-        try:
-            if not self.is_connected:
-                await asyncio.to_thread(self.openapi.connect)
-            return await self._is_switch(device_id)
-        except Exception as e:
-            print(f"[Tuya] Lỗi tra loại thiết bị: {e}")
+        is_switch = await self._is_switch(device_id)
+        if is_switch is None:
             return False
+        return await self.set_mode(device_id, "off" if is_switch else "close")
 
     async def _send_control(self, device_id: str, value: str):
         """Gửi 1 lệnh 'control' tới Tuya Cloud và trả về response gốc."""
         commands = {'commands': [{'code': 'control', 'value': value}]}
         # ĐƯỜNG DẪN CHUẨN: /v1.0/iot-03/...
         endpoint = f'/v1.0/iot-03/devices/{device_id}/commands'
-        # Client đồng bộ -> chạy trong thread để không block event loop.
-        response = await asyncio.to_thread(self.openapi.post, endpoint, commands)
+        response = await self._call(self.openapi.post, endpoint, commands)
         print(f"[Tuya Door] Gửi lệnh {value}: {response}")
         return response
 
     async def set_mode(self, device_id: str, mode: str) -> bool:
         try:
-            if not self.is_connected:
-                await asyncio.to_thread(self.openapi.connect)
+            await self._ensure_connected()
 
             mode = mode.lower()
+            is_switch = await self._is_switch(device_id)
+            if is_switch is None:
+                print(f"[Tuya] Không xác định được loại {device_id} -> KHÔNG gửi lệnh {mode}")
+                return False
 
             # Công tắc: chỉ có on/off. KHÔNG bao giờ gửi 'control' (lệnh cửa) tới nó.
-            if await self._is_switch(device_id):
+            if is_switch:
                 if mode not in ("on", "off"):
                     print(f"[Tuya Switch] Bỏ qua mode không hợp lệ cho công tắc: {mode}")
                     return False
                 return await self._send_switch(device_id, mode == "on")
 
             # Với cửa cuốn, mode là 'open', 'close', 'stop'
+            if mode not in ("open", "close", "stop"):
+                print(f"[Tuya Door] Bỏ qua mode không hợp lệ cho cửa: {mode}")
+                return False
 
             # AN TOÀN INTERLOCK: motor cửa cuốn nếu đang chạy 1 chiều mà nhận
             # lệnh chiều ngược lại có thể xung đột/kẹt. Chèn 1 lệnh 'stop' trước

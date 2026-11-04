@@ -33,6 +33,7 @@ from app.services.ai_parser import parse_command_with_ai
 # Vòng lặp Hẹn giờ chạy nền
 from app.services.scheduler import scheduler_loop, execute_schedule_action, TZ
 from app.services.vn_time_parser import resolve_target_days
+from app.services.device_actions import normalize_action
 
 # Tạm thời comment Automation Engine để tránh lỗi chưa hoàn thiện
 # from app.services.automation_engine import automation_engine, AutomationRule
@@ -136,8 +137,10 @@ async def lifespan(app: FastAPI):
         """Khởi tạo 1 connector an toàn: lỗi 1 hãng không làm sập cả app."""
         try:
             plugin = factory()
-            ok = await plugin.connect()
+            # Đăng ký TRƯỚC khi connect: connect lỗi thì connector vẫn có mặt
+            # và tự thử lại khi có lệnh, thay vì "chưa hỗ trợ hãng" tới khi restart.
             device_manager.register_connector(brand, plugin)
+            ok = await plugin.connect()
             if not ok:
                 logger.warning(f"Connector {brand} kết nối KHÔNG thành công (sẽ thử lại khi có lệnh).")
         except Exception as e:
@@ -245,9 +248,14 @@ async def add_device(
     name: str,
     brand: str,
     zone_id: int | None = None,
+    category: str | None = None,
     db: Session = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
+    # Thiết bị mới thiếu category sẽ bị suy loại theo tên/hãng — một công tắc
+    # Tuya tên lạ thành "cửa cuốn". Cho đặt ngay lúc thêm.
+    if category is not None and category not in DEVICE_CATEGORIES:
+        return {"status": "error", "message": f"Loại không hợp lệ. Hợp lệ: {list(DEVICE_CATEGORIES)}"}
     try:
         # Idempotent: thêm lại id đã có = "đã có trong nhà", không phải lỗi.
         # Client retry (mạng chập chờn) không nên báo đỏ.
@@ -258,7 +266,8 @@ async def add_device(
         if zone_id is not None and not db.query(ZoneModel).filter(ZoneModel.id == zone_id).first():
             return {"status": "error", "message": "Khu vực không tồn tại."}
 
-        db.add(DeviceModel(id=id, name=name, brand=brand, is_active=True, zone_id=zone_id))
+        db.add(DeviceModel(id=id, name=name, brand=brand, is_active=True, zone_id=zone_id,
+                           category=category))
         db.commit()
         logger.info(f"Đã thêm thiết bị mới: {name} ({brand})")
         return {"status": "success", "message": f"Đã thêm: {name}"}
@@ -365,7 +374,12 @@ async def test_control(
     db: Session = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
-    require_device_access(db, member, device_id)
+    # Hãng lấy từ DB, không tin URL: sai hãng = gửi id tới nhầm connector + lệch key cache.
+    brand = require_device_access(db, member, device_id).brand
+    # Trước đây mọi giá trị khác "on" (gõ sai, "open", "toggle"...) đều thành
+    # turn_off — với cửa cuốn là ĐÓNG CỬA.
+    if action not in ("on", "off"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "action phải là on hoặc off")
     try:
         connector = device_manager.get_connector(brand)
         if action == "on":
@@ -390,7 +404,8 @@ async def test_control_mode(
     db: Session = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
-    require_device_access(db, member, device_id)
+    # Hãng lấy từ DB, không tin URL: sai hãng = gửi id tới nhầm connector + lệch key cache.
+    brand = require_device_access(db, member, device_id).brand
     try:
         connector = device_manager.get_connector(brand)
         if hasattr(connector, 'set_mode'):
@@ -418,7 +433,8 @@ async def get_device_status(
     db: Session = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
-    require_device_access(db, member, device_id)
+    # Hãng lấy từ DB, không tin URL: sai hãng = gửi id tới nhầm connector + lệch key cache.
+    brand = require_device_access(db, member, device_id).brand
     try:
         # fresh=1: bỏ qua cache (client gọi ngay sau lệnh điều khiển để lấy
         # trạng thái mới nhất). Poll định kỳ vẫn dùng cache bình thường.
@@ -427,8 +443,6 @@ async def get_device_status(
             if cached is not None:
                 return {"status": "success", "data": cached, "cached": True}
         connector = device_manager.get_connector(brand)
-        if not connector:
-            return {"status": "error", "message": f"Không tìm thấy connector cho {brand}"}
         state = await connector.get_device_state(device_id)
         _cache_set(brand, device_id, state)
         return {"status": "success", "data": state}
@@ -453,35 +467,59 @@ def _action_label_vn(action_type: str, action_value: str | None) -> str:
         return "Dừng"
     return f"Chế độ {action_value}"
 
-def _verb_to_schedule_action(verb: str | None, mode: str | None) -> tuple[str | None, str | None]:
-    """Đổi từ vựng parser (turn_on/turn_off/set_mode | on/off) -> cột lịch (on/off/mode)."""
-    if verb in ("on", "turn_on"):
-        return "on", None
-    if verb in ("off", "turn_off"):
-        return "off", None
-    if verb == "set_mode" or mode:
-        return "mode", mode
-    return None, None
+async def _execute_device_action(device: DeviceModel | None, verb: str | None, mode: str | None,
+                                 requested_id: str | None = None) -> dict:
+    """
+    Thi hành 1 hành động "không qua UI" (trợ lý AI, kịch bản) trên `device`.
+    `device` PHẢI lấy từ danh sách đã lọc theo quyền (device_query) — None nghĩa
+    là thiết bị không tồn tại hoặc ngoài khu của người gọi. Hãng lấy từ hàng DB,
+    không bao giờ từ dữ liệu AI trả về. Trả bubble {"device_name","action","success"}.
+    """
+    if device is None:
+        return {"device_name": requested_id or "?", "action": "Không có quyền hoặc không tìm thấy thiết bị",
+                "success": False}
+    try:
+        action_type, action_value = normalize_action(device, verb, mode)
+    except ValueError as e:
+        return {"device_name": device.name, "action": str(e), "success": False}
 
-def _create_schedule_from_intent(action: dict, devices: list, db: Session,
-                                 created_by: str | None = None) -> dict:
+    success = False
+    try:
+        success = await execute_schedule_action(
+            device.brand, device.id, action_type, action_value, invalidate_cache=_cache_invalidate,
+        )
+    except Exception as e:
+        logger.error(f"[Action Error] {device.brand}/{device.id}: {e}")
+    return {"device_name": device.name, "action": _action_label_vn(action_type, action_value),
+            "success": success}
+
+def _create_schedule_from_intent(action: dict, devices_by_id: dict, db: Session,
+                                 member: MemberModel) -> dict:
     """
     Tạo lịch hẹn từ intent 'schedule' của local parser / AI.
     Trả về bubble chat {"device_name","action","success"} — KHÔNG chạm connector.
+    Cùng luật quyền với POST /api/schedules: guest không tạo lịch, và chỉ thiết
+    bị trong khu được cấp.
     """
     dev_id = action.get("id")
-    device_obj = next((d for d in devices if d.id == dev_id), None)
-    dev_name = device_obj.name if device_obj else dev_id
+    device_obj = devices_by_id.get(dev_id)
+    dev_name = device_obj.name if device_obj else (dev_id or "?")
     try:
-        action_type, action_value = _verb_to_schedule_action(action.get("action"), action.get("mode"))
-        if not action_type:
-            raise ValueError("không rõ hành động")
+        require_can_schedule(member)
+    except HTTPException as e:
+        return {"device_name": dev_name, "action": f"Lỗi hẹn giờ: {e.detail}", "success": False}
+    if device_obj is None:
+        return {"device_name": dev_name, "action": "Lỗi hẹn giờ: không có quyền hoặc không tìm thấy thiết bị",
+                "success": False}
+    try:
+        action_type, action_value = normalize_action(device_obj, action.get("action"), action.get("mode"))
         end_time = action.get("end_time")
         end_action_type = end_action_value = None
         if end_time:
-            end_action_type, end_action_value = _verb_to_schedule_action(
-                action.get("end_action"), action.get("end_mode"))
-            if not end_action_type:
+            try:
+                end_action_type, end_action_value = normalize_action(
+                    device_obj, action.get("end_action"), action.get("end_mode"))
+            except ValueError:
                 end_time = None  # khoảng không có hành động kết thúc hợp lệ -> lịch đơn
 
         days, one_shot, rolled = resolve_target_days(
@@ -489,12 +527,12 @@ def _create_schedule_from_intent(action: dict, devices: list, db: Session,
             bool(action.get("recurring_daily", False)), datetime.now(TZ),
         )
         sch = _create_schedule_row(
-            db, name="Tạo bởi trợ lý", brand=action.get("brand"), device_id=dev_id,
+            db, name="Tạo bởi trợ lý", brand=device_obj.brand, device_id=device_obj.id,
             action_type=action_type, action_value=action_value,
             time=action.get("time", ""), days=days,
             end_time=end_time, end_action_type=end_action_type,
             end_action_value=end_action_value, one_shot=one_shot,
-            created_by=created_by,
+            created_by=member.user_id,
         )
         prefix = "ngày mai " if (rolled or int(action.get("day_offset", 0) or 0) > 0) else ""
         label = _action_label_vn(action_type, action_value)
@@ -525,7 +563,8 @@ async def parse_voice_command(
     # Depends(get_db): session tự đóng kể cả khi query lỗi — tránh leak.
     # device_query: scoping theo khu là TỰ ĐỘNG — parser chỉ nhìn thấy thiết bị
     # member được phép dùng, nên "bật đèn" của kid không chạm được khu khác.
-    devices = device_query(db, member).all()
+    # Thứ tự cố định: parser chọn "thiết bị đầu tiên của loại X" phải tất định.
+    devices = device_query(db, member).order_by(DeviceModel.id).all()
 
     text_lower = command.text.lower()
     logger.info(f"Nhận lệnh giọng nói: '{command.text}'")
@@ -536,7 +575,7 @@ async def parse_voice_command(
     # ---------------------------------------------------------
     # Danh sách các từ khóa liên quan đến thiết bị trong nhà
     device_keywords = ["quạt", "lọc", "không khí", "mèo", "ăn", "hạt", "cửa", "cuốn", "đèn", "tất cả",
-                       "bơm", "tăng áp",
+                       "bơm", "tăng áp", "hết", "toàn bộ",
                        "hẹn", "lịch"]  # từ khóa hẹn giờ: cho câu tạo lịch đi qua tường lửa
     
     # Nếu câu nói KHÔNG chứa bất kỳ từ khóa nào ở trên -> Chặn luôn
@@ -558,54 +597,24 @@ async def parse_voice_command(
         actions = await parse_command_with_ai(command.text, devices)
 
     # 3. Thực thi lệnh
+    # Chỉ thiết bị trong `devices` (đã lọc theo khu) mới được chạm. id do AI trả
+    # về KHÔNG được tin: kid có thể ép câu sang nhánh AI rồi đọc id khu khác.
+    devices_by_id = {d.id: d for d in devices}
+
     async def execute_single_action(action):
         # Ý ĐỊNH HẸN GIỜ: tạo lịch trong DB, TUYỆT ĐỐI không gọi connector.
         if action.get("intent") == "schedule":
-            return _create_schedule_from_intent(action, devices, db, member.user_id)
+            return _create_schedule_from_intent(action, devices_by_id, db, member)
 
-        brand = action.get("brand")
-        dev_id = action.get("id")
-        act_type = action.get("action")
-        mode = action.get("mode")
-
-        # Format tên hiển thị
-        device_obj = next((d for d in devices if d.id == dev_id), None)
-        dev_name = device_obj.name if device_obj else dev_id
-
-        # FIX: local_parser phát 'turn_on'/'turn_off', AI phát 'on'/'off' —
-        # nhận cả hai để lệnh local "bật máy lọc" không rơi vào khoảng trống.
-        is_on = act_type in ("on", "turn_on") or mode == "on"
-        is_off = act_type in ("off", "turn_off") or mode == "off"
-
-        if is_on or is_off or mode:
-            action_ui = _action_label_vn("on" if is_on else "off" if is_off else "mode", mode)
-        else:
-            action_ui = "Thực thi"
-
-        success = False
-        try:
-            connector = device_manager.get_connector(brand)
-            if connector:
-                if is_off:
-                    success = await connector.turn_off(dev_id)
-                elif is_on:
-                    success = await connector.turn_on(dev_id)
-                elif mode and hasattr(connector, 'set_mode'):
-                    success = await connector.set_mode(dev_id, mode)
-            # FIX: invalidate cache như các endpoint control — để lần đọc
-            # trạng thái kế tiếp không dính bản cache cũ (~3s).
-            _cache_invalidate(brand, dev_id)
-        except Exception as e:
-            logger.error(f"[AI Execution Error] {e}")
-
-        return {
-            "device_name": dev_name,
-            "action": action_ui,
-            "success": success
-        }
+        return await _execute_device_action(
+            devices_by_id.get(action.get("id")), action.get("action"), action.get("mode"),
+            requested_id=action.get("id"),
+        )
 
     # Bắn TẤT CẢ các lệnh IoT cùng một lúc (Tốc độ x2, x3)
     # Nếu câu nói có 3 thiết bị, nó sẽ chạy song song cả 3.
+    # AI có thể trả object/null thay vì list -> bỏ qua thay vì 500.
+    actions = [a for a in actions if isinstance(a, dict)] if isinstance(actions, list) else []
     tasks = [execute_single_action(action) for action in actions]
     results = await asyncio.gather(*tasks)
 
@@ -769,6 +778,19 @@ async def update_schedule(
 ):
     sch = require_schedule_write(db, member, schedule_id)
     fields = body.model_dump(exclude_unset=True)
+    # Chuyển lịch sang thiết bị khác: phải có quyền với thiết bị MỚI (không thì
+    # kid trỏ lịch của mình sang khu khác), và hãng lấy từ DB chứ không từ body.
+    if fields.get("device_id") and fields["device_id"] != sch.device_id:
+        fields["brand"] = require_device_access(db, member, fields["device_id"]).brand
+    else:
+        fields.pop("device_id", None)
+        fields.pop("brand", None)
+    # App gửi lại đủ form khi sửa (kể cả đổi tên) -> chỉ coi là "đổi giờ" khi
+    # giá trị THỰC SỰ khác; nếu không, đổi tên ngay sau khi lịch vừa chạy sẽ
+    # xóa last_fired_date và lịch chạy LẦN NỮA trong cửa sổ 120s.
+    time_changed = "time" in fields and fields["time"] != sch.time
+    end_changed = "end_time" in fields and fields["end_time"] != sch.end_time
+    re_enabled = fields.get("enabled") is True and not sch.enabled
     # Validate trên giá trị ĐÃ MERGE (giá trị mới nếu có, không thì giá trị hiện tại)
     # để so chéo start/end chính xác với PATCH từng phần.
     merged = {k: fields.get(k, getattr(sch, k))
@@ -784,9 +806,9 @@ async def update_schedule(
         for key, value in fields.items():
             setattr(sch, key, value)
         # Đổi giờ/bật lại lịch -> cho phép kích hoạt lại trong hôm nay nếu tới giờ mới.
-        if "time" in fields or fields.get("enabled") is True:
+        if time_changed or re_enabled:
             sch.last_fired_date = None
-        if "end_time" in fields or fields.get("enabled") is True:
+        if end_changed or re_enabled:
             sch.last_end_fired_date = None
         # Xóa khoảng (end_time: null tường minh) -> dọn sạch cả bộ end cho nhất quán.
         if "end_time" in fields and fields["end_time"] is None:

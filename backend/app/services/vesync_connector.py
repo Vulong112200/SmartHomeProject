@@ -1,8 +1,13 @@
 # backend/app/services/vesync_connector.py
 import inspect
+import time
 from pyvesync import VeSync
 from .base_connector import DeviceConnector
 from typing import Dict, Any
+
+# Đăng nhập lỗi (mạng chập chờn lúc boot, VeSync bảo trì...) -> thử lại lười khi
+# có lệnh, nhưng không quá 1 lần/khoảng này để không bị khóa tài khoản.
+_RELOGIN_INTERVAL_SECONDS = 300
 
 class VeSyncConnector(DeviceConnector):
     def __init__(self, email: str, password: str, time_zone: str = "Asia/Ho_Chi_Minh"):
@@ -11,6 +16,7 @@ class VeSyncConnector(DeviceConnector):
         self.time_zone = time_zone
         self.manager = None
         self.is_connected = False
+        self._last_login_attempt = float("-inf")
 
     async def _safe_call(self, func, *args, **kwargs):
         """
@@ -42,9 +48,17 @@ class VeSyncConnector(DeviceConnector):
 
     async def connect(self) -> bool:
         print(f"[VeSync] Đang kết nối với tài khoản: {self.email}...")
+        self._last_login_attempt = time.monotonic()
         self.manager = VeSync(self.email, self.password, time_zone=self.time_zone)
         
-        login_success = await self._safe_call(self.manager.login)
+        # pyvesync 3.x NÉM lỗi khi đăng nhập hỏng (không trả False). Trước đây
+        # lỗi này làm connector không được đăng ký -> mọi lệnh VeSync báo
+        # "chưa hỗ trợ hãng" tới khi restart server.
+        try:
+            login_success = await self._safe_call(self.manager.login)
+        except Exception as e:
+            print(f"[VeSync] ❌ Đăng nhập lỗi: {e}")
+            login_success = False
 
         if login_success:
             await self._safe_call(self.manager.update)
@@ -76,8 +90,10 @@ class VeSyncConnector(DeviceConnector):
             print("[VeSync] ❌ Đăng nhập thất bại. Vui lòng kiểm tra lại Email/Mật khẩu.")
             return False
 
-    def _get_purifier(self, device_id: str):
+    async def _get_purifier(self, device_id: str):
         """Hàm tìm kiếm thiết bị linh hoạt trong toàn bộ tài khoản"""
+        if not self.is_connected and time.monotonic() - self._last_login_attempt >= _RELOGIN_INTERVAL_SECONDS:
+            await self.connect()
         if not self.manager or not self.is_connected:
             return None
 
@@ -91,7 +107,7 @@ class VeSyncConnector(DeviceConnector):
         return None
 
     async def get_device_state(self, device_id: str) -> Dict[str, Any]:
-        purifier = self._get_purifier(device_id)
+        purifier = await self._get_purifier(device_id)
         if not purifier:
             return {"device_id": device_id, "status": "offline"}
         try:
@@ -114,7 +130,7 @@ class VeSyncConnector(DeviceConnector):
             return {"device_id": device_id, "status": "offline"}
 
     async def turn_on(self, device_id: str) -> bool:
-        purifier = self._get_purifier(device_id)
+        purifier = await self._get_purifier(device_id)
         if purifier:
             print(f"[VeSync] Đang gửi lệnh BẬT cho máy lọc: {device_id}")
             return await self._safe_call(purifier.turn_on)
@@ -122,7 +138,7 @@ class VeSyncConnector(DeviceConnector):
         return False
 
     async def turn_off(self, device_id: str) -> bool:
-        purifier = self._get_purifier(device_id)
+        purifier = await self._get_purifier(device_id)
         if purifier:
             print(f"[VeSync] Đang gửi lệnh TẮT cho máy lọc: {device_id}")
             return await self._safe_call(purifier.turn_off)
@@ -130,7 +146,7 @@ class VeSyncConnector(DeviceConnector):
         return False
     
     async def set_mode(self, device_id: str, mode: str) -> bool:
-        purifier = self._get_purifier(device_id)
+        purifier = await self._get_purifier(device_id)
         if not purifier:
             print(f"[VeSync] ❌ Không tìm thấy thiết bị: {device_id}")
             return False

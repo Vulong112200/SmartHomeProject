@@ -143,6 +143,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
 
   Future<void> _toggleEnabled(Schedule s, bool enabled) async {
     final err = await ScheduleApi.updateSchedule(s.id, {'enabled': enabled});
+    if (!mounted) return;
     if (err != null) {
       _snack(err, error: true);
     }
@@ -170,6 +171,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
     );
     if (confirmed != true) return;
     final err = await ScheduleApi.deleteSchedule(s.id);
+    if (!mounted) return;
     if (err != null) {
       _snack(err, error: true);
     } else {

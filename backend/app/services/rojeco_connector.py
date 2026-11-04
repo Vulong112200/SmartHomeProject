@@ -7,6 +7,9 @@ from typing import Dict, Any
 # Giá trị DP `feed_state` theo spec thiết bị (GET .../specification).
 _FEED_STATES = ("standby", "feeding", "done")
 
+# Số phần tối đa cho 1 lần nhả (UI dùng 1-3). Khớp services/device_actions.py.
+_MAX_PORTIONS = 10
+
 class RojecoConnector(DeviceConnector):
     def __init__(self):
         self.is_connected = False
@@ -85,15 +88,21 @@ class RojecoConnector(DeviceConnector):
         return await self.set_mode(device_id, "1")
 
     async def turn_off(self, device_id: str) -> bool:
-        return True
+        # Máy cho ăn không có lệnh "tắt". Trước đây trả True -> app báo
+        # "Đã tắt" dù không có gì xảy ra.
+        return False
 
     async def set_mode(self, device_id: str, mode: str) -> bool:
         try:
             if not self.is_connected:
                 await asyncio.to_thread(self.openapi.connect)
 
-            # Chuyển mode sang số nguyên (portions)
+            # Chuyển mode sang số nguyên (portions). Chặn số vô lý ngay tại đây
+            # (spec máy cho tới 40 phần — 1 lệnh sai là đổ cả khay hạt).
             portions = int(mode)
+            if not 1 <= portions <= _MAX_PORTIONS:
+                print(f"[Rojeco] Từ chối số phần không hợp lệ: {portions}")
+                return False
 
             # Cấu trúc Body chuẩn theo ảnh Debug của bạn
             commands = {'commands': [{'code': 'manual_feed', 'value': portions}]}

@@ -56,7 +56,7 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Vào nền -> dừng poll (tiết kiệm pin/mạng); trở lại -> poll tiếp ngay.
     final active = state == AppLifecycleState.resumed;
-    if (active != _appActive) {
+    if (mounted && active != _appActive) {
       setState(() => _appActive = active);
     }
   }
