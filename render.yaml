@@ -29,3 +29,23 @@ services:
       # --- OpenRouter (AI parse lenh giong noi) ---
       - key: OPENROUTER_API_KEY
         sync: false
+      # --- Postgres (Supabase) ---
+      # Khong dat -> app fallback SQLite, ma o dia Render la ephemeral nen lich
+      # hen MAT moi lan deploy. Phai dung chuoi "Session pooler" (IPv4): Direct
+      # connection cua Supabase chi co IPv6, Render free khong ho tro.
+      # Huong dan: backend/docs/SUPABASE_SETUP.md
+      - key: DATABASE_URL
+        sync: false
+      # --- Dang nhap & phan quyen (Phase 1b/2) ---
+      # CHUA dat SUPABASE_JWT_SECRET -> xac thuc TU TAT (moi request coi nhu
+      # chu nha). Dat vao -> xac thuc tu BAT. Khong can AUTH_DISABLED.
+      # Chi dat SUPABASE_JWT_SECRET SAU KHI app da co dang nhap va da cai len
+      # het dien thoai trong nha, neu khong ca nha bi 401.
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
+      # Ky token dai han cho Home Widget / shortcut (isolate nen). Khong dat
+      # thi dung chung SUPABASE_JWT_SECRET. Thu hoi = doi gia tri nay.
+      - key: APP_TOKEN_SECRET
+        sync: false

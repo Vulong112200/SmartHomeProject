@@ -114,10 +114,66 @@
 - **Backend:** `automation_engine.py` — không được import trong `main.py`.
 - **Key logic:** chưa kích hoạt; tính năng Hẹn giờ dùng `services/scheduler.py` riêng (persist DB) thay vì engine này (rule in-memory).
 
+### Đăng nhập (Supabase Auth) + AuthGate
+- **Status:** 🚧 code xong, chưa bật production (chờ tạo project Supabase và build APK kèm khóa)
+- **Backend:** `core/auth.py` (`issue_app_token`, chấp nhận app-token trong `get_current_user`) · `POST /api/auth/app-token`
+- **Frontend:** `core/auth_service.dart` · `screens/auth_gate.dart` · `screens/login_screen.dart` · `screens/pending_screen.dart` (+ `OfflineScreen`) · header gắn ở `device_api`/`schedule_api`/`ai_assistant_tab`/`dashboard_tab` · `main.dart` init Supabase trước `runApp` · test `test/auth_service_test.dart`, `test/widget_test.dart`
+- **Key logic:**
+  - **⚠️ Isolate nền là đường hỏng ÂM THẦM của phase này.** `widgetBackgroundCallback` (`@pragma('vm:entry-point')`) và shortcut handler chạy ở **isolate riêng**, nơi `Supabase.instance` chưa từng được khởi tạo ⇒ không lấy được access token ⇒ Home Widget hiện "Không rõ" và nút bấm **không làm gì, không báo lỗi, không crash**. Ba cách sai đã loại: (a) init Supabase trong isolate → hai isolate refresh song song, mà Supabase **xoay vòng refresh token** ⇒ isolate này vô hiệu hóa token của isolate kia, cả nhà bị đăng xuất ngẫu nhiên; (b) cache access token 1 giờ → hỏng mỗi khi bấm widget sau 1 giờ, tức hầu như luôn; (c) bỏ qua → mất 2 tính năng đầu bảng. **Giải:** `POST /api/auth/app-token` cấp JWT dài hạn do backend ký (`iss="smarthome-app"`), lưu SharedPreferences — đọc được ở mọi isolate. Thu hồi = đổi `APP_TOKEN_SECRET`.
+  - `accessToken()` thử Supabase trước (tự refresh khi hết hạn), rồi rơi xuống app-token. Cờ `_supabaseReady` là static của isolate nên ở isolate nền nó false và Supabase bị bỏ qua thay vì ném lỗi.
+  - **`headers()` NÉM `NotAuthenticatedException`** thay vì im lặng bỏ header. Hành vi cũ khiến server trả 401 và UI báo "Mất kết nối máy chủ" — sai chẩn đoán, sai cách phục hồi.
+  - **`AuthGate` 5 trạng thái** `loading | signedOut | pending | offline | ready`. `loading` tồn tại vì thiếu nó thì cold start **nháy màn đăng nhập** trong lúc session đã lưu chưa resolve xong. `offline` tồn tại vì rớt mạng **khác** hết phiên — đăng xuất người dùng chỉ vì Render đang ngủ là bắt gõ lại mật khẩu vô cớ. `dispose()` cancel `StreamSubscription` (thiếu là setState trên widget đã chết).
+  - **401 ≠ 403.** 401 = phiên chết → đăng xuất. 403 = "chờ chủ nhà duyệt" hoặc "ngoài khu được cấp" → hiện thông báo, **không** đăng xuất.
+  - **Chuyển tiếp an toàn:** `AppConfig.authEnabled` false khi chưa truyền `--dart-define=SUPABASE_URL/SUPABASE_ANON_KEY` ⇒ AuthGate vào thẳng app với `HouseholdProfile.openHouse`, khớp backend đang để xác thực TẮT. Không có nhánh này thì bản build thiếu khóa **kẹt ở màn login vĩnh viễn**.
+  - **Mọi call site đều phải có header.** `dashboard_tab.fetchDevices` trước đây gọi `http.get` thẳng — call site duy nhất thiếu token; bật xác thực lên là dashboard trống trơn trong khi mọi thứ khác vẫn chạy. Nay đi qua `DeviceApi`.
+  - anon key nằm trong APK nên **không phải bí mật**; an toàn đến từ RLS deny-all trên mọi bảng.
+  - Giữ luồng **đăng ký** ở `login_screen`: ăn khớp cơ chế chờ-duyệt ở backend. Bỏ nó thì chủ nhà phải tự tạo tài khoản và đặt lại mật khẩu cho từng người trong dashboard Supabase.
+
+### Khu vực + thành viên + phân quyền theo khu
+- **Status:** 🚧 backend xong, chưa có UI (Phase 2-3 mới làm màn hình đăng nhập/quản trị)
+- **Backend:** `core/household.py` · `core/auth.py` · `models/member.py`, `models/zone.py` · `devices.zone_id`, `schedules.created_by` · `main.py` `/api/me`, `/api/zones`, `/api/members`, `PATCH /api/devices/{id}` + rescope toàn bộ endpoint cũ · test `tests/test_household_scope.py`
+- **Frontend:** `core/household_api.dart` (Zone/Member model + CRUD) · `screens/admin_screen.dart` (2 tab) · lối vào ở menu tài khoản trên `dashboard_tab.dart`, chỉ hiện khi `can_admin` · test `test/admin_screen_test.dart`
+- **Key logic:**
+  - **Mô hình:** thiết bị thuộc **khu vực**, thành viên được cấp quyền theo **khu**. Không phải `devices.user_id` sở hữu phẳng — mô hình đó không chia sẻ được thiết bị, mà cả nhà vốn dùng chung cửa cuốn và máy lọc khí.
+  - **Không có bảng `homes`.** Một cột luôn bằng 1 trên mọi bảng là trả giá ngay để dùng sau nhiều năm. Điều làm "nhiều nhà" rẻ về sau là dồn hết scoping vào `core/household.py`: lúc cần chỉ thêm cột `home_id` + sửa 2 hàm, không đụng endpoint nào.
+  - **Ma trận quyền** (một cơ chế duy nhất): `owner` quản trị được tất cả · `adult` thấy mọi khu, không quản trị · `kid` chỉ khu được cấp, tạo được lịch, chỉ sửa lịch của chính mình · `guest` chỉ khu được cấp, không tạo lịch · `pending`/`blocked` bị 403 mọi nơi trừ `/api/me`.
+  - **Cấp theo KHU chứ không theo từng thiết bị:** per-device là O(thành viên × thiết bị) hàng phải bảo trì mỗi lần mua thêm ổ cắm; per-zone thì thiết bị mới **thừa hưởng** quyền từ phòng.
+  - **`zone_id IS NULL` = "hộp thư đến"**: thiết bị vừa import chưa gán phòng, chỉ owner/adult thấy. Rơi ra **miễn phí** từ `INNER JOIN` trong `device_query` — không có case đặc biệt nào.
+  - **403 chứ không 404** khi thiết bị có trong nhà nhưng ngoài khu của mình — trong nhà không cần giấu nhau việc thiết bị đó tồn tại.
+  - Vai và grant đọc từ DB **mỗi request** ⇒ duyệt / đổi vai / chặn có hiệu lực ngay ở request kế tiếp, không bắt đăng nhập lại (khác hẳn nhét role vào JWT).
+  - Quyền **không bao giờ xuất hiện trong thân endpoint** — endpoint chỉ gọi `device_query` / `require_device_access` / `require_owner` / `require_schedule_write`.
+  - **Người lạ đăng nhập lần đầu** → `guest`/`pending`, 0 grant: đăng nhập được, `/api/me` được, mọi thứ khác 403 "Đang chờ chủ nhà phê duyệt". Email trong `ADMIN_EMAILS` **luôn** được nâng lên `owner`/`active`, kể cả khi hàng trong DB đã bị hạ vai — cứu hộ để chủ nhà không tự khóa mình khỏi nhà mình.
+  - **Lịch hẹn là của CẢ NHÀ**: `schedule_query` lọc theo THIẾT BỊ (ai thấy thiết bị thì thấy lịch của nó), không theo `created_by`. Cột `created_by` chỉ dùng để chặn kid sửa lịch bố mẹ đặt.
+  - **Chặn tự khóa mình ở tầng API** (không chỉ UI — app bản cũ hoặc request gõ tay vẫn đi thẳng vào): không tự hạ vai, không tự chặn mình, không hạ vai/chặn `owner` cuối cùng.
+  - **Hai bug sẵn có sửa cùng lúc:** `DELETE /api/devices/{id}` giờ xóa luôn lịch của thiết bị (trước đây lịch mồ côi vẫn được scheduler bắn vào thiết bị không tồn tại, mỗi ngày, mãi mãi); `POST /api/devices` idempotent (id trùng = "đã có trong nhà").
+  - **UI quản trị (Phase 3):** tab **Thành viên** ghim người chờ duyệt lên đầu — đó là việc cần làm, không phải danh sách để cuộn tìm; **ẩn ô tick khu với owner/adult** vì hai vai này thấy mọi khu theo luật vai, tick vào chẳng đổi gì mà lại khiến chủ nhà tưởng mình cấp thiếu. Tab **Khu vực** ghim pseudo-zone "Chưa phân khu" ở CUỐI và mặc định mở: thiết bị mới import rơi vào `zone_id NULL`, không hiện ở đâu thì chủ nhà không biết chúng tồn tại.
+  - **Menu tài khoản LUÔN hiện**, kể cả khi chưa bật đăng nhập: chủ nhà cần vào Quản trị **chia phòng trước** rồi mới bật xác thực — ngược lại thì lúc duyệt trẻ em không có khu nào để cấp.
+  - Chốt *"không hạ vai chủ nhà cuối cùng"* trong `update_member` hiện **không chạm tới được**: người thao tác bắt buộc đã là owner/active nên hạ vai owner khác thì luôn còn ≥2 owner, còn tự hạ vai đã bị chốt "chính mình" bắt trước. Giữ làm backstop; test ghim **bất biến** "nhà không bao giờ mất chủ" chứ không ghim nhánh code đó.
+  - ⚠️ **Xác thực TỰ SUY** — xem section "Cấu hình & bảo mật (env)".
+
+### Lưu dữ liệu bền (Postgres/Supabase)
+- **Status:** 🚧 code xong, chưa bật trên production (chờ đặt `DATABASE_URL` trên Render — bước 4 của `backend/docs/SUPABASE_SETUP.md`)
+- **Backend:** `core/database.py` · `docs/supabase_schema.sql` · `docs/SUPABASE_SETUP.md` · `tests/test_database_schema.py`
+- **Frontend:** không đổi gì — app không cần build lại.
+- **Key logic:**
+  - **Vấn đề:** ổ đĩa Render free là ephemeral; container dựng lại mỗi lần deploy nên `backend/smarthome.db` (đang bị track trong git) bị ghi đè bằng bản chụp trong repo ⇒ **mọi lịch hẹn người dùng tạo đều mất sau mỗi lần deploy**. Postgres nằm ngoài container nên không bị.
+  - `DATABASE_URL` quyết định DB. Không đặt → fallback SQLite y như cũ (dev offline không đổi gì). `normalize_database_url` đổi `postgres://` → `postgresql://` (SQLAlchemy 2.x chỉ nhận dạng sau; thiếu bước này thì lỗi mơ hồ `NoSuchModuleError`).
+  - `normalize_database_url` / `make_engine` tách thành hàm thuần để test được **mà không phải reload module** — reload tạo `Base` mới, models đã nằm trong `sys.modules` nên không đăng ký lại ⇒ `create_all` không tạo gì.
+  - Pool Postgres: `pool_pre_ping` (Render ngủ → kết nối chết) + `pool_recycle=1800` (Supabase pooler cắt kết nối cũ).
+  - `init_db()` theo thứ tự: `create_all` → `run_startup_migrations` → `verify_schema` → `enable_rls` → `seed_defaults`. **verify phải TRƯỚC seed**: ngược lại thì schema lệch làm seed ném `OperationalError` thô, che mất thông báo nói rõ thiếu cột nào.
+  - `run_startup_migrations` chạy cho **cả hai dialect**; DDL tách riêng vì Boolean của SQLite là `INTEGER` còn Postgres là `BOOLEAN` — dùng chung một DDL sẽ lỗi trên Postgres.
+  - `verify_schema()` raise kèm tên bảng/cột thiếu → `lifespan` bắt → boot degraded, `/health` trả `db:false`. Không có nó thì schema lệch chỉ lộ ra ở request 500 đầu tiên.
+  - `enable_rls()` bật RLS trên Postgres nhưng **không viết policy**: Supabase grant sẵn quyền cho role `anon`/`authenticated` mà anon key nằm ngay trong APK; bật RLS không policy = deny-all, còn backend nối bằng role `postgres` nên bỏ qua RLS và vẫn chạy.
+  - `seed_defaults()` nạp 3 thiết bị nếu bảng `devices` rỗng, **giữ NGUYÊN id** (shortcut đã pin và slot Home Widget lưu theo `brand`+`id`, đổi id là hỏng cả hai mà không báo lỗi). Chỉ chạy khi rỗng ⇒ không ghi đè tên người dùng đã sửa hay thiết bị đã xóa.
+  - ⚠️ Bẫy kết nối: phải dùng chuỗi **Session pooler** của Supabase (IPv4, port 5432). Direct connection chỉ có IPv6 mà Render free không hỗ trợ → `Network is unreachable`.
+  - Phase 1a **chỉ đổi chỗ lưu**. Chưa có đăng nhập, chưa có phân quyền, chưa có bảng thành viên/khu vực.
+
 ### Cấu hình & bảo mật (env)
 - **Status:** ✅ done
 - **Backend:** `load_dotenv()` đầu `main.py` · `backend/.env` (thật, gitignore) · `backend/.env.example` (mẫu).
-- **Key logic:** `VESYNC_EMAIL/PASSWORD` (main.py), `TUYA_ACCESS_ID/KEY/API_ENDPOINT` (tuya_connector + rojeco_connector dùng chung), `OPENROUTER_API_KEY` (ai_parser). Trên Render set qua Dashboard > Environment. Lifespan bọc try/except từng connector — 1 hãng lỗi không sập app; Tuya/Rojeco `connect()` chạy `asyncio.to_thread` và chỉ set `is_connected` khi token response `success`.
+- **Key logic:** `VESYNC_EMAIL/PASSWORD` (main.py), `TUYA_ACCESS_ID/KEY/API_ENDPOINT` (tuya_connector + rojeco_connector dùng chung), `OPENROUTER_API_KEY` (ai_parser), `DATABASE_URL` (core/database.py), `SUPABASE_JWT_SECRET` + `ADMIN_EMAILS` + `AUTH_DISABLED` (core/auth.py).
+  - ⚠️ **Xác thực TỰ SUY, không mặc định bật.** `AUTH_DISABLED` không đặt ⇒ suy từ `SUPABASE_JWT_SECRET`: thiếu secret thì backend **không verify nổi token**, bật xác thực chỉ làm mọi request 401 và app cả nhà chết. Mà service Render được tạo tay trên dashboard nên **KHÔNG đọc `render.yaml`** — quên set biến là đủ gây sự cố thật. Có secret ⇒ tự bật. Đặt `AUTH_DISABLED=0` tường minh để ép bật kể cả khi thiếu secret (fail closed). Lifespan log to trạng thái mỗi lần boot: `🔒 Xác thực BẬT` / `🔓 Xác thực TẮT`.
+  - `ADMIN_EMAILS` (phân tách dấu phẩy) là **cứu hộ cấp env**: các email này luôn thành `owner`/`active` mỗi lần đăng nhập, kể cả khi vai trong DB bị hạ. Trên Render set qua Dashboard > Environment. Lifespan bọc try/except từng connector — 1 hãng lỗi không sập app; Tuya/Rojeco `connect()` chạy `asyncio.to_thread` và chỉ set `is_connected` khi token response `success`.
 
 ---
 
@@ -125,5 +181,11 @@
 
 | Table | Status | Ghi chú |
 |---|---|---|
-| devices (`DeviceModel`) | ✅ | id, name, brand, is_active. Thiếu icon/category. |
-| schedules (`ScheduleModel`) | ✅ | id, name, brand, device_id, action_type, action_value, time, days, enabled, last_fired_date + end_time, end_action_type, end_action_value, last_end_fired_date, one_shot (lịch khoảng/one-shot; cột mới qua `run_startup_migrations`). ⚠️ Ephemeral trên Render free (mất khi redeploy). |
+| devices (`DeviceModel`) | ✅ | id (PK = id hãng), name, brand, is_active, **zone_id** (FK zones, ON DELETE SET NULL, NULL = "hộp thư đến"), **category**. `seed_defaults()` nạp 3 thiết bị khi bảng rỗng, giữ nguyên id. |
+| zones (`ZoneModel`) | ✅ | id, name, sort_order. `seed_defaults()` tạo khu 'Nhà' khi bảng rỗng và gán thiết bị chưa phân khu vào đó. |
+| members (`MemberModel`) | ✅ | user_id (PK, = auth.users.id dạng text), email, display_name, role (owner\|adult\|kid\|guest), status (pending\|active\|blocked). |
+| member_zone_access (`MemberZoneAccessModel`) | ✅ | (user_id, zone_id) PK ghép. Grant CHỈ cho kid/guest — owner/adult thấy mọi khu theo luật vai nên không có hàng nào ở đây. |
+| schedules (`ScheduleModel`) | ✅ | id, name, brand, device_id, action_type, action_value, time, days, enabled, last_fired_date + end_time, end_action_type, end_action_value, last_end_fired_date, one_shot, **created_by** (lịch khoảng/one-shot; cột mới qua `run_startup_migrations`, chạy được trên cả SQLite lẫn Postgres). |
+
+**Nơi lưu:** `DATABASE_URL` → Postgres (Supabase); không đặt → SQLite `backend/smarthome.db`.
+⚠️ Còn chạy SQLite trên Render thì **lịch hẹn mất mỗi lần redeploy** (ổ đĩa ephemeral + file DB bị track trong git). Log lúc boot nói rõ đang dùng loại nào và cảnh báo nếu là SQLite. Cách khắc phục: `backend/docs/SUPABASE_SETUP.md`.

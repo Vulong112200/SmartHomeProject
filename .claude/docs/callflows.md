@@ -195,3 +195,133 @@ Kéo đổi chỗ:
     → _onReorder: devices.removeAt/insert (setState)
     → DeviceOrder.save([ids theo thứ tự mới])   # chỉ lưu cục bộ, không gọi backend
 ```
+
+## 6. Khởi động backend (lifespan → init_db)
+
+```
+uvicorn app.main:app
+  → import app.main
+      core/database.py (tầng import):
+        DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", ""))
+          rỗng          → "sqlite:///./smarthome.db"
+          "postgres://" → đổi thành "postgresql://"   # SQLAlchemy 2.x chỉ nhận dạng này
+        engine = make_engine(url)
+          sqlite   → connect_args check_same_thread=False
+          postgres → pool_pre_ping + pool_recycle=1800 + pool_size=5
+      ⚠️ KHÔNG chạm DB ở tầng import: exception ở đây làm uvicorn chết với
+         "Error loading ASGI app", không route nào chạy, kể cả /health.
+
+  → lifespan(app)  [try/except → cờ db_ready]
+      log "Đang khởi tạo Database (SQLite|Postgres)..."
+      init_db():
+        1. Base.metadata.create_all(bind)        # checkfirst=True → no-op nếu SQL file đã apply
+        2. run_startup_migrations(bind)          # ALTER TABLE cột thiếu; DDL theo dialect
+        3. verify_schema(bind)                   # raise kèm tên bảng/cột thiếu
+        4. enable_rls(bind)                      # chỉ Postgres; ENABLE RLS, KHÔNG viết policy
+        5. seed_defaults(bind)                   # 3 thiết bị nếu bảng devices rỗng, giữ nguyên id
+        ⚠️ verify (3) phải TRƯỚC seed (5): ngược lại schema lệch làm seed ném
+           OperationalError thô, che mất thông báo nói rõ thiếu cột nào.
+      thành công → db_ready=True; nếu IS_SQLITE → log WARNING cảnh báo mất dữ liệu khi redeploy
+      thất bại   → db_ready=False, KHÔNG raise (boot degraded)
+
+  → khởi động connector (mỗi hãng bọc try/except riêng — 1 hãng lỗi không sập app)
+  → scheduler_task = create_task(scheduler_loop()) CHỈ KHI db_ready
+       (db lỗi mà vẫn chạy thì tick 30s log stack trace vĩnh viễn)
+
+  → GET /health → {"status":"online", "db": db_ready}   # LUÔN 200
+```
+
+## 7. Phân quyền theo khu vực (mọi request đã đăng nhập)
+
+```
+Request có Bearer token
+  → core/auth.py get_current_user()
+      auth_disabled()?  (AUTH_DISABLED tường minh > suy từ SUPABASE_JWT_SECRET)
+        TẮT  → CurrentUser giả, is_admin=True     # giai đoạn chưa gắn đăng nhập
+        BẬT  → jwt.decode(HS256, aud="authenticated") -> sub + email
+               thiếu/sai token -> 401
+      is_admin = email ∈ ADMIN_EMAILS
+
+  → core/household.py get_member()  [Depends]
+      provision_member(db, user):
+        chưa có hàng members -> tạo guest/pending (người lạ lần đầu)
+        email ∈ ADMIN_EMAILS       -> LUÔN nâng owner/active (cứu hộ)
+
+  → get_current_member()  [Depends, dùng ở MỌI endpoint trừ /api/me]
+        status blocked -> 403 "Tài khoản đã bị chặn."
+        status pending -> 403 "Đang chờ chủ nhà phê duyệt."   # app hiện màn chờ
+
+  → endpoint gọi ĐÚNG MỘT trong các hàm sau (quyền không nằm trong thân endpoint):
+
+     device_query(db, member)              # GET /api/devices, POST /api/ai/parse
+       owner|adult -> query(DeviceModel)                       # thấy cả zone_id NULL
+       kid|guest   -> INNER JOIN member_zone_access ON zone_id  # NULL tự rơi ra
+
+     require_device_access(db, member, id) # control, status, tạo lịch
+       thấy được        -> trả DeviceModel
+       có trong nhà      -> 403   # ngoài khu của mình; trong nhà không giấu nhau
+       không có trong nhà -> 404
+
+     schedule_query(db, member)            # GET /api/schedules
+       lọc theo THIẾT BỊ, KHÔNG theo created_by — lịch là của cả nhà
+
+     require_schedule_write(db, member, id) # PATCH/DELETE /api/schedules
+       require_can_schedule  (guest -> 403)
+       + thấy được lịch      (ngoài khu -> 403)
+       + owner|adult, HOẶC created_by == mình  (kid sửa lịch người khác -> 403)
+
+     require_owner(member)                 # POST/PATCH/DELETE devices, zones, members
+       không phải owner -> 403
+```
+
+Vai và grant đọc từ DB **mỗi request** ⇒ chủ nhà duyệt/đổi vai/chặn thì có hiệu
+lực ngay ở request kế tiếp, không cần đăng nhập lại. Chi phí:
+`get_current_member` = 1 select theo PK, `require_device_access` = 1 select có
+index. Dashboard poll 6s cho 3 card ≈ 1.5 req/s.
+
+## 8. Khởi động app có đăng nhập (AuthGate) + isolate nền
+
+```
+main()
+  AppConfig.authEnabled?   (có SUPABASE_URL + SUPABASE_ANON_KEY từ --dart-define)
+    KHÔNG → bỏ qua init Supabase             # bản build hiện tại trên máy cả nhà
+    CÓ    → await AuthService.init()         # TRƯỚC runApp, nếu không AuthGate
+                                             # sẽ nháy màn đăng nhập ở cold start
+  runApp → AuthGate
+
+AuthGate._bootstrap()
+  !authEnabled                  → ready(HouseholdProfile.openHouse)   # chạy như cũ
+  chưa đăng nhập & không app-token → signedOut → LoginScreen
+  ngược lại:
+    GET /api/me
+      200 + status active   → ready(profile) → MainScreen  (+ refreshAppToken nền)
+      200 + pending/blocked → pending        → PendingScreen
+      401                   → handleUnauthorized() → signedOut
+      lỗi mạng / 5xx        → offline        → OfflineScreen   # KHÔNG đăng xuất
+
+LoginScreen.signIn()
+  Supabase signInWithPassword
+    → AuthService.refreshAppToken():
+        POST /api/auth/app-token  (Bearer = access token Supabase)
+        → lưu SharedPreferences['app_token_v1']
+  → onSignedIn → _bootstrap() lại
+```
+
+### Isolate NỀN (Home Widget, shortcut đã pin)
+
+```
+Người dùng bấm nút trên Home Widget khi app ĐÃ TẮT
+  → Android khởi động isolate nền (@pragma('vm:entry-point'))
+      ⚠️ Supabase.instance CHƯA init ở đây, và không được init
+         (hai isolate refresh song song -> Supabase xoay vòng refresh token
+          -> isolate này vô hiệu hóa token của isolate kia -> đăng xuất ngẫu nhiên)
+  → WidgetService._performAction → DeviceApi.sendMode(...)
+      → DeviceApi._headers() → AuthService.headers() → accessToken()
+          _supabaseReady == false (static của isolate mới)  -> bỏ qua Supabase
+          → readAppToken() từ SharedPreferences             -> Bearer <app-token>
+  → backend verify app-token (iss="smarthome-app") → điều khiển thiết bị
+```
+
+Thiếu app-token thì nhánh này trả `{}` không có header ⇒ 401 ⇒ widget hiện
+"Không rõ" và nút bấm **không làm gì, không báo lỗi**. Đó là lý do
+`test/auth_service_test.dart` chạy đúng trong điều kiện Supabase CHƯA init.

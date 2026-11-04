@@ -59,3 +59,5 @@ websockets==16.0
 yarl==1.23.0
 openai==2.36.0
 tzdata==2025.2
+pytest==9.1.1
+httpx==0.28.1

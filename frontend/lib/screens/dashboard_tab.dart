@@ -1,9 +1,9 @@
 import 'dart:async'; // Bắt buộc để dùng Timer
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:http/http.dart' as http;
 import '../theme/app_colors.dart';
+import '../core/auth_service.dart';
 import '../core/config.dart';
 import '../core/device_api.dart';
 import '../core/device_order.dart';
@@ -11,13 +11,26 @@ import '../core/device_type.dart';
 import '../core/shortcut_service.dart';
 import '../core/shortcut_handler.dart';
 import '../core/widget_service.dart';
+import 'admin_screen.dart';
 
 class DashboardTab extends StatefulWidget {
   /// Tab Home có đang hiển thị không (IndexedStack giữ tab sống kể cả khi ẩn).
   /// Dùng để tạm dừng poll trạng thái khi người dùng ở tab khác.
   final bool isVisible;
 
-  const DashboardTab({super.key, this.isVisible = true});
+  /// Hồ sơ người dùng trong nhà (vai, khu được cấp) — do AuthGate truyền
+  /// xuống để không màn nào phải gọi lại /api/me.
+  final HouseholdProfile profile;
+
+  /// Gọi khi bấm Đăng xuất.
+  final Future<void> Function()? onSignOut;
+
+  const DashboardTab({
+    super.key,
+    this.isVisible = true,
+    this.profile = HouseholdProfile.openHouse,
+    this.onSignOut,
+  });
 
   @override
   State<DashboardTab> createState() => _DashboardTabState();
@@ -62,6 +75,103 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
     fetchDevices();
   }
 
+  /// Tên chào. Ưu tiên tên hiển thị, rồi phần trước @ của email; chưa đăng
+  /// nhập (backend chạy xác thực TẮT) thì giữ lời chào chung.
+  String get _greetingName {
+    final p = widget.profile;
+    if (p.displayName.trim().isNotEmpty) return '${p.displayName} 🖖';
+    if (p.email.contains('@')) return '${p.email.split('@').first} 🖖';
+    return 'Nhà mình 🖖';
+  }
+
+  /// Nút tài khoản: hiện vai + khu được cấp, và lối đăng xuất. Không có nó thì
+  /// người dùng không có cách nào thoát tài khoản trong app.
+  Widget _accountMenu() {
+    final p = widget.profile;
+    const roleLabel = {
+      'owner': 'Chủ nhà',
+      'adult': 'Người lớn',
+      'kid': 'Trẻ em',
+      'guest': 'Khách',
+    };
+    return PopupMenuButton<String>(
+      tooltip: 'Tài khoản',
+      color: AppColors.surface,
+      onSelected: (v) {
+        if (v == 'signout') widget.onSignOut?.call();
+        if (v == 'admin') {
+          Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => AdminScreen(profile: p),
+          ));
+        }
+      },
+      itemBuilder: (_) => [
+        PopupMenuItem<String>(
+          enabled: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(p.email.isEmpty ? 'Chưa đăng nhập' : p.email,
+                  style: const TextStyle(color: AppColors.textMain, fontSize: 13)),
+              const SizedBox(height: 2),
+              Text(
+                p.scopeLabel,
+                style: const TextStyle(color: AppColors.textSub, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+        const PopupMenuDivider(),
+        // Chỉ chủ nhà mới có mục Quản trị — người khác bấm vào cũng chỉ nhận
+        // 403 từ API, hiện nút ra là mời người ta vào ngõ cụt.
+        // Menu LUÔN hiện kể cả khi chưa bật đăng nhập: chủ nhà cần vào đây
+        // chia phòng TRƯỚC, rồi mới bật xác thực — ngược lại thì không có
+        // khu nào để cấp cho trẻ em lúc duyệt.
+        if (p.canAdmin)
+          const PopupMenuItem<String>(
+            value: 'admin',
+            child: Row(
+              children: [
+                Icon(Icons.admin_panel_settings_outlined, size: 18, color: AppColors.textSub),
+                SizedBox(width: 10),
+                Text('Quản trị nhà', style: TextStyle(color: AppColors.textMain)),
+              ],
+            ),
+          ),
+        // Đăng xuất chỉ có nghĩa khi thật sự có đăng nhập.
+        if (widget.onSignOut != null)
+          const PopupMenuItem<String>(
+            value: 'signout',
+            child: Row(
+              children: [
+                Icon(Icons.logout, size: 18, color: AppColors.textSub),
+                SizedBox(width: 10),
+                Text('Đăng xuất', style: TextStyle(color: AppColors.textMain)),
+              ],
+            ),
+          ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              roleLabel[p.role] ?? 'Tài khoản',
+              style: const TextStyle(color: AppColors.textMain, fontSize: 13),
+            ),
+            const SizedBox(width: 4),
+            const Icon(Icons.expand_more, size: 16, color: AppColors.textSub),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -80,25 +190,24 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
   // 1. HÀM LẤY DỮ LIỆU ĐƯỢC NÂNG CẤP (Có Timeout và Auto-Retry)
   Future<void> fetchDevices() async {
     try {
-      // Ép thời gian chờ là 5 giây, nếu server đơ thì báo lỗi ngay
-      final response = await http.get(Uri.parse('$baseUrl/api/devices'))
-                                 .timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(utf8.decode(response.bodyBytes));
-        // Sắp theo thứ tự người dùng đã kéo-thả (lưu cục bộ); thiết bị mới xuống cuối.
-        final order = await DeviceOrder.load();
-        if (!mounted) return;
-        setState(() {
-          devices = DeviceOrder.apply(List<dynamic>.from(data['data'] ?? []), order);
-          isLoading = false;
-          isOffline = false; // Đã có mạng
-        });
-        _retryTimer?.cancel(); // Tắt bộ thử lại
-        WidgetService.refreshAll(); // Đồng bộ trạng thái lên Home Screen Widget
-      } else {
+      // Đi qua DeviceApi để CÓ header xác thực. Trước đây chỗ này gọi http.get
+      // thẳng nên là call site duy nhất thiếu token — bật xác thực lên là
+      // dashboard trống trơn trong khi mọi thứ khác vẫn chạy.
+      final data = await DeviceApi.fetchDevices();
+      if (data == null) {
         _handleOffline();
+        return;
       }
+      // Sắp theo thứ tự người dùng đã kéo-thả (lưu cục bộ); thiết bị mới xuống cuối.
+      final order = await DeviceOrder.load();
+      if (!mounted) return;
+      setState(() {
+        devices = DeviceOrder.apply(List<dynamic>.from(data), order);
+        isLoading = false;
+        isOffline = false; // Đã có mạng
+      });
+      _retryTimer?.cancel(); // Tắt bộ thử lại
+      WidgetService.refreshAll(); // Đồng bộ trạng thái lên Home Screen Widget
     } catch (e) {
       _handleOffline();
     }
@@ -214,18 +323,21 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text("Welcome Home,", style: TextStyle(color: AppColors.textSub, fontSize: 14)),
-                                  Text("Vũ 🖖", style: TextStyle(color: AppColors.textMain, fontSize: 28, fontWeight: FontWeight.bold)),
-                                ],
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text("Welcome Home,", style: TextStyle(color: AppColors.textSub, fontSize: 14)),
+                                    Text(
+                                      _greetingName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(color: AppColors.textMain, fontSize: 28, fontWeight: FontWeight.bold),
+                                    ),
+                                  ],
+                                ),
                               ),
-                              Container(
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(16)),
-                                child: const Icon(Icons.wb_sunny_rounded, color: Colors.orangeAccent),
-                              ),
+                              _accountMenu(),
                             ],
                           ),
                           const SizedBox(height: 24),
