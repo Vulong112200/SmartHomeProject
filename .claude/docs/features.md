@@ -37,7 +37,7 @@
 - **Status:** ✅ done
 - **Backend:** `DeviceModel` (`models/device.py`) · `/api/devices` GET/POST/DELETE (`main.py:118-155`).
 - **Frontend:** `device_api.dart` (`fetchDevices`/`fetchStatus`/`sendMode`/`sendAction`) · `dashboard_tab.dart` (list + card).
-- **Key logic:** DeviceModel chỉ có id/name/brand/is_active — KHÔNG có icon/category; loại thiết bị suy từ TÊN phía client qua `core/device_type.dart` (**nơi duy nhất**: 'lọc'→airPurifier, 'cửa'→curtain, 'mèo'/'ăn'→feeder) — dùng chung bởi dashboard, widget_service, schedule_tab. Card máy lọc & cửa có nhãn trạng thái sống (`statusLabel`) đọc từ `/status`. Base URL/timeout gom về `core/config.dart` (`AppConfig`).
+- **Key logic:** loại thiết bị phân ở client qua `core/device_type.dart` (**nơi duy nhất**): `deviceTypeOf(name, category:)` — `category` từ backend (`purifier`/`curtain`/`feeder`) thắng, NULL/lạ → suy từ TÊN ('lọc'→airPurifier, 'cửa'→curtain, 'mèo'/'ăn'→feeder) — dùng chung bởi dashboard, widget_service, schedule_tab. Card máy lọc & cửa có nhãn trạng thái sống (`statusLabel`) đọc từ `/status`. Base URL/timeout gom về `core/config.dart` (`AppConfig`).
 
 ### Điều khiển bật/tắt & chế độ
 - **Status:** ✅ done
@@ -53,7 +53,7 @@
 - **Status:** ✅ done
 - **Backend:** `/api/devices/{brand}/{id}/status` (`main.py`, opt `?fresh=1` bỏ cache) → `connector.get_device_state`; cache in-memory TTL ~3s (`_status_cache`), tự xóa sau mỗi lệnh điều khiển.
 - **Frontend:** `DeviceApi.fetchStatus(brand, id, {fresh})` (`device_api.dart`) — dùng ở dashboard & shortcut handler; card máy lọc/cửa tự động poll `Timer.periodic(6s)` (dùng cache), refresh sau lệnh dùng `fresh:true`. **Poll tự tạm dừng** khi tab Home ẩn (`DashboardTab.isVisible` từ IndexedStack) hoặc app vào nền (`WidgetsBindingObserver`), refresh ngay khi hiển thị lại (`didUpdateWidget` + `_setPolling`). Card báo ON/OFF thật về parent qua `onStatusChanged` → header đếm "Đang bật" chính xác (trước đây chỉ đếm `is_active` tĩnh).
-- **Key logic:** shape khác nhau theo brand; field chung là `status` (ON/OFF/offline). Tuya thêm `door_state`/`position`; VeSync thêm `mode`/`speed`. ⚠️ Rojeco stub luôn "ON".
+- **Key logic:** shape khác nhau theo brand; field chung là `status` (ON/OFF/offline). Tuya thêm `door_state`/`position`; VeSync thêm `mode`/`speed`. Rojeco: `status` ON(online)/offline + `feed_state` (standby/feeding/done) + `last_feed` (DP `feed_report`); card + widget hiện "Sẵn sàng • lần trước N phần" / "Đang nhả hạt..." / "Mất kết nối".
   - VeSync connector viết cho pyvesync 3.4.2: `_read()` ưu tiên `purifier.state.*` (tránh property deprecated), bọc try/except. `set_mode` ưu tiên API mới `set_fan_speed`/`set_auto_mode`/`set_sleep_mode` (fallback hàm cũ), validate theo `purifier.fan_levels`.
   - **Tuya cửa — suy `door_state` từ trạng thái THẬT trên cloud, KHÔNG từ lịch sử lệnh app.** `get_device_state` đọc DP status từ cloud rồi ưu tiên theo thứ tự: (1) **vị trí thật** (thử lần lượt `_POSITION_DPS`=`percent_state`/`position`/`curtain_position`/`percent_control`) → 100=open, 0=closed, giữa=partial; (2) **tình trạng thật** (`_WORK_STATE_DPS`=`work_state`/`doorcontrol_state`/`situation_set`/`door_state`) map qua `_WORK_STATE_MAP`; (3) **chỉ khi không có (1)(2)** mới fallback DP `control` (= LỆNH CUỐI echo trên cloud, có thể cũ/kẹt). Không nhận ra DP nào → `unknown` + in cảnh báo `[Tuya Door] ⚠️ ... dps=...`. Tên DP là danh sách ứng viên (hằng số đầu `tuya_connector.py`) — bổ sung tên nếu log báo thiết bị dùng tên khác.
 
@@ -103,7 +103,7 @@
 - **Backend:** dùng lại `/api/devices`, `/status`, `/mode`, `/test-control`.
 - **Frontend:** `core/widget_service.dart` (đẩy dữ liệu + callback nền) · `DeviceApi.fetchDevices` · `SmartHomeWidgetProvider.kt` · `res/layout/smart_home_widget.xml` · `res/xml/smart_home_widget_info.xml` · package `home_widget` · đăng ký receiver/service trong `AndroidManifest.xml`.
 - **Key logic:**
-  - 3 khe cố định theo loại: p=máy lọc (contains 'lọc'), c=cửa (contains 'cửa'), f=máy cho ăn (contains 'mèo'/'ăn'). Khe không có thiết bị → ẩn (`{slot}_visible`).
+  - 3 khe cố định theo loại (`deviceTypeOf` — category trước, rồi tên): p=máy lọc, c=cửa, f=máy cho ăn. Khe không có thiết bị → ẩn (`{slot}_visible`).
   - Dữ liệu đẩy qua `HomeWidget.saveWidgetData` (string), vẽ lại bằng `updateWidget(qualifiedAndroidName: com.example.frontend.SmartHomeWidgetProvider)`.
   - Nút bấm → `HomeWidgetBackgroundIntent` (URI `smarthome://action?type&brand&id` hoặc `smarthome://refresh`) → `widgetBackgroundCallback` (@pragma vm:entry-point) chạy NỀN, gọi DeviceApi rồi `refreshAll()` cập nhật lại. KHÔNG mở app.
   - App đang mở: `dashboard_tab.fetchDevices` thành công → `WidgetService.refreshAll()` đồng bộ widget.
@@ -181,7 +181,7 @@
 
 | Table | Status | Ghi chú |
 |---|---|---|
-| devices (`DeviceModel`) | ✅ | id (PK = id hãng), name, brand, is_active, **zone_id** (FK zones, ON DELETE SET NULL, NULL = "hộp thư đến"), **category**. `seed_defaults()` nạp 3 thiết bị khi bảng rỗng, giữ nguyên id. |
+| devices (`DeviceModel`) | ✅ | id (PK = id hãng), name, brand, is_active, **zone_id** (FK zones, ON DELETE SET NULL, NULL = "hộp thư đến"), **category** (`purifier`\|`curtain`\|`feeder`, NULL = suy từ tên; PATCH validate → 400). `seed_defaults()` nạp 3 thiết bị (kèm category) khi bảng rỗng, giữ nguyên id. |
 | zones (`ZoneModel`) | ✅ | id, name, sort_order. `seed_defaults()` tạo khu 'Nhà' khi bảng rỗng và gán thiết bị chưa phân khu vào đó. |
 | members (`MemberModel`) | ✅ | user_id (PK, = auth.users.id dạng text), email, display_name, role (owner\|adult\|kid\|guest), status (pending\|active\|blocked). |
 | member_zone_access (`MemberZoneAccessModel`) | ✅ | (user_id, zone_id) PK ghép. Grant CHỈ cho kid/guest — owner/adult thấy mọi khu theo luật vai nên không có hàng nào ở đây. |

@@ -29,7 +29,7 @@ backend/
 │       ├── connector_manager.py    # device_manager: register_connector / get_connector theo brand
 │       ├── tuya_connector.py       # Tuya Cloud — cửa cuốn/rèm (control open/close/stop, position 0-100); credential từ env
 │       ├── vesync_connector.py     # VeSync — máy lọc khí (mode, speed)
-│       ├── rojeco_connector.py     # Rojeco — máy cho ăn (get_device_state STUB luôn "ON"); credential từ env
+│       ├── rojeco_connector.py     # Rojeco — máy cho ăn: state = online + feed_state + last_feed (feed_report); credential từ env
 │       ├── local_parser.py         # parse_command_locally: lệnh đơn giản không cần AI; câu CÓ GIỜ → intent schedule (không thi hành ngay)
 │       ├── vn_time_parser.py       # extract_schedule_times: parse giờ tiếng Việt (16h30, 4 giờ chiều, từ X đến Y, mai, mỗi ngày) + resolve_target_days
 │       ├── ai_parser.py            # parse_command_with_ai: gọi LLM (OpenRouter) cho câu phức (có few-shot intent schedule); client lazy (thiếu key vẫn boot)
@@ -43,13 +43,14 @@ backend/
 │   ├── test_vn_time_parser.py      # pytest bảng ví dụ parse giờ + resolve_target_days
 │   ├── test_scheduler_helpers.py   # pytest _is_time_due/_is_time_missed/_end_days (grace, thứ, qua đêm)
 │   ├── test_database_schema.py     # pytest chọn DB theo env, seed/idempotent/không ghi đè, migration cột, verify_schema, RLS no-op trên SQLite
-│   └── test_household_scope.py     # pytest ma trận quyền: device_query theo khu, 403-vs-404, pending/blocked,
+│   ├── test_household_scope.py     # pytest ma trận quyền: device_query theo khu, 403-vs-404, pending/blocked,
 │                                   # lịch lọc theo thiết bị chứ không theo người tạo, quy tắc bật/tắt xác thực,
 │                                   # + test qua HTTP để bắt lỗi QUÊN GẮN dependency vào endpoint
+│   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)
 ├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL,
 │                                   # SUPABASE_JWT_SECRET, ADMIN_EMAILS, AUTH_DISABLED) — gitignored
 ├── .env.example                    # Mẫu biến môi trường (có DATABASE_URL + ghi chú bẫy Session pooler)
-├── requirements.txt                # Python deps THẬT (UTF-8; tzdata cho zoneinfo, PyJWT + psycopg2-binary, pytest + httpx)
+├── requirements.txt                # Python deps THẬT (UTF-8; tzdata cho zoneinfo, PyJWT + psycopg2-binary 2.9.11, pytest + httpx; KHÔNG còn google-*)
 └── smarthome.db                    # SQLite DB — chỉ dùng khi KHÔNG đặt DATABASE_URL (dev local). Đang bị track trong git nên redeploy Render ghi đè nó.
 ```
 
@@ -76,7 +77,7 @@ frontend/
 │   │   ├── auth_service.dart       # accessToken() Supabase → fallback app-token (isolate nền), headers() ném
 │   │   │                           # NotAuthenticatedException, handleUnauthorized(); HouseholdProfile + fetchMe()
 │   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus / sendMode / sendAction + PurifierCycle
-│   │   ├── device_type.dart        # deviceTypeOf(name): suy loại thiết bị từ tên (nơi duy nhất, dùng chung dashboard/widget/schedule)
+│   │   ├── device_type.dart        # deviceTypeOf(name, category:): category backend thắng, fallback suy từ tên; deviceCategoryLabels (nơi duy nhất)
 │   │   ├── schedule_api.dart       # Schedule model + ScheduleApi: fetch/create/update/delete/runNow (/api/schedules)
 │   │   ├── device_order.dart       # Lưu/áp thứ tự hiển thị thiết bị (kéo-thả) vào SharedPreferences (cục bộ)
 │   │   ├── widget_service.dart      # Đẩy trạng thái lên App Widget + callback nền xử lý nút widget (home_widget)
@@ -85,7 +86,8 @@ frontend/
 │   │   └── websocket_provider.dart # Kết nối WebSocket wss (AppConfig.wsUrl); Live chỉ sau channel.ready; cap 200 msg
 │   ├── screens/
 │   │   ├── admin_screen.dart       # 2 tab quản trị: Thành viên (pending ghim đầu) + Khu vực (CRUD + gán thiết bị,
-│   │   │                           # pseudo-zone "Chưa phân khu" ghim cuối để thiết bị mới import không mất dấu)
+│   │   │                           # pseudo-zone "Chưa phân khu" ghim cuối để thiết bị mới import không mất dấu;
+│   │   │                           # chạm dòng thiết bị → chọn loại/category)
 │   │   ├── auth_gate.dart          # 5 trạng thái loading|signedOut|pending|offline|ready; chọn màn hiển thị
 │   │   ├── login_screen.dart       # Đăng nhập/đăng ký email+mật khẩu (Supabase Auth), dịch lỗi sang tiếng Việt
 │   │   ├── pending_screen.dart     # Màn chờ chủ nhà duyệt + OfflineScreen (mất mạng ≠ hết phiên)
