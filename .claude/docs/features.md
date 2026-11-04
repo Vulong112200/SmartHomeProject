@@ -5,6 +5,23 @@
 ## Format chuẩn
 
 ```
+
+### Kịch bản (scenes) + khu dùng chung + nhà theo khu
+- **Status:** ✅ (nhánh release/prod-ready, chưa lên production)
+- **Backend:** `models/scene.py` · `/api/scenes` (+ `/run`) · `zones.is_shared` · `core/household._visible_zone_ids` (khu được cấp HOẶC dùng chung — 1 subquery cho device/zone/schedule query) · `require_scene_write`
+- **Frontend:** `core/scene_api.dart` · `screens/scene_editor_screen.dart` · hàng kịch bản + chip lọc khu trên `dashboard_tab.dart` · `core/zone_groups.dart` · admin menu khu "Dùng chung cả nhà"
+- **Key logic:**
+  - Hành động kịch bản CHUẨN HÓA lúc lưu qua `normalize_action` (sai loại → 400). Chạy TUẦN TỰ (tránh lệnh chen làm lẫn interlock cửa). Thiết bị ngoài khu người chạy → bỏ qua, báo `skipped`.
+  - Kịch bản có MỞ CỬA: app hỏi xác nhận (`sceneOpensDoor`); gọi bằng giọng nói → TỪ CHỐI (nhận dạng có thể nghe nhầm).
+  - Giọng nói: `local_parser.match_scene` — tên kịch bản xuất hiện trong câu (tên dài nhất thắng), xét TRƯỚC tường lửa từ khóa thiết bị; câu có giờ hẹn thì không khớp.
+  - Chip "Phòng khách 1/3": thứ tự khu theo backend (sort_order), kéo-thả thiết bị chỉ ở "Tất cả". Ô thống kê dùng số thật (thiết bị/đang bật/khu) — trước đây "24°C / 60%" viết cứng.
+
+### Giao diện sáng/tối + Hồ sơ cá nhân + đọc phản hồi
+- **Status:** ✅
+- **Backend:** `members.avatar_color` · `PATCH /api/me` (chỉ tên + màu của chính mình)
+- **Frontend:** `theme/app_colors.dart` (`AppPalette`) · `core/theme_controller.dart` · `screens/profile_screen.dart` · `core/avatar.dart` · `core/voice_feedback.dart` (flutter_tts)
+- **Key logic:** bản tối giữ NGUYÊN màu cũ; bản sáng màu nhấn đậm hơn cho đủ tương phản. Mặc định Tối. Icon status bar đổi theo nền (`AnnotatedRegion`). TTS dừng khi bật mic (tránh mic thu lại giọng đọc); speech_to_text `initialize` 1 lần, mic bị từ chối → giải thích + nút Mở Cài đặt.
+
 ### <Tên feature>
 - **Status:** 📋 planned | 🚧 in progress | ✅ done
 - **Backend:** model · service · endpoints liên quan

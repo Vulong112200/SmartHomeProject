@@ -27,6 +27,11 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | Lưu dữ liệu bền (Postgres/Supabase) | 🚧 project Supabase đã tạo bảng (region Tokyo), chờ merge `main` + đặt `DATABASE_URL` trên Render | `core/database.py`, `docs/supabase_schema.sql`, `docs/SUPABASE_SETUP.md` |
 | Đăng nhập (Supabase Auth) + AuthGate 5 trạng thái | 🚧 code xong, chưa bật production | `core/auth_service.dart`, `screens/{auth_gate,login_screen,pending_screen}.dart`, `core/auth.py` |
 | Khu vực + thành viên + phân quyền theo khu | 🚧 code xong, chưa bật production | `core/household.py` (nơi DUY NHẤT quyết định quyền), `core/auth.py`, `models/{member,zone}.py`, `main.py` `/api/{me,zones,members}`, `screens/admin_screen.dart`, `core/household_api.dart` |
+| Kịch bản (1 nút nhiều thiết bị, chạy bằng giọng nói) | ✅ | `models/scene.py`, `main.py` `/api/scenes`, `core/scene_api.dart`, `screens/scene_editor_screen.dart` |
+| Khu dùng chung cả nhà + dashboard lọc theo khu | ✅ | `zones.is_shared`, `household._visible_zone_ids`, `core/zone_groups.dart` |
+| Giao diện sáng/tối (Theo hệ thống/Sáng/Tối) | ✅ | `theme/app_colors.dart` (`AppPalette`, `context.palette`), `core/theme_controller.dart` |
+| Hồ sơ cá nhân (tên, màu avatar, giao diện, đọc phản hồi) | ✅ | `PATCH /api/me`, `screens/profile_screen.dart`, `core/avatar.dart` |
+| Trợ lý đọc phản hồi (TTS vi-VN) | ✅ | `core/voice_feedback.dart` (flutter_tts) |
 | Automation engine | 📋 (đóng băng) | `services/automation_engine.py` (comment trong `main.py`) |
 
 ## API Endpoints Summary (`backend/app/main.py`)
@@ -34,15 +39,18 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | Method | Path | Mô tả |
 |---|---|---|
 | POST | `/api/auth/app-token` | Cấp **token dài hạn** cho app lưu SharedPreferences — đường sống của Home Widget/shortcut ở isolate nền. Thu hồi = đổi `APP_TOKEN_SECRET` |
+| PATCH | `/api/me` | Sửa hồ sơ của CHÍNH MÌNH (`{display_name?, avatar_color?}` — tên 1-40 ký tự, màu `#RRGGBB`/null). Không có vai/trạng thái. Pending sửa được, blocked thì không |
+| GET/POST | `/api/scenes`, `/api/scenes/{id}` (PATCH/DELETE) | Kịch bản. Đọc: mọi thành viên active. Tạo/sửa/xóa: owner/adult. Hành động được CHUẨN HÓA theo loại lúc lưu (sai loại → 400) |
+| POST | `/api/scenes/{id}/run` | Chạy kịch bản TUẦN TỰ; hành động trên thiết bị ngoài khu của người chạy → bỏ qua (`skipped`) |
 | GET | `/api/me` | **Tôi là ai**: vai, trạng thái, khu được cấp. KHÔNG chặn `pending` — app cần đọc để biết hiện màn hình chờ duyệt hay màn hình chính |
 | GET | `/api/devices` | Liệt kê thiết bị **đã lọc theo khu được cấp**; trả kèm `zone_id`/`zone_name`/`category` |
-| POST | `/api/devices` | Thêm thiết bị (query: id, name, brand, opt zone_id). **Chỉ chủ nhà.** Idempotent — id trùng = "đã có trong nhà", không phải lỗi |
+| POST | `/api/devices` | Thêm thiết bị (query: id, name, brand, opt zone_id, opt category). **Chỉ chủ nhà.** Idempotent — id trùng = "đã có trong nhà", không phải lỗi |
 | PATCH | `/api/devices/{device_id}` | Đổi tên / **gán khu** / đặt loại (body `{name?, zone_id?, category?}`). Chỉ chủ nhà |
 | DELETE | `/api/devices/{device_id}` | Xóa thiết bị **+ mọi lịch của nó** (lịch mồ côi sẽ bắn vào thiết bị không tồn tại mãi mãi). Chỉ chủ nhà |
-| GET/POST | `/api/zones`, `/api/zones/{id}` (PATCH/DELETE) | Khu vực. Đọc: ai cũng được (chỉ thấy khu của mình). Sửa: chỉ chủ nhà. Xóa khu → thiết bị về "hộp thư đến", KHÔNG bị xóa theo |
+| GET/POST | `/api/zones`, `/api/zones/{id}` (PATCH/DELETE) | Khu vực (kèm `is_shared` = dùng chung cả nhà). Đọc: ai cũng được (chỉ thấy khu của mình). Sửa: chỉ chủ nhà. Xóa khu → thiết bị về "hộp thư đến", KHÔNG bị xóa theo |
 | GET | `/api/members` | Danh sách thành viên + khu được cấp. Chỉ chủ nhà |
 | PATCH | `/api/members/{user_id}` | Duyệt / đổi vai / cấp khu (`{role?, status?, display_name?, zone_ids?}` — `zone_ids` thay CẢ BỘ). Chặn tự hạ vai, tự chặn mình, hạ vai owner cuối cùng |
-| GET | `/api/test-control/{brand}/{device_id}?action=on\|off` | Bật/tắt |
+| GET | `/api/test-control/{brand}/{device_id}?action=on\|off` | Bật/tắt. `action` khác on/off → **400** (trước đây = tắt = đóng cửa). Hãng lấy từ DB, không tin URL |
 | GET | `/api/test-control/{brand}/{device_id}/mode?mode=...` | Đổi chế độ (open/close/stop/low/high...) |
 | GET | `/api/devices/{brand}/{device_id}/status` (opt `?fresh=1`) | **Trạng thái sống** → `{data:{status:ON\|OFF\|offline, door_state, position,...}}`. Có cache ~3s; `fresh=1` bỏ qua cache (dùng sau lệnh điều khiển). |
 | POST | `/api/ai/parse` | Parse + thực thi lệnh NL (body `{text}`). Câu CÓ GIỜ ("hẹn 16h30...") → TẠO LỊCH thay vì thi hành ngay. Parser chỉ nhìn thấy thiết bị trong khu được cấp ⇒ scoping tự động |
@@ -61,6 +69,8 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
   - `category` ∈ `DEVICE_CATEGORIES` (`purifier`\|`curtain`\|`feeder`\|`switch`, `models/device.py`) — PATCH ngoài tập này → 400; chủ nhà đặt ở màn quản trị (chạm vào dòng thiết bị). Client phân loại qua `core/device_type.dart` (nơi duy nhất): **category thắng**, NULL/lạ → suy từ TÊN như cũ. Backend có bản tương ứng `device_kind()` (cùng file `models/device.py`: category > tên > hãng) cho parser giọng nói. ⚠️ Từ khóa công tắc (`bơm`/`tăng áp`/`công tắc`) kiểm TRƯỚC máy cho ăn vì "t**ăn**g áp" chứa "ăn". Thêm loại mới phải sửa CẢ `DEVICE_CATEGORIES` lẫn `deviceCategories` (Dart). Seed + `supabase_schema.sql` điền sẵn category cho 3 thiết bị gốc (SQL chỉ backfill hàng còn NULL).
 - **MemberModel** (`members`, `member.py`): `user_id` (PK, = `auth.users.id` của Supabase dạng text), `email`, `display_name`, `role` (`owner`\|`adult`\|`kid`\|`guest`), `status` (`pending`\|`active`\|`blocked`). Người lạ đăng nhập lần đầu → `guest`/`pending`.
 - **ZoneModel** (`zones`, `zone.py`): `id`, `name`, `sort_order`. **MemberZoneAccessModel** (`member_zone_access`): `(user_id, zone_id)` PK ghép — grant CHỈ cho `kid`/`guest`; `owner`/`adult` thấy mọi khu theo luật vai nên không có hàng nào ở đây.
+- **MemberModel.avatar_color** (đợt 2): `#RRGGBB` tự chọn; NULL = app suy màu ổn định từ user_id. **ZoneModel.is_shared** (đợt 2, `server_default` false vì `seed_defaults` chèn bằng SQL thô): kid/guest thấy + điều khiển thiết bị khu dùng chung không cần grant.
+- **SceneModel** (`scenes`, `scene.py`): `id`, `name`, `icon` (tên icon phía app), `sort_order`, `actions` (JSON text `[{device_id, action_type, action_value}]` đã chuẩn hóa), `created_by` (audit). Không gắn khu — kịch bản của cả nhà.
 - **ScheduleModel** (`schedules`, `schedule.py`): `id` (PK int), `name`, `brand`, `device_id`, `action_type` (`on`\|`off`\|`mode`), `action_value` (mode value, null với on/off), `time` (`"HH:MM"` giờ **Asia/Ho_Chi_Minh**), `days` (CSV weekday Python `0`=Thứ2…`6`=CN, rỗng = mỗi ngày), `enabled`, `last_fired_date` (`"YYYY-MM-DD"` chống kích hoạt trùng trong ngày). **Lịch KHOẢNG**: `end_time` (NULL = lịch đơn; `end_time < time` = QUA ĐÊM, end kích hoạt hôm sau), `end_action_type`, `end_action_value`, `last_end_fired_date`, `one_shot` (chạy 1 lần → tự `enabled=False` sau hành động cuối), `created_by` (CHỈ để audit + chặn kid sửa lịch người khác — lịch là của **cả nhà**, không lọc theo cột này). Cột mới thêm qua `run_startup_migrations` (`core/database.py`, ALTER TABLE idempotent — create_all không alter bảng cũ; chạy cho cả SQLite lẫn Postgres, DDL tách riêng vì Boolean SQLite là `INTEGER` còn Postgres là `BOOLEAN`).
 
 - **Nơi lưu DB**: biến `DATABASE_URL` → Postgres (Supabase); không đặt → SQLite `backend/smarthome.db` như cũ. ⚠️ Còn chạy SQLite trên Render thì **lịch hẹn mất mỗi lần redeploy** — ổ đĩa ephemeral, mà `smarthome.db` lại bị track trong git nên container mới ghi đè bằng bản chụp trong repo (bảng `schedules` rỗng). Log lúc boot in rõ đang dùng loại nào. Cách chuyển: `backend/docs/SUPABASE_SETUP.md`.
@@ -80,6 +90,7 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 - `backend/app/main.py` — toàn bộ endpoint + luồng AI parse + lifespan (khởi tạo DB → connectors → scheduler task).
 - `backend/app/core/household.py` — **NƠI DUY NHẤT quyết định quyền**: `device_query`/`schedule_query` (lọc theo khu), `require_device_access`/`require_schedule_write`/`require_owner`, `provision_member`. Quyền KHÔNG xuất hiện trong thân endpoint nào.
 - `backend/app/core/auth.py` — verify JWT Supabase; cố tình **sạch model + sạch DB**. `auth_disabled()` tự suy từ `SUPABASE_JWT_SECRET`.
+- `backend/app/services/device_actions.py` — `normalize_action(device, verb, mode)`: whitelist hành động theo LOẠI (cửa chỉ open/close/stop — KHÔNG on/off; máy cho ăn 1-10 phần; công tắc on/off). **Mọi đường không qua UI** (AI, lịch bằng giọng nói, kịch bản) đi qua đây trước connector.
 - `backend/app/services/scheduler.py` — vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh; bắn start + end độc lập, qua đêm dịch ngày +1, one-shot tự tắt).
 - `backend/app/services/vn_time_parser.py` — parse giờ tiếng Việt ("16 giờ 30", "4 giờ chiều", "từ X đến Y", "mai", "mỗi ngày") cho lệnh hẹn giờ bằng giọng nói; `resolve_target_days` quy đổi sang days/one_shot.
 - `frontend/lib/core/config.dart` — nơi DUY NHẤT khai báo baseUrl/wsUrl/timeout + khóa Supabase (`--dart-define`); `authEnabled` false khi chưa có khóa ⇒ app bỏ qua đăng nhập.
@@ -91,7 +102,9 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 - `frontend/lib/core/shortcut_service.dart` — MethodChannel `smarthome/shortcuts` ↔ native, quick_actions iOS.
 - `frontend/android/.../MainActivity.kt` — build/pin/update shortcut, `resolveIcon()`.
 - `frontend/lib/screens/dashboard_tab.dart` — UI thiết bị + nút tạo shortcut + đẩy trạng thái lên widget.
-- `frontend/lib/screens/schedule_tab.dart` — tab Hẹn giờ (list + form bottom-sheet).
+- `frontend/lib/screens/schedule_tab.dart` — tab Hẹn giờ (list + form bottom-sheet). Danh sách hành động theo loại nằm ở `core/device_type.dart` (`deviceActionOptions`, dùng chung với form kịch bản).
+- `frontend/lib/theme/app_colors.dart` — `AppPalette` (ThemeExtension, bản dark = màu gốc, bản light), đọc qua `context.palette` — KHÔNG dùng màu hằng cho nền/chữ (vô hình ở theme kia).
+- `frontend/lib/screens/profile_screen.dart` — Hồ sơ & giao diện; `core/voice_feedback.dart` — TTS + `summarize()` kết quả AI.
 - `frontend/lib/core/widget_service.dart` — đẩy trạng thái lên App Widget + callback nền xử lý nút widget.
 - `frontend/android/.../SmartHomeWidgetProvider.kt` — AppWidgetProvider render 3 khe thiết bị; `onEnabled`/`onUpdate` đăng ký `WidgetRefreshWorker` (WorkManager 15 phút — tối thiểu Android cho phép) bắn `smarthome://refresh` để widget tự lấy trạng thái mới khi app ĐÓNG (`updatePeriodMillis` chỉ vẽ lại dữ liệu cũ, không hỏi backend). Chỉ ĐỌC, không gửi lệnh.
 
@@ -113,6 +126,10 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 - **AI executor** nhận cả `action` = `on|off` (AI) lẫn `turn_on|turn_off` (local parser) — sửa lỗi lệnh local "bật/tắt" rơi vào khoảng trống.
 - **WebSocket**: `wss://vuhp-smarthome.onrender.com/ws` (`AppConfig.wsUrl`), tự connect khi vào tab AI, chỉ báo "Live" sau khi `channel.ready` (bắt tay xong), giữ tối đa 200 message.
 - Server Render free-tier có thể **ngủ** (nếu UptimeRobot gián đoạn) → app `_bootstrap()` ping `/health` (timeout 35s) và hiện "Đang đánh thức máy chủ..." trước khi tải.
+
+- **Đợt 2 — an toàn lệnh (đã sửa, có test `tests/test_security_fixes.py`)**: AI executor chỉ chạm thiết bị trong `device_query` (id AI trả về KHÔNG được tin; kid ép câu sang nhánh AI bằng " và "), brand lấy từ DB; lịch bằng giọng nói theo đúng luật POST /api/schedules (guest không tạo); PATCH lịch đổi `device_id` phải có quyền thiết bị MỚI, chỉ reset fired-date khi giờ THỰC SỰ đổi (đổi tên không làm lịch chạy lại). Tuya: tra category lỗi → **không gửi lệnh** (từng coi là cửa → máy bơm nhận `control:open`), timeout 15s mọi call. "Tắt hết" chỉ tắt máy lọc + công tắc; "bật hết" không đoán. Kịch bản có MỞ CỬA: app hỏi xác nhận, giọng nói từ chối.
+- **Test backend qua HTTP** dùng fixture `api` trong `tests/conftest.py`: đăng nhập theo vai + thay `execute_schedule_action`, `parse_command_with_ai` VÀ `device_manager.get_connector` bằng bản ghi giả — **không test nào được gửi lệnh tới thiết bị thật** (nhà có thể đang không có người).
+- Còn ngoài phạm vi (biết, chưa sửa): SQLAlchemy đồng bộ chạy trên event loop (Supabase Tokyo ⇒ mỗi query chặn loop); race cache trạng thái 3s (poll bắt đầu trước lệnh có thể ghi đè cache cũ).
 
 ## Lệnh hay dùng
 

@@ -23,6 +23,7 @@ backend/
 │   │   │                           # display_name, role owner|adult|kid|guest, status pending|active|blocked)
 │   │   ├── zone.py                 # ZoneModel (zones: id, name, sort_order) + MemberZoneAccessModel
 │   │   │                           # (member_zone_access: grant theo khu, CHỈ cho kid/guest)
+│   │   ├── scene.py                # SceneModel (scenes: name, icon, actions JSON đã chuẩn hóa, created_by) — kịch bản của cả nhà
 │   │   └── schedule.py             # ScheduleModel (bảng schedules: time HH:MM, days CSV, action, last_fired_date + lịch KHOẢNG end_time/end_action_*/last_end_fired_date, one_shot, created_by)
 │   └── services/
 │       ├── base_connector.py       # Lớp trừu tượng: connect/turn_on/turn_off/get_device_state (+set_mode tùy chọn)
@@ -30,6 +31,7 @@ backend/
 │       ├── tuya_connector.py       # Tuya Cloud — cửa cuốn (control open/close/stop; trạng thái từ shadow/properties có thời điểm) + công tắc (switch_1, tự nhận theo category Tuya); credential từ env
 │       ├── vesync_connector.py     # VeSync — máy lọc khí (mode, speed)
 │       ├── rojeco_connector.py     # Rojeco — máy cho ăn: state = online + feed_state + last_feed (feed_report); credential từ env
+│       ├── device_actions.py       # normalize_action: whitelist hành động theo LOẠI thiết bị cho AI/lịch giọng nói/kịch bản
 │       ├── local_parser.py         # parse_command_locally: lệnh đơn giản không cần AI; câu CÓ GIỜ → intent schedule (không thi hành ngay)
 │       ├── vn_time_parser.py       # extract_schedule_times: parse giờ tiếng Việt (16h30, 4 giờ chiều, từ X đến Y, mai, mỗi ngày) + resolve_target_days
 │       ├── ai_parser.py            # parse_command_with_ai: gọi LLM (OpenRouter) cho câu phức (có few-shot intent schedule); client lazy (thiếu key vẫn boot)
@@ -47,6 +49,10 @@ backend/
 │                                   # lịch lọc theo thiết bị chứ không theo người tạo, quy tắc bật/tắt xác thực,
 │                                   # + test qua HTTP để bắt lỗi QUÊN GẮN dependency vào endpoint
 │   ├── test_switch_device.py       # pytest máy bơm (công tắc Tuya) + cửa cuốn: parser chọn theo LOẠI, bẫy 'tăng áp'/'ăn', switch_1, cửa theo thời gian
+│   ├── conftest.py                 # fixture `api`: đăng nhập theo vai, MỌI lệnh tới thiết bị bị ghi lại (không gửi thật)
+│   ├── test_security_fixes.py      # vượt quyền AI/lịch/PATCH, action lạ → 400, Tuya không rõ loại không gửi, 'tắt hết'
+│   ├── test_profile.py             # PATCH /api/me chỉ sửa chính mình, validate tên/màu
+│   ├── test_shared_zones_scenes.py # khu dùng chung, kịch bản (quyền tạo/chạy, bỏ qua ngoài khu), kịch bản bằng giọng nói
 │   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)
 ├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL,
 │                                   # SUPABASE_JWT_SECRET, ADMIN_EMAILS, AUTH_DISABLED) — gitignored
@@ -79,6 +85,11 @@ frontend/
 │   │   │                           # NotAuthenticatedException, handleUnauthorized(); HouseholdProfile + fetchMe()
 │   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus / sendMode / sendAction + PurifierCycle
 │   │   ├── device_type.dart        # deviceTypeOf(name, category:): category backend thắng, fallback suy từ tên; deviceCategoryLabels (nơi duy nhất)
+│   │   ├── scene_api.dart          # Scene/SceneAction model + SceneApi: fetch/save/delete/run (SceneRunResult.summary)
+│   │   ├── zone_groups.dart        # zoneGroupsOf/devicesInZone: gom thiết bị theo khu cho chip lọc dashboard (thuần dữ liệu)
+│   │   ├── theme_controller.dart   # ThemeMode Hệ thống/Sáng/Tối, lưu SharedPreferences, mặc định Tối
+│   │   ├── voice_feedback.dart     # TTS vi-VN đọc phản hồi trợ lý + summarize(execution_results); bật/tắt ở Hồ sơ
+│   │   ├── avatar.dart             # UserAvatar (chữ cái đầu + màu tự chọn/ổn định theo user_id)
 │   │   ├── schedule_api.dart       # Schedule model + ScheduleApi: fetch/create/update/delete/runNow (/api/schedules)
 │   │   ├── device_order.dart       # Lưu/áp thứ tự hiển thị thiết bị (kéo-thả) vào SharedPreferences (cục bộ)
 │   │   ├── widget_service.dart      # Đẩy trạng thái lên App Widget + callback nền xử lý nút widget (home_widget)
@@ -95,10 +106,12 @@ frontend/
 │   │   ├── dashboard_tab.dart      # UI danh sách thiết bị, nút điều khiển + nút "Tạo icon xử lý nhanh"; poll pause theo isVisible/lifecycle
 │   │   ├── ai_assistant_tab.dart   # Trợ lý giọng nói (speech-to-text → /api/ai/parse)
 │   │   ├── schedule_tab.dart       # Tab Hẹn giờ: danh sách lịch + form thêm/sửa (bottom sheet)
+│   │   ├── profile_screen.dart     # Hồ sơ & giao diện: tên, màu avatar, vai/khu, sáng/tối, đọc phản hồi, đăng xuất
+│   │   ├── scene_editor_screen.dart # Tạo/sửa kịch bản: tên, icon, hành động theo loại (kéo-thả thứ tự); sceneOpensDoor()
 │   │   └── chat_bubble.dart        # Widget bong bóng chat cho AI tab
 │   └── theme/
-│       ├── app_colors.dart         # Bảng màu
-│       └── app_theme.dart          # ThemeData
+│       ├── app_colors.dart         # AppPalette (ThemeExtension) dark = màu gốc + light; đọc qua context.palette
+│       └── app_theme.dart          # lightTheme + darkTheme (gắn AppPalette)
 └── android/app/src/main/
     ├── kotlin/com/example/frontend/MainActivity.kt              # MethodChannel: pinShortcut/updateShortcut/getInitialAction; buildShortcut + resolveIcon
     ├── kotlin/com/example/frontend/WidgetRefreshWorker.kt       # WorkManager 15 phút: bắn smarthome://refresh để widget tự làm mới khi app đóng
