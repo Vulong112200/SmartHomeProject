@@ -536,6 +536,7 @@ async def parse_voice_command(
     # ---------------------------------------------------------
     # Danh sách các từ khóa liên quan đến thiết bị trong nhà
     device_keywords = ["quạt", "lọc", "không khí", "mèo", "ăn", "hạt", "cửa", "cuốn", "đèn", "tất cả",
+                       "bơm", "tăng áp",
                        "hẹn", "lịch"]  # từ khóa hẹn giờ: cho câu tạo lịch đi qua tường lửa
     
     # Nếu câu nói KHÔNG chứa bất kỳ từ khóa nào ở trên -> Chặn luôn

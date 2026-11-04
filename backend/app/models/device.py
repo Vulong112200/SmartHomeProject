@@ -34,4 +34,28 @@ class DeviceModel(Base):
 
 # Loại thiết bị hợp lệ — khớp enum DeviceType phía client (core/device_type.dart).
 # Thêm loại mới thì phải sửa CẢ HAI nơi, nếu không app coi là "unknown".
-DEVICE_CATEGORIES = ("purifier", "curtain", "feeder")
+# switch = công tắc bật/tắt đơn (vd. công tắc Tuya của máy bơm tăng áp).
+DEVICE_CATEGORIES = ("purifier", "curtain", "feeder", "switch")
+
+# Suy loại từ tên khi chưa đặt category — khớp thứ tự với device_type.dart.
+# switch kiểm TRƯỚC feeder: "tăng áp" chứa chuỗi "ăn" của máy cho ăn.
+_NAME_RULES = (
+    ("switch", ("bơm", "tăng áp", "công tắc")),
+    ("purifier", ("lọc",)),
+    ("curtain", ("cửa",)),
+    ("feeder", ("mèo", "ăn")),
+)
+# Thiết bị cũ không đặt tên rõ: hãng chỉ có 1 loại thiết bị trong nhà.
+_BRAND_FALLBACK = {"vesync": "purifier", "rojeco": "feeder", "tuya": "curtain"}
+
+
+def device_kind(device) -> str | None:
+    """Loại của thiết bị (category > tên > hãng). Dùng cho parser giọng nói."""
+    category = getattr(device, "category", None)
+    if category in DEVICE_CATEGORIES:
+        return category
+    name = (getattr(device, "name", None) or "").lower()
+    for kind, keywords in _NAME_RULES:
+        if any(kw in name for kw in keywords):
+            return kind
+    return _BRAND_FALLBACK.get(getattr(device, "brand", None))

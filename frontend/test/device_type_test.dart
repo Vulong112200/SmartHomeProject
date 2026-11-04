@@ -17,6 +17,13 @@ void main() {
     expect(deviceTypeOf('Đèn ngủ'), DeviceType.unknown);
   });
 
+  test('máy bơm tăng áp là công tắc, KHÔNG phải máy cho ăn', () {
+    // "tăng áp" chứa chuỗi "ăn" — từ khóa của máy cho ăn.
+    expect(deviceTypeOf('Tăng áp (Home)'), DeviceType.powerSwitch);
+    expect(deviceTypeOf('Máy bơm tăng áp'), DeviceType.powerSwitch);
+    expect(deviceTypeOf('Thiết bị C', category: 'switch'), DeviceType.powerSwitch);
+  });
+
   test('mọi category có nhãn hiển thị', () {
     expect(deviceCategoryLabels.keys.toSet(), deviceCategories.keys.toSet());
   });

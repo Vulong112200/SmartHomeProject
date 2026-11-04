@@ -47,6 +47,7 @@ class WidgetService {
           await _fillCurtain(brand, id, name);
         case DeviceType.feeder:
           await _fillFeeder(brand, id, name);
+        case DeviceType.powerSwitch: // widget chỉ có 3 khe cố định
         case DeviceType.unknown:
           break;
       }

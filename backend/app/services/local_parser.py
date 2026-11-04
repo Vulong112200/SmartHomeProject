@@ -1,8 +1,21 @@
+import re
+
+from app.models.device import device_kind
 from .vn_time_parser import extract_schedule_times
 
-# Từ khóa "mồi" theo brand — dùng khi đuôi câu khoảng ("... đến 17h30 chuyển mức TB")
-# không nhắc lại thiết bị: ghép mồi vào để tái dùng logic trích hành động sẵn có.
-_BRAND_HINT = {"vesync": "máy lọc", "tuya": "cửa", "rojeco": "cho ăn"}
+# Từ khóa "mồi" theo LOẠI thiết bị — dùng khi đuôi câu khoảng ("... đến 17h30 chuyển
+# mức TB") không nhắc lại thiết bị: ghép mồi vào để tái dùng logic trích hành động.
+_KIND_HINT = {"purifier": "máy lọc", "curtain": "cửa", "feeder": "cho ăn", "switch": "máy bơm"}
+
+# Máy cho ăn khớp NGUYÊN TỪ: "ăn" không được khớp vào "tăng áp" (máy bơm) — nếu
+# không, "bật máy bơm tăng áp" sẽ cho mèo ăn.
+_FEEDER_RE = re.compile(r"\b(mèo|chó|ăn|hạt|đói)\b")
+
+
+def _first_of_kind(devices_list: list, kind: str):
+    """Thiết bị ĐẦU TIÊN thuộc loại `kind`. Chọn theo loại chứ không theo hãng:
+    cửa cuốn và máy bơm đều là Tuya, lấy theo hãng sẽ gửi nhầm lệnh."""
+    return next((d for d in devices_list if device_kind(d) == kind), None)
 
 
 def _extract_device_actions(text: str, devices_list: list) -> list:
@@ -16,8 +29,9 @@ def _extract_device_actions(text: str, devices_list: list) -> list:
     # 1. MÁY LỌC KHÔNG KHÍ (VeSync)
     # Từ khóa nhận diện: lọc, quạt, máy khí, không khí
     if any(kw in text for kw in ["lọc", "quạt", "không khí", "máy khí"]):
-        vesync_id = next((d.id for d in devices_list if d.brand == "vesync"), None)
-        if vesync_id:
+        purifier = _first_of_kind(devices_list, "purifier")
+        if purifier:
+            vesync_id = purifier.id
             # TẮT
             if any(kw in text for kw in ["tắt", "đóng", "off", "ngừng"]):
                 actions.append({"brand": "vesync", "id": vesync_id, "action": "turn_off", "mode": None})
@@ -40,9 +54,10 @@ def _extract_device_actions(text: str, devices_list: list) -> list:
 
     # 2. MÁY CHO MÈO ĂN (Rojeco)
     # Từ khóa: mèo, chó, ăn, hạt, đói
-    if any(kw in text for kw in ["mèo", "chó", "ăn", "hạt", "đói"]):
-        rojeco_id = next((d.id for d in devices_list if d.brand == "rojeco"), None)
-        if rojeco_id:
+    if _FEEDER_RE.search(text):
+        feeder = _first_of_kind(devices_list, "feeder")
+        if feeder:
+            rojeco_id = feeder.id
             mode = "1" # Mặc định là 1 phần nếu không nói rõ
             if any(kw in text for kw in ["2 phần", "hai phần", "nhiều chút", "vừa vừa"]): mode = "2"
             if any(kw in text for kw in ["3 phần", "ba phần", "nhiều", "đầy", "max"]): mode = "3"
@@ -52,8 +67,9 @@ def _extract_device_actions(text: str, devices_list: list) -> list:
     # 3. CỬA CUỐN (Tuya)
     # Từ khóa: cửa, cuốn, rèm
     if any(kw in text for kw in ["cửa", "cuốn", "rèm"]):
-        tuya_id = next((d.id for d in devices_list if d.brand == "tuya"), None)
-        if tuya_id:
+        curtain = _first_of_kind(devices_list, "curtain")
+        if curtain:
+            tuya_id = curtain.id
             if any(kw in text for kw in ["mở", "lên", "kéo lên"]):
                 actions.append({"brand": "tuya", "id": tuya_id, "action": "set_mode", "mode": "open"})
             elif any(kw in text for kw in ["đóng", "xuống", "kéo xuống", "sập"]):
@@ -61,17 +77,27 @@ def _extract_device_actions(text: str, devices_list: list) -> list:
             elif any(kw in text for kw in ["dừng", "stop", "đứng", "ngưng"]):
                 actions.append({"brand": "tuya", "id": tuya_id, "action": "set_mode", "mode": "stop"})
 
+    # 4. MÁY BƠM / CÔNG TẮC (Tuya switch)
+    # Từ khóa: bơm, tăng áp
+    if any(kw in text for kw in ["bơm", "tăng áp"]):
+        switch = _first_of_kind(devices_list, "switch")
+        if switch:
+            if any(kw in text for kw in ["tắt", "ngắt", "ngừng", "dừng", "off"]):
+                actions.append({"brand": switch.brand, "id": switch.id, "action": "turn_off", "mode": None})
+            elif any(kw in text for kw in ["bật", "mở", "chạy", "on"]):
+                actions.append({"brand": switch.brand, "id": switch.id, "action": "turn_on", "mode": None})
+
     return actions
 
 
 def _default_end_action(start: dict):
     """
     Hành động kết thúc MẶC ĐỊNH khi câu khoảng chỉ nói 1 hành động:
-    - Cửa tuya đang MỞ -> đóng lại; cửa đóng/dừng thì KHÔNG đoán (an toàn: không tự mở cửa).
-    - Còn lại (máy lọc, máy cho ăn...) -> tắt.
+    - Cửa đang MỞ -> đóng lại; cửa đóng/dừng thì KHÔNG đoán (an toàn: không tự mở cửa).
+    - Còn lại (máy lọc, máy cho ăn, máy bơm...) -> tắt.
     Trả về (end_action, end_mode) hoặc None nếu không có mặc định an toàn.
     """
-    if start["brand"] == "tuya":
+    if start["mode"] in ("open", "close", "stop"):  # chỉ cửa cuốn có các mode này
         if start.get("mode") == "open":
             return "set_mode", "close"
         return None
@@ -105,10 +131,11 @@ def parse_command_locally(text: str, devices_list: list) -> list:
         head_acts = _extract_device_actions(sched["cleaned_head"] or "", devices_list)
         tail_acts = _extract_device_actions(sched["cleaned_tail"] or "", devices_list)
         if not tail_acts and sched["cleaned_tail"]:
-            hint = _BRAND_HINT.get(start["brand"], "")
+            start_dev = next((d for d in devices_list if d.id == start["id"]), None)
+            hint = _KIND_HINT.get(device_kind(start_dev), "") if start_dev else ""
             tail_acts = [a for a in _extract_device_actions(f"{hint} {sched['cleaned_tail']}", devices_list)
-                         if a["brand"] == start["brand"]]
-        if head_acts and tail_acts and head_acts[0]["brand"] == tail_acts[0]["brand"]:
+                         if a["id"] == start["id"]]
+        if head_acts and tail_acts and head_acts[0]["id"] == tail_acts[0]["id"]:
             start = head_acts[0]
             end_action, end_mode = tail_acts[0]["action"], tail_acts[0]["mode"]
         else:

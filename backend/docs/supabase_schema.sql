@@ -55,7 +55,7 @@ create table if not exists public.devices (
     brand     text not null,                 -- tuya | vesync | rojeco
     is_active boolean default true,
     zone_id   integer references public.zones(id) on delete set null,
-    category  text                           -- purifier | curtain | feeder (NULL = suy từ tên)
+    category  text                           -- purifier | curtain | feeder | switch (NULL = suy từ tên)
 );
 
 -- Nếu bảng devices đã tồn tại từ Phase 1a thì thêm cột mới (idempotent).

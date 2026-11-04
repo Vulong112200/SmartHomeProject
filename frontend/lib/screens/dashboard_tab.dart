@@ -486,8 +486,11 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   bool get _isAirPurifier => _type == DeviceType.airPurifier;
   bool get _isFeeder => _type == DeviceType.feeder;
   bool get _isCurtain => _type == DeviceType.curtain;
+  bool get _isSwitch => _type == DeviceType.powerSwitch;
 
-  bool get _needsStatus => _isAirPurifier || _isCurtain;
+  // Máy bơm cũng poll: biết nó ĐANG CHẠY hay không là thông tin quan trọng
+  // (có thể bị bật/tắt từ app Tuya hay nút vật lý).
+  bool get _needsStatus => _isAirPurifier || _isCurtain || _isSwitch;
 
   @override
   void initState() {
@@ -709,6 +712,7 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
     if (_isAirPurifier) { glowColor = AppColors.cyan; icon = Icons.air; }
     if (_isFeeder) { glowColor = AppColors.purple; icon = Icons.pets; }
     if (_isCurtain) { glowColor = AppColors.success; icon = Icons.blinds; }
+    if (_isSwitch) { glowColor = AppColors.cyan; icon = Icons.water_drop; }
 
     // ----- Trạng thái cửa (để đổi icon/nhãn + tô sáng nút đang hoạt động) -----
     final String doorState = '${_status?['door_state'] ?? 'unknown'}'.toLowerCase();
@@ -758,6 +762,11 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
           : _status!['feed_state'] == 'feeding'
               ? 'Đang nhả hạt...'
               : (lastFeed is int && lastFeed > 0 ? 'Sẵn sàng • lần trước $lastFeed phần' : 'Sẵn sàng');
+    }
+
+    if (_isSwitch && _status != null) {
+      statusLabel = const {'ON': 'Đang chạy', 'OFF': 'Đã tắt'}['${_status!['status']}'.toUpperCase()]
+          ?? 'Mất kết nối';
     }
 
     bool showSwitch = !_isFeeder && !_isCurtain;

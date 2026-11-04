@@ -43,6 +43,7 @@ List<_ActionOption> _actionsFor(DeviceType type) {
         _ActionOption('Nhả 2 phần', 'mode', '2'),
         _ActionOption('Nhả 3 phần', 'mode', '3'),
       ];
+    case DeviceType.powerSwitch:
     case DeviceType.unknown:
       return const [
         _ActionOption('Bật', 'on'),
