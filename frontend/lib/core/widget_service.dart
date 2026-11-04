@@ -40,7 +40,7 @@ class WidgetService {
       final name = '${d['name']}';
       final brand = '${d['brand']}'.toLowerCase();
       final id = '${d['id']}';
-      switch (deviceTypeOf(name)) {
+      switch (deviceTypeOf(name, category: d['category'] as String?)) {
         case DeviceType.airPurifier:
           await _fillPurifier(brand, id, name);
         case DeviceType.curtain:
@@ -117,7 +117,10 @@ class WidgetService {
   static Future<void> _fillFeeder(String brand, String id, String name) async {
     final s = await DeviceApi.fetchStatus(brand, id);
     final online = s != null && '${s['status']}'.toUpperCase() != 'OFFLINE';
-    final label = s == null ? 'Không rõ' : (online ? 'Sẵn sàng' : 'Mất kết nối');
+    final feeding = s != null && '${s['feed_state']}' == 'feeding';
+    final label = s == null
+        ? 'Không rõ'
+        : (!online ? 'Mất kết nối' : (feeding ? 'Đang nhả hạt...' : 'Sẵn sàng'));
     await _saveSlot('f', name, label, ShortcutType.feederFeed, brand, id);
   }
 

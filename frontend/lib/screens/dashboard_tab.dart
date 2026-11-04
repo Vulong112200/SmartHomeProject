@@ -482,7 +482,7 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   String get _id => widget.device['id'].toString();
   String get _name => widget.device['name'].toString();
 
-  DeviceType get _type => deviceTypeOf(_name);
+  DeviceType get _type => deviceTypeOf(_name, category: widget.device['category'] as String?);
   bool get _isAirPurifier => _type == DeviceType.airPurifier;
   bool get _isFeeder => _type == DeviceType.feeder;
   bool get _isCurtain => _type == DeviceType.curtain;
@@ -492,17 +492,17 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   @override
   void initState() {
     super.initState();
-    // Chỉ máy lọc & cửa mới cần lấy trạng thái thật để hiển thị đúng.
-    if (_needsStatus) {
-      _refreshStatus();
-      _setPolling(widget.pollingEnabled);
-    }
+    // Máy lọc & cửa: poll trạng thái thật 6s. Máy cho ăn chỉ đọc khi hiện lên
+    // + sau khi bấm cho ăn (trạng thái ít đổi, tiết kiệm quota API Tuya).
+    if (_needsStatus || _isFeeder) _refreshStatus();
+    if (_needsStatus) _setPolling(widget.pollingEnabled);
   }
 
   @override
   void didUpdateWidget(covariant SmartDeviceCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     // Tab ẩn / app vào nền -> dừng poll; hiển thị lại -> refresh ngay + poll tiếp.
+    if (_isFeeder && widget.pollingEnabled && !oldWidget.pollingEnabled) _refreshStatus();
     if (_needsStatus && widget.pollingEnabled != oldWidget.pollingEnabled) {
       if (widget.pollingEnabled) _refreshStatus();
       _setPolling(widget.pollingEnabled);
@@ -747,6 +747,17 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
     if (_isAirPurifier && _status != null) {
       final bool purifierOn = '${_status!['status']}'.toUpperCase() == 'ON';
       statusLabel = purifierOn ? 'Đang chạy: ${PurifierCycle.steps[purifierIndex].label}' : 'Đã tắt';
+    }
+
+    // ----- Máy cho ăn: online/offline + đang nhả hạt (máy không báo mức hạt/pin) -----
+    if (_isFeeder && _status != null) {
+      final bool feederOnline = '${_status!['status']}'.toUpperCase() == 'ON';
+      final lastFeed = _status!['last_feed'];
+      statusLabel = !feederOnline
+          ? 'Mất kết nối'
+          : _status!['feed_state'] == 'feeding'
+              ? 'Đang nhả hạt...'
+              : (lastFeed is int && lastFeed > 0 ? 'Sẵn sàng • lần trước $lastFeed phần' : 'Sẵn sàng');
     }
 
     bool showSwitch = !_isFeeder && !_isCurtain;
