@@ -15,6 +15,7 @@ import 'core/theme_controller.dart';
 import 'core/voice_feedback.dart';
 import 'core/widget_service.dart';
 import 'screens/auth_gate.dart';
+import 'screens/onboarding_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -84,6 +85,15 @@ class _MainScreenState extends State<MainScreen> {
   // Bản hồ sơ đang dùng: sửa ở màn Hồ sơ thì cập nhật ở đây để lời chào /
   // avatar đổi ngay, không phải gọi lại /api/me.
   late HouseholdProfile _profile = widget.profile;
+
+  @override
+  void initState() {
+    super.initState();
+    // Giới thiệu nhanh ở lần đầu vào app (sau frame đầu để có Navigator).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) OnboardingScreen.showIfFirstTime(context);
+    });
+  }
 
   Future<void> _signOut() async {
     await AuthService.signOut();

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show AuthException;
 
 import '../core/auth_service.dart';
 import '../core/avatar.dart';
@@ -6,6 +7,8 @@ import '../core/household_api.dart';
 import '../core/theme_controller.dart';
 import '../core/voice_feedback.dart';
 import '../theme/app_colors.dart';
+import 'help_screen.dart';
+import 'password_field.dart';
 
 /// Hồ sơ của CHÍNH MÌNH: tên hiển thị, màu avatar, giao diện sáng/tối.
 ///
@@ -73,6 +76,90 @@ class _ProfileScreenState extends State<ProfileScreen> {
     setState(() => _profile = hex == null
         ? _profile.copyWith(clearAvatarColor: true)
         : _profile.copyWith(avatarColor: hex));
+  }
+
+  Future<void> _changePassword() async {
+    final formKey = GlobalKey<FormState>();
+    final current = TextEditingController();
+    final next = TextEditingController();
+    final again = TextEditingController();
+    String? error;
+    var busy = false;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialog) => AlertDialog(
+          title: const Text('Đổi mật khẩu'),
+          content: Form(
+            key: formKey,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  PasswordField(
+                    controller: current,
+                    label: 'Mật khẩu hiện tại',
+                    textInputAction: TextInputAction.next,
+                    validator: (v) => (v ?? '').isEmpty ? 'Nhập mật khẩu hiện tại' : null,
+                  ),
+                  const SizedBox(height: 8),
+                  PasswordField(
+                    controller: next,
+                    label: 'Mật khẩu mới',
+                    textInputAction: TextInputAction.next,
+                    autofillHints: const [AutofillHints.newPassword],
+                    validator: validateNewPassword,
+                  ),
+                  const SizedBox(height: 8),
+                  PasswordField(
+                    controller: again,
+                    label: 'Nhập lại mật khẩu mới',
+                    autofillHints: const [AutofillHints.newPassword],
+                    validator: (v) => v == next.text ? null : 'Hai mật khẩu không khớp',
+                  ),
+                  if (error != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text(error!, style: const TextStyle(color: Colors.redAccent)),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: busy ? null : () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+            FilledButton(
+              onPressed: busy
+                  ? null
+                  : () async {
+                      if (!(formKey.currentState?.validate() ?? false)) return;
+                      setDialog(() {
+                        busy = true;
+                        error = null;
+                      });
+                      try {
+                        await AuthService.changePassword(current.text, next.text);
+                        if (ctx.mounted) Navigator.pop(ctx, true);
+                      } on AuthException catch (e) {
+                        setDialog(() => error = friendlyAuthError(e.message).replaceFirst(
+                            'Email hoặc mật khẩu không đúng.', 'Mật khẩu hiện tại không đúng.'));
+                      } catch (_) {
+                        setDialog(() => error = 'Không kết nối được máy chủ. Thử lại sau.');
+                      } finally {
+                        if (ctx.mounted) setDialog(() => busy = false);
+                      }
+                    },
+              child: const Text('Đổi'),
+            ),
+          ],
+        ),
+      ),
+    );
+    for (final c in [current, next, again]) {
+      c.dispose();
+    }
+    if (ok == true) _snack('Đã đổi mật khẩu.');
   }
 
   Widget _section(String title, Widget child) {
@@ -205,6 +292,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     Switch.adaptive(value: on, onChanged: VoiceFeedback.setEnabled),
                   ],
                 ),
+              ),
+            ),
+            _section(
+              'TÀI KHOẢN & TRỢ GIÚP',
+              // Material trong suốt: ListTile cần Material ngay dưới khung có nền màu,
+              // không thì hiệu ứng chạm bị nền che (Flutter báo lỗi).
+              Material(
+                type: MaterialType.transparency,
+                child: Column(
+                children: [
+                  // Chỉ khi đăng nhập thật (bản chưa bật đăng nhập không có mật khẩu để đổi).
+                  if (AuthService.isLoggedIn)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.password, color: p.primary),
+                      title: Text('Đổi mật khẩu', style: TextStyle(color: p.textMain)),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: _changePassword,
+                    ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.menu_book_outlined, color: p.primary),
+                    title: Text('Hướng dẫn sử dụng', style: TextStyle(color: p.textMain)),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => HelpScreen(profile: _profile),
+                    )),
+                  ),
+                ],
+              ),
               ),
             ),
             if (widget.onSignOut != null)

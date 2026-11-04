@@ -50,7 +50,7 @@ void main() {
       ),
     ));
 
-    expect(find.text('Đang chờ chủ nhà duyệt'), findsOneWidget);
+    expect(find.text('Chưa thuộc nhà nào'), findsOneWidget);
     expect(find.textContaining('con@x.test'), findsOneWidget);
   });
 

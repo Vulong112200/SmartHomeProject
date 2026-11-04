@@ -27,6 +27,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   List<Map<String, dynamic>> _devices = [];
   bool _loading = true;
   String? _error;
+  final TextEditingController _search = TextEditingController();
+  String _query = '';
 
   @override
   void initState() {
@@ -36,6 +38,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   @override
   void dispose() {
+    _search.dispose();
     _tabs.dispose();
     super.dispose();
   }
@@ -124,32 +127,72 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   // Tab THÀNH VIÊN
   // =======================================================
   Widget _membersTab() {
-    // Người chờ duyệt ghim lên đầu — đó là việc cần làm, không phải danh sách
-    // để cuộn tìm. Còn lại sắp theo email cho ổn định.
-    final pending = _members.where((m) => m.isPending).toList();
-    final others = _members.where((m) => !m.isPending).toList()
-      ..sort((a, b) => a.email.compareTo(b.email));
-
     if (_members.isEmpty) {
       return const _EmptyView(
         icon: Icons.people_outline,
-        title: 'Chưa có thành viên nào',
-        subtitle: 'Người nhà tự đăng ký trong app, rồi hiện ở đây để bạn duyệt.',
+        title: 'Chưa có ai đăng ký',
+        subtitle: 'Người nhà tự đăng ký trong app, rồi hiện ở đây để bạn thêm vào nhà.',
       );
     }
+
+    // Tìm theo tên/email, KHÔNG phân biệt dấu ("vu" khớp "Vũ").
+    final q = foldVietnamese(_query.trim());
+    bool hit(Member m) =>
+        q.isEmpty || foldVietnamese('${m.displayName} ${m.email}').contains(q);
+    int byName(Member a, Member b) => a.email.compareTo(b.email);
+
+    // Người dùng chưa thuộc nhà ghim lên đầu — đó là việc cần làm.
+    final outside = _members.where((m) => m.isPending && hit(m)).toList()..sort(byName);
+    final inHouse = _members.where((m) => m.status == 'active' && hit(m)).toList()..sort(byName);
+    final blocked = _members.where((m) => m.status == 'blocked' && hit(m)).toList()..sort(byName);
 
     return RefreshIndicator(
       onRefresh: _reload,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (pending.isNotEmpty) ...[
-            const _SectionLabel('Chờ bạn duyệt'),
-            ...pending.map(_memberTile),
+          TextField(
+            controller: _search,
+            onChanged: (v) => setState(() => _query = v),
+            decoration: InputDecoration(
+              hintText: 'Tìm theo tên hoặc email',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _query.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () => setState(() {
+                        _search.clear();
+                        _query = '';
+                      }),
+                    ),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (outside.isNotEmpty) ...[
+            const _SectionLabel('Người dùng chưa thuộc nhà'),
+            ...outside.map(_memberTile),
             const SizedBox(height: 20),
           ],
-          const _SectionLabel('Thành viên'),
-          ...others.map(_memberTile),
+          if (inHouse.isNotEmpty) ...[
+            const _SectionLabel('Thành viên trong nhà'),
+            ...inHouse.map(_memberTile),
+            const SizedBox(height: 20),
+          ],
+          if (blocked.isNotEmpty) ...[
+            const _SectionLabel('Đã chặn'),
+            ...blocked.map(_memberTile),
+          ],
+          if (outside.isEmpty && inHouse.isEmpty && blocked.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 24),
+              child: Center(
+                child: Text('Không tìm thấy ai khớp "$_query"',
+                    style: TextStyle(color: context.palette.textSub)),
+              ),
+            ),
         ],
       ),
     );
@@ -172,7 +215,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     if (m.status == 'blocked') {
       subtitle = 'Đã bị chặn';
     } else if (m.isPending) {
-      subtitle = 'Chờ duyệt';
+      subtitle = '${m.email} • chưa thuộc nhà';
     } else if (m.seesAllZones) {
       subtitle = 'Thấy mọi khu vực';
     } else {
@@ -213,11 +256,16 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
           ],
         ),
         subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
-        trailing: Chip(
-          label: Text(roleLabel[m.role] ?? m.role, style: const TextStyle(fontSize: 11)),
-          visualDensity: VisualDensity.compact,
-          padding: EdgeInsets.zero,
-        ),
+        trailing: m.isPending
+            ? FilledButton.tonal(
+                onPressed: () => _editMember(m),
+                child: const Text('Thêm vào nhà'),
+              )
+            : Chip(
+                label: Text(roleLabel[m.role] ?? m.role, style: const TextStyle(fontSize: 11)),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+              ),
         onTap: () => _editMember(m),
       ),
     );
@@ -231,8 +279,11 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         _members.where((x) => x.role == 'owner' && x.status == 'active').length;
     final isLastOwner = m.role == 'owner' && m.status == 'active' && activeOwners <= 1;
 
-    var role = m.role;
-    var status = m.status;
+    // Thêm người chưa thuộc nhà: đặt sẵn vai + trạng thái hoạt động để chỉ cần
+    // chọn khu (nếu là trẻ em/khách) rồi bấm 1 nút.
+    final adding = m.isPending;
+    var role = adding ? 'adult' : m.role;
+    var status = adding ? 'active' : m.status;
     var zoneIds = List<int>.from(m.zoneIds);
 
     final saved = await showModalBottomSheet<bool>(
@@ -295,6 +346,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                     ],
                   ),
 
+                  if (!adding) ...[
                   const SizedBox(height: 16),
                   Text('Trạng thái', style: TextStyle(color: context.palette.textSub, fontSize: 12)),
                   const SizedBox(height: 6),
@@ -302,8 +354,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                     spacing: 8,
                     children: [
                       for (final entry in const {
-                        'active': 'Hoạt động',
-                        'pending': 'Chờ duyệt',
+                        'active': 'Trong nhà',
+                        'pending': 'Đưa ra khỏi nhà',
                         'blocked': 'Chặn',
                       }.entries)
                         ChoiceChip(
@@ -315,6 +367,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                         ),
                     ],
                   ),
+                  ],
 
                   const SizedBox(height: 16),
                   Text('Khu vực được dùng',
@@ -359,28 +412,13 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                     ),
 
                   const SizedBox(height: 24),
-                  Row(
-                    children: [
-                      if (m.isPending && !locked)
-                        Expanded(
-                          child: FilledButton.icon(
-                            icon: const Icon(Icons.check),
-                            label: const Text('Duyệt'),
-                            onPressed: () {
-                              setSheet(() => status = 'active');
-                            },
-                          ),
-                        ),
-                      if (m.isPending && !locked) const SizedBox(width: 10),
-                      Expanded(
-                        child: FilledButton(
-                          onPressed: locked
-                              ? null
-                              : () => Navigator.pop(sheetCtx, true),
-                          child: const Text('Lưu'),
-                        ),
-                      ),
-                    ],
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      icon: Icon(adding ? Icons.person_add : Icons.check),
+                      label: Text(adding ? 'Thêm vào nhà' : 'Lưu'),
+                      onPressed: locked ? null : () => Navigator.pop(sheetCtx, true),
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Center(
@@ -407,7 +445,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         // thừa nếu sau này họ bị hạ xuống kid.
         zoneIds: (role == 'owner' || role == 'adult') ? const [] : zoneIds,
       ),
-      'Đã cập nhật ${m.email}',
+      adding ? 'Đã thêm ${m.displayName.isEmpty ? m.email : m.displayName} vào nhà' : 'Đã cập nhật ${m.email}',
     );
   }
 
@@ -788,4 +826,22 @@ class _ErrorView extends StatelessWidget {
           ),
         ),
       );
+}
+
+/// Bỏ dấu tiếng Việt + chữ thường, để tìm "vu" khớp "Vũ", "ha phi" khớp "Hà Phi".
+String foldVietnamese(String input) {
+  const groups = {
+    'a': 'àáạảãâầấậẩẫăằắặẳẵ',
+    'e': 'èéẹẻẽêềếệểễ',
+    'i': 'ìíịỉĩ',
+    'o': 'òóọỏõôồốộổỗơờớợởỡ',
+    'u': 'ùúụủũưừứựửữ',
+    'y': 'ỳýỵỷỹ',
+    'd': 'đ',
+  };
+  final map = <String, String>{
+    for (final e in groups.entries)
+      for (final ch in e.value.split('')) ch: e.key,
+  };
+  return input.toLowerCase().split('').map((c) => map[c] ?? c).join();
 }

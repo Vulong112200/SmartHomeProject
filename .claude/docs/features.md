@@ -6,6 +6,13 @@
 
 ```
 
+
+### Thành viên: đăng ký tự do, chủ nhà thêm vào nhà · Mật khẩu · Hướng dẫn
+- **Status:** ✅
+- **Frontend:** `screens/admin_screen.dart` (ô tìm kiếm `foldVietnamese`, nhóm Chưa thuộc nhà / Trong nhà / Đã chặn, nút "Thêm vào nhà" = vai + khu + active trong 1 bước) · `screens/pending_screen.dart` ("Chưa thuộc nhà nào") · `screens/forgot_password_screen.dart` · đổi mật khẩu ở `profile_screen.dart` · `screens/help_screen.dart` + `screens/onboarding_screen.dart`
+- **Backend:** không đổi API — "thêm vào nhà" = `PATCH /api/members/{id}` `{status: active, role, zone_ids}`; thông báo 403 pending đổi thành "chưa được thêm vào nhà".
+- **Key logic:** đổi mật khẩu bắt nhập mật khẩu HIỆN TẠI (đăng nhập lại) trước `updateUser`; quên mật khẩu = `resetPasswordForEmail` -> `verifyOTP(type: recovery)` -> `updateUser(password)` -> đã đăng nhập. Mã dài 6-10 số (Supabase cho chỉnh độ dài).
+
 ### Kịch bản (scenes) + khu dùng chung + nhà theo khu
 - **Status:** ✅ (nhánh release/prod-ready, chưa lên production)
 - **Backend:** `models/scene.py` · `/api/scenes` (+ `/run`) · `zones.is_shared` · `core/household._visible_zone_ids` (khu được cấp HOẶC dùng chung — 1 subquery cho device/zone/schedule query) · `require_scene_write`

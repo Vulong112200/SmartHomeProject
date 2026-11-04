@@ -112,7 +112,7 @@ def test_pending_bi_chan_o_moi_endpoint(db):
     with pytest.raises(HTTPException) as err:
         household.get_current_member(m)
     assert err.value.status_code == 403
-    assert "chờ chủ nhà phê duyệt" in err.value.detail.lower()
+    assert "chưa được thêm vào nhà" in err.value.detail.lower()
 
 
 def test_blocked_bi_chan_va_bao_khac_pending(db):

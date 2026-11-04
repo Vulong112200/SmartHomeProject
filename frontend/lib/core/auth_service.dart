@@ -173,6 +173,29 @@ class AuthService {
     await refreshAppToken();
   }
 
+  // -------------------------------------------------------
+  // Mật khẩu
+  // -------------------------------------------------------
+  /// Gửi MÃ đặt lại mật khẩu về email. Dùng mã (nhập ngay trong app) thay vì
+  /// link: link mở trình duyệt về Site URL, app không bắt lại được nếu chưa
+  /// cấu hình deep link. Mẫu email "Reset Password" phải chứa {{ .Token }}.
+  static Future<void> sendPasswordResetCode(String email) =>
+      _client.auth.resetPasswordForEmail(email.trim());
+
+  /// Xác minh mã trong email rồi đặt mật khẩu mới. Thành công = đã đăng nhập.
+  static Future<void> resetPasswordWithCode(String email, String code, String newPassword) async {
+    await _client.auth.verifyOTP(email: email.trim(), token: code.trim(), type: OtpType.recovery);
+    await _client.auth.updateUser(UserAttributes(password: newPassword));
+    await refreshAppToken();
+  }
+
+  /// Đổi mật khẩu khi đang đăng nhập. Kiểm mật khẩu HIỆN TẠI trước (đăng nhập
+  /// lại) — điện thoại để quên trên bàn thì người khác không đổi được mật khẩu.
+  static Future<void> changePassword(String currentPassword, String newPassword) async {
+    await _client.auth.signInWithPassword(email: email, password: currentPassword);
+    await _client.auth.updateUser(UserAttributes(password: newPassword));
+  }
+
   static Future<void> signOut() async {
     await clearAppToken();
     await _client.auth.signOut();

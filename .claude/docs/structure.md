@@ -108,6 +108,10 @@ frontend/
 │   │   ├── dashboard_tab.dart      # UI danh sách thiết bị, nút điều khiển + nút "Tạo icon xử lý nhanh"; poll pause theo isVisible/lifecycle
 │   │   ├── ai_assistant_tab.dart   # Trợ lý giọng nói (speech-to-text → /api/ai/parse)
 │   │   ├── schedule_tab.dart       # Tab Hẹn giờ: danh sách lịch + form thêm/sửa (bottom sheet)
+│   │   ├── forgot_password_screen.dart # Quên mật khẩu: email -> mã OTP (verifyOTP recovery) -> mật khẩu mới
+│   │   ├── password_field.dart     # PasswordField (nút con mắt) + validateNewPassword + friendlyAuthError (dịch lỗi Supabase)
+│   │   ├── help_screen.dart        # Hướng dẫn sử dụng: helpTopics (mục Quản trị chỉ chủ nhà thấy)
+│   │   ├── onboarding_screen.dart  # Giới thiệu 4 trang ở lần đầu vào app (cờ onboarding_done_v1)
 │   │   ├── profile_screen.dart     # Hồ sơ & giao diện: tên, màu avatar, vai/khu, sáng/tối, đọc phản hồi, đăng xuất
 │   │   ├── scene_editor_screen.dart # Tạo/sửa kịch bản: tên, icon, hành động theo loại (kéo-thả thứ tự); sceneOpensDoor()
 │   │   └── chat_bubble.dart        # Widget bong bóng chat cho AI tab

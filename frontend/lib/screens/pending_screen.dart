@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/auth_service.dart';
 import '../theme/app_colors.dart';
 
-/// Màn hình chờ chủ nhà duyệt.
+/// Màn hình khi tài khoản chưa được chủ nhà thêm vào nhà (hoặc bị chặn).
 ///
 /// Người lạ đăng nhập lần đầu được backend tạo thành `guest`/`pending`: đăng
 /// nhập được, `/api/me` được, mọi endpoint khác 403. Không có màn này thì app
@@ -39,7 +39,7 @@ class PendingScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 20),
                 Text(
-                  blocked ? 'Tài khoản đã bị chặn' : 'Đang chờ chủ nhà duyệt',
+                  blocked ? 'Tài khoản đã bị chặn' : 'Chưa thuộc nhà nào',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
@@ -47,9 +47,9 @@ class PendingScreen extends StatelessWidget {
                 Text(
                   blocked
                       ? 'Hãy liên hệ chủ nhà nếu bạn nghĩ đây là nhầm lẫn.'
-                      : 'Tài khoản ${profile.email} đã được tạo. Chủ nhà cần '
-                          'duyệt và chọn khu vực bạn được dùng trước khi bạn '
-                          'điều khiển được thiết bị.',
+                      : 'Tài khoản ${profile.email} đã được tạo. Hãy nhờ chủ nhà '
+                          'vào Quản trị nhà → Thành viên, tìm email này và bấm '
+                          '"Thêm vào nhà". Xong thì bấm Kiểm tra lại bên dưới.',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),

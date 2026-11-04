@@ -3,6 +3,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../core/auth_service.dart';
 import '../theme/app_colors.dart';
+import 'forgot_password_screen.dart';
+import 'password_field.dart';
 
 /// Đăng nhập / đăng ký bằng email + mật khẩu (Supabase Auth).
 ///
@@ -27,7 +29,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
   bool _isSignUp = false;
   bool _busy = false;
-  bool _obscure = true;
   String? _error;
   String? _info;
 
@@ -66,7 +67,7 @@ class _LoginScreenState extends State<LoginScreen> {
       }
       if (mounted) widget.onSignedIn();
     } on AuthException catch (e) {
-      setState(() => _error = _friendly(e.message));
+      setState(() => _error = friendlyAuthError(e.message));
     } catch (e) {
       setState(() => _error = 'Không kết nối được máy chủ đăng nhập. Thử lại sau.');
     } finally {
@@ -74,22 +75,12 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  /// Supabase trả lỗi tiếng Anh; dịch những cái hay gặp sang tiếng Việt.
-  String _friendly(String raw) {
-    final m = raw.toLowerCase();
-    if (m.contains('invalid login credentials')) {
-      return 'Email hoặc mật khẩu không đúng.';
-    }
-    if (m.contains('email not confirmed')) {
-      return 'Email chưa được xác nhận. Kiểm tra hộp thư của bạn.';
-    }
-    if (m.contains('user already registered')) {
-      return 'Email này đã có tài khoản. Hãy đăng nhập.';
-    }
-    if (m.contains('password should be at least')) {
-      return 'Mật khẩu quá ngắn (tối thiểu 6 ký tự).';
-    }
-    return raw;
+  Future<void> _forgotPassword() async {
+    final done = await Navigator.of(context).push<bool>(MaterialPageRoute(
+      builder: (_) => ForgotPasswordScreen(initialEmail: _emailCtrl.text.trim()),
+    ));
+    // Đặt mật khẩu mới xong là đã có phiên đăng nhập.
+    if (done == true && mounted) widget.onSignedIn();
   }
 
   @override
@@ -118,7 +109,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     const SizedBox(height: 4),
                     Text(
                       _isSignUp
-                          ? 'Tạo tài khoản, chủ nhà sẽ duyệt sau'
+                          ? 'Tạo tài khoản, rồi nhờ chủ nhà thêm bạn vào nhà'
                           : 'Đăng nhập để điều khiển thiết bị',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodyMedium,
@@ -155,20 +146,10 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    TextFormField(
+                    PasswordField(
                       controller: _passCtrl,
-                      obscureText: _obscure,
-                      textInputAction: TextInputAction.done,
-                      autofillHints: const [AutofillHints.password],
-                      onFieldSubmitted: (_) => _busy ? null : _submit(),
-                      decoration: InputDecoration(
-                        labelText: 'Mật khẩu',
-                        prefixIcon: const Icon(Icons.lock_outline),
-                        suffixIcon: IconButton(
-                          icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility),
-                          onPressed: () => setState(() => _obscure = !_obscure),
-                        ),
-                      ),
+                      autofillHints: [_isSignUp ? AutofillHints.newPassword : AutofillHints.password],
+                      onSubmitted: (_) => _busy ? null : _submit(),
                       validator: (v) {
                         if ((v ?? '').isEmpty) return 'Nhập mật khẩu';
                         if (_isSignUp && (v ?? '').length < 6) {
@@ -177,6 +158,14 @@ class _LoginScreenState extends State<LoginScreen> {
                         return null;
                       },
                     ),
+                    if (!_isSignUp)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: _busy ? null : _forgotPassword,
+                          child: const Text('Quên mật khẩu?'),
+                        ),
+                      ),
 
                     if (_error != null) ...[
                       const SizedBox(height: 16),

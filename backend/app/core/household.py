@@ -48,7 +48,7 @@ _CAN_EDIT_OTHERS_SCHEDULE = ("owner", "adult")
 # Vai được tạo/sửa/xóa kịch bản (kịch bản là của cả nhà, nên không cho kid/guest).
 _CAN_EDIT_SCENES = ("owner", "adult")
 
-_PENDING_MESSAGE = "Đang chờ chủ nhà phê duyệt."
+_PENDING_MESSAGE = "Tài khoản chưa được thêm vào nhà. Nhờ chủ nhà thêm bạn ở Quản trị nhà → Thành viên."
 _BLOCKED_MESSAGE = "Tài khoản đã bị chặn."
 
 
