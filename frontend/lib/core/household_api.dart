@@ -213,12 +213,15 @@ class HouseholdApi {
   // Gán thiết bị vào khu
   // -------------------------------------------------------
   /// [zoneId] null + [clearZone] true = đưa thiết bị về "Chưa phân khu".
+  /// [clearCategory] true = bỏ loại, app quay về suy loại từ tên.
   /// Cần cờ riêng vì null còn có nghĩa "không đổi trường này".
   static Future<String?> updateDevice(
     String deviceId, {
     String? name,
     int? zoneId,
     bool clearZone = false,
+    String? category,
+    bool clearCategory = false,
   }) async {
     try {
       final res = await http
@@ -228,6 +231,7 @@ class HouseholdApi {
             body: json.encode({
               if (name != null) 'name': name,
               if (clearZone) 'zone_id': null else if (zoneId != null) 'zone_id': zoneId,
+              if (clearCategory) 'category': null else if (category != null) 'category': category,
             }),
           )
           .timeout(AppConfig.apiTimeout);

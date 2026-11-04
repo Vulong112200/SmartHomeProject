@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/auth_service.dart';
 import '../core/device_api.dart';
+import '../core/device_type.dart';
 import '../core/household_api.dart';
 import '../theme/app_colors.dart';
 
@@ -506,11 +507,13 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   }
 
   Widget _deviceRow(Map<String, dynamic> d, {required int? currentZoneId}) {
+    final categoryLabel = deviceCategoryLabels[d['category']] ?? 'Loại: tự đoán theo tên';
     return ListTile(
       dense: true,
       leading: const Icon(Icons.devices_other, size: 20, color: AppColors.textSub),
       title: Text('${d['name']}', style: const TextStyle(fontSize: 14)),
-      subtitle: Text('${d['brand']}', style: const TextStyle(fontSize: 11)),
+      subtitle: Text('${d['brand']} • $categoryLabel', style: const TextStyle(fontSize: 11)),
+      onTap: () => _setCategory(d),
       trailing: TextButton(
         onPressed: () => _moveDevice(d, currentZoneId),
         child: const Text('Chuyển khu'),
@@ -566,6 +569,57 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     await _run(
       HouseholdApi.updateDevice('${device['id']}', zoneId: chosen as int),
       'Đã chuyển khu',
+    );
+  }
+
+  Future<void> _setCategory(Map<String, dynamic> device) async {
+    final current = device['category'] as String?;
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text('Loại của "${device['name']}"',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            for (final e in deviceCategoryLabels.entries)
+              ListTile(
+                title: Text(e.value),
+                trailing: e.key == current ? const Icon(Icons.check) : null,
+                onTap: () => Navigator.pop(ctx, e.key),
+              ),
+            ListTile(
+              leading: const Icon(Icons.auto_fix_high_outlined),
+              title: const Text('Tự đoán theo tên'),
+              trailing: current == null ? const Icon(Icons.check) : null,
+              onTap: () => Navigator.pop(ctx, 'none'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+
+    if (chosen == null) return;
+    if (chosen == 'none') {
+      if (current == null) return;
+      await _run(
+        HouseholdApi.updateDevice('${device['id']}', clearCategory: true),
+        'Đã chuyển về tự đoán loại',
+      );
+      return;
+    }
+    if (chosen == current) return;
+    await _run(
+      HouseholdApi.updateDevice('${device['id']}', category: chosen),
+      'Đã đặt loại: ${deviceCategoryLabels[chosen]}',
     );
   }
 

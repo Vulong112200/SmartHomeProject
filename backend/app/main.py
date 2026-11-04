@@ -55,7 +55,7 @@ from app.core.household import (
 )
 from app.models.member import ROLES, STATUSES, MemberModel
 from app.models.zone import MemberZoneAccessModel, ZoneModel
-from app.models.device import DeviceModel
+from app.models.device import DEVICE_CATEGORIES, DeviceModel
 from app.models.schedule import ScheduleModel  # đăng ký bảng schedules với Base
 
 import time
@@ -284,6 +284,11 @@ async def update_device(
     if "zone_id" in fields and fields["zone_id"] is not None:
         if not db.query(ZoneModel).filter(ZoneModel.id == fields["zone_id"]).first():
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Khu vực không tồn tại.")
+    # null tường minh = bỏ loại, client quay về suy từ tên.
+    if fields.get("category") is not None and fields["category"] not in DEVICE_CATEGORIES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Loại không hợp lệ. Hợp lệ: {list(DEVICE_CATEGORIES)}"
+        )
 
     for key, value in fields.items():
         setattr(device, key, value)

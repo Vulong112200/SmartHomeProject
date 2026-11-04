@@ -68,9 +68,9 @@ def get_db():
 # mà không cần chạy tay supabase_schema.sql. GIỮ NGUYÊN id — shortcut đã pin
 # và slot Home Widget trên điện thoại lưu theo brand+id, đổi id là hỏng cả hai.
 _SEED_DEVICES = [
-    ("a32aae46a67dbe52860pza", "Cửa cuốn", "tuya"),
-    ("vsaq325492d4dce9e0f8eb348bb3be41", "Lọc không khí Core 300S", "vesync"),
-    ("a32e6ab42d076b8bb5bbrh", "Máy cho mèo ăn tự động", "rojeco"),
+    ("a32aae46a67dbe52860pza", "Cửa cuốn", "tuya", "curtain"),
+    ("vsaq325492d4dce9e0f8eb348bb3be41", "Lọc không khí Core 300S", "vesync", "purifier"),
+    ("a32e6ab42d076b8bb5bbrh", "Máy cho mèo ăn tự động", "rojeco", "feeder"),
 ]
 
 # Khu mặc định cho lần chạy đầu. Chủ nhà chia phòng thật sau ở tab Khu vực.
@@ -179,13 +179,14 @@ def seed_defaults(bind=None) -> None:
     bind = bind if bind is not None else engine
     with bind.begin() as conn:
         if not conn.execute(text("SELECT COUNT(*) FROM devices")).scalar():
-            for device_id, name, brand in _SEED_DEVICES:
+            for device_id, name, brand, category in _SEED_DEVICES:
                 conn.execute(
                     text(
-                        "INSERT INTO devices (id, name, brand, is_active) "
-                        "VALUES (:id, :name, :brand, :active)"
+                        "INSERT INTO devices (id, name, brand, is_active, category) "
+                        "VALUES (:id, :name, :brand, :active, :category)"
                     ),
-                    {"id": device_id, "name": name, "brand": brand, "active": True},
+                    {"id": device_id, "name": name, "brand": brand, "active": True,
+                     "category": category},
                 )
             logger.info("Đã seed %d thiết bị mặc định.", len(_SEED_DEVICES))
 

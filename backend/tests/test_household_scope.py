@@ -644,6 +644,27 @@ def test_gan_vao_khu_khong_ton_tai_bi_tu_choi(owner_client):
     assert r.status_code == 400
 
 
+def test_dat_va_bo_loai_thiet_bi(owner_client):
+    make, _db = owner_client
+    r = _call(make, "PATCH", "/api/devices/a32aae46a67dbe52860pza",
+              json={"category": "feeder"})
+    assert r.status_code == 200
+    assert r.json()["data"]["category"] == "feeder"
+
+    # null tường minh = bỏ loại, client quay về suy từ tên.
+    r = _call(make, "PATCH", "/api/devices/a32aae46a67dbe52860pza",
+              json={"category": None})
+    assert r.status_code == 200
+    assert r.json()["data"]["category"] is None
+
+
+def test_loai_thiet_bi_khong_hop_le_bi_tu_choi(owner_client):
+    make, _db = owner_client
+    r = _call(make, "PATCH", "/api/devices/a32aae46a67dbe52860pza",
+              json={"category": "toaster"})
+    assert r.status_code == 400
+
+
 def test_zone_id_null_tuong_minh_dua_ve_hop_thu_den(owner_client):
     make, db = owner_client
     r = _call(make, "PATCH", "/api/devices/a32aae46a67dbe52860pza",

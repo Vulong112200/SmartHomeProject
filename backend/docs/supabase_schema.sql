@@ -55,7 +55,7 @@ create table if not exists public.devices (
     brand     text not null,                 -- tuya | vesync | rojeco
     is_active boolean default true,
     zone_id   integer references public.zones(id) on delete set null,
-    category  text                           -- purifier | curtain | feeder | outlet...
+    category  text                           -- purifier | curtain | feeder (NULL = suy từ tên)
 );
 
 -- Nếu bảng devices đã tồn tại từ Phase 1a thì thêm cột mới (idempotent).
@@ -102,11 +102,22 @@ create index if not exists idx_schedules_enabled on public.schedules (enabled);
 -- trên điện thoại lưu theo brand + id; đổi id là hỏng cả hai mà không báo lỗi.
 -- `on conflict do nothing` => chạy lại file không ghi đè tên đã sửa.
 -- ---------------------------------------------------------------------
-insert into public.devices (id, name, brand, is_active) values
-    ('a32aae46a67dbe52860pza',           'Cửa cuốn',                 'tuya',   true),
-    ('vsaq325492d4dce9e0f8eb348bb3be41', 'Lọc không khí Core 300S',  'vesync', true),
-    ('a32e6ab42d076b8bb5bbrh',           'Máy cho mèo ăn tự động',   'rojeco', true)
+insert into public.devices (id, name, brand, is_active, category) values
+    ('a32aae46a67dbe52860pza',           'Cửa cuốn',                 'tuya',   true, 'curtain'),
+    ('vsaq325492d4dce9e0f8eb348bb3be41', 'Lọc không khí Core 300S',  'vesync', true, 'purifier'),
+    ('a32e6ab42d076b8bb5bbrh',           'Máy cho mèo ăn tự động',   'rojeco', true, 'feeder')
 on conflict (id) do nothing;
+
+-- DB đã seed trước khi có category: điền loại cho 3 thiết bị gốc. Chỉ đụng
+-- hàng còn NULL nên không ghi đè loại chủ nhà đã chọn.
+update public.devices d
+set category = v.category
+from (values
+    ('a32aae46a67dbe52860pza',           'curtain'),
+    ('vsaq325492d4dce9e0f8eb348bb3be41', 'purifier'),
+    ('a32e6ab42d076b8bb5bbrh',           'feeder')
+) as v(id, category)
+where d.id = v.id and d.category is null;
 
 -- Khu mặc định: nếu chưa chia phòng thì mọi thiết bị nằm ở "hộp thư đến"
 -- (zone_id NULL) và không cấp quyền cho kid/guest được. Tạo sẵn một khu 'Nhà'

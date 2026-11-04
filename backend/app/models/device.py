@@ -27,6 +27,11 @@ class DeviceModel(Base):
         index=True,
     )
 
-    # Loại thiết bị do chủ nhà đặt (purifier | curtain | feeder | outlet | ...).
+    # Loại thiết bị do chủ nhà đặt, một trong DEVICE_CATEGORIES.
     # NULL = để client tự suy từ tên như cũ (core/device_type.dart).
     category = Column(String, nullable=True)
+
+
+# Loại thiết bị hợp lệ — khớp enum DeviceType phía client (core/device_type.dart).
+# Thêm loại mới thì phải sửa CẢ HAI nơi, nếu không app coi là "unknown".
+DEVICE_CATEGORIES = ("purifier", "curtain", "feeder")

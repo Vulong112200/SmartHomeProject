@@ -179,7 +179,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
 
   DeviceType _typeOf(Schedule s) {
     final device = _deviceOf(s);
-    return deviceTypeOf('${device?['name'] ?? ''}');
+    return deviceTypeOf('${device?['name'] ?? ''}', category: device?['category'] as String?);
   }
 
   Future<void> _openForm({Schedule? edit}) async {
@@ -276,7 +276,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
   Widget _buildScheduleCard(Schedule s) {
     final device = _deviceOf(s);
     final deviceName = '${device?['name'] ?? s.deviceId}';
-    final type = deviceTypeOf(deviceName);
+    final type = deviceTypeOf(deviceName, category: device?['category'] as String?);
     final enabled = s.enabled;
     final color = enabled ? AppColors.primary : AppColors.textSub;
     // Khoảng qua đêm (end < start): đánh dấu giờ kết thúc thuộc hôm sau.
@@ -386,7 +386,8 @@ class _ScheduleFormState extends State<_ScheduleForm> {
   Map<String, dynamic> get _device =>
       widget.devices.firstWhere((d) => '${d['id']}' == _deviceId, orElse: () => widget.devices.first);
 
-  DeviceType get _deviceType => deviceTypeOf('${_device['name'] ?? ''}');
+  DeviceType get _deviceType =>
+      deviceTypeOf('${_device['name'] ?? ''}', category: _device['category'] as String?);
   List<_ActionOption> get _actions => _actionsFor(_deviceType);
 
   @override
