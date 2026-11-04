@@ -13,7 +13,10 @@ import '../theme/app_colors.dart';
 import 'chat_bubble.dart';
 
 class AIAssistantTab extends ConsumerStatefulWidget {
-  const AIAssistantTab({super.key});
+  /// Để chào đúng tên người đang dùng (trước đây viết cứng "Chào Vũ!").
+  final HouseholdProfile profile;
+
+  const AIAssistantTab({super.key, this.profile = HouseholdProfile.openHouse});
 
   @override
   ConsumerState<AIAssistantTab> createState() => _AIAssistantTabState();
@@ -33,8 +36,12 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
 
   final String baseUrl = AppConfig.baseUrl;
 
-  List<Map<String, dynamic>> messages = [
-    {"isUser": false, "text": "Chào Vũ! Tôi là trợ lý AI. Bạn muốn điều khiển thiết bị nào?", "actions": []}
+  late final List<Map<String, dynamic>> messages = [
+    {
+      "isUser": false,
+      "text": "Chào ${widget.profile.friendlyName ?? 'bạn'}! Tôi là trợ lý AI. Bạn muốn điều khiển thiết bị nào?",
+      "actions": []
+    }
   ];
 
   @override

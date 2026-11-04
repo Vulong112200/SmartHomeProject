@@ -99,6 +99,10 @@ _WANTED_COLUMNS = {
         "zone_id": {"sqlite": "INTEGER", "postgresql": "INTEGER"},
         "category": {"sqlite": "TEXT", "postgresql": "TEXT"},
     },
+    "members": {
+        # Đợt 2 — màu avatar ở màn Hồ sơ.
+        "avatar_color": {"sqlite": "TEXT", "postgresql": "TEXT"},
+    },
 }
 
 # verify_schema kiểm đúng những cột mà code thật sự đọc/ghi.
@@ -110,7 +114,7 @@ _REQUIRED_SCHEMA = {
         "end_action_type", "end_action_value", "last_end_fired_date", "one_shot",
         "created_by",
     },
-    "members": {"user_id", "email", "display_name", "role", "status"},
+    "members": {"user_id", "email", "display_name", "role", "status", "avatar_color"},
     "zones": {"id", "name", "sort_order"},
     "member_zone_access": {"user_id", "zone_id"},
 }

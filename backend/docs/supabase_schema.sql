@@ -29,8 +29,11 @@ create table if not exists public.members (
     email        text not null default '',
     display_name text not null default '',
     role         text not null default 'guest',
-    status       text not null default 'pending'
+    status       text not null default 'pending',
+    avatar_color text                         -- "#RRGGBB" chọn ở màn Hồ sơ; NULL = màu tự động
 );
+
+alter table public.members add column if not exists avatar_color text;
 
 -- ---------------------------------------------------------------------
 -- member_zone_access — grant: thành viên được dùng khu nào

@@ -253,6 +253,7 @@ def member_to_dict(member: MemberModel, zone_ids: list[int] | None = None) -> di
         "user_id": member.user_id,
         "email": member.email,
         "display_name": member.display_name,
+        "avatar_color": member.avatar_color,
         "role": member.role,
         "status": member.status,
         "can_admin": member.role in _ADMIN_ROLES,

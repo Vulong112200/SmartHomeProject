@@ -184,6 +184,8 @@ class HouseholdProfile {
   final String userId;
   final String email;
   final String displayName;
+  /// Màu avatar "#RRGGBB" tự chọn ở màn Hồ sơ; null = màu tự suy từ userId.
+  final String? avatarColor;
   final String role;    // owner | adult | kid | guest
   final String status;  // pending | active | blocked
   final bool canAdmin;
@@ -195,6 +197,7 @@ class HouseholdProfile {
     required this.userId,
     required this.email,
     required this.displayName,
+    this.avatarColor,
     required this.role,
     required this.status,
     required this.canAdmin,
@@ -202,6 +205,28 @@ class HouseholdProfile {
     required this.zoneIds,
     required this.zones,
   });
+
+  /// Bản sao với tên/màu mới (sau khi sửa ở màn Hồ sơ). [clearAvatarColor] = về màu tự động.
+  HouseholdProfile copyWith({String? displayName, String? avatarColor, bool clearAvatarColor = false}) =>
+      HouseholdProfile(
+        userId: userId,
+        email: email,
+        displayName: displayName ?? this.displayName,
+        avatarColor: clearAvatarColor ? null : (avatarColor ?? this.avatarColor),
+        role: role,
+        status: status,
+        canAdmin: canAdmin,
+        canSchedule: canSchedule,
+        zoneIds: zoneIds,
+        zones: zones,
+      );
+
+  /// Tên để chào/hiển thị: tên hiển thị > phần trước @ của email > null.
+  String? get friendlyName {
+    if (displayName.trim().isNotEmpty) return displayName.trim();
+    if (email.contains('@')) return email.split('@').first;
+    return null;
+  }
 
   bool get isPending => status == 'pending';
   bool get isBlocked => status == 'blocked';
@@ -218,11 +243,13 @@ class HouseholdProfile {
         userId: '${j['user_id'] ?? ''}',
         email: '${j['email'] ?? ''}',
         displayName: '${j['display_name'] ?? ''}',
+        avatarColor: j['avatar_color'] as String?,
         role: '${j['role'] ?? 'guest'}',
         status: '${j['status'] ?? 'pending'}',
         canAdmin: j['can_admin'] == true,
         canSchedule: j['can_schedule'] == true,
-        zoneIds: ((j['zone_ids'] as List?) ?? []).map((e) => e as int).toList(),
+        // num -> int: JSON số nguyên có thể về dạng double ở vài nền tảng.
+        zoneIds: ((j['zone_ids'] as List?) ?? []).whereType<num>().map((e) => e.toInt()).toList(),
         zones: ((j['zones'] as List?) ?? [])
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList(),

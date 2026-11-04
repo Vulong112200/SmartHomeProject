@@ -240,4 +240,31 @@ class HouseholdApi {
       return 'Mất kết nối máy chủ.';
     }
   }
+
+  // -------------------------------------------------------
+  // Hồ sơ của chính mình
+  // -------------------------------------------------------
+  /// Sửa tên hiển thị / màu avatar. Trả lỗi (tiếng Việt) hoặc null nếu thành công.
+  /// [clearAvatarColor] = về màu tự động (gửi null tường minh).
+  static Future<String?> updateMe({
+    String? displayName,
+    String? avatarColor,
+    bool clearAvatarColor = false,
+  }) async {
+    try {
+      final res = await http
+          .patch(
+            Uri.parse('$_base/api/me'),
+            headers: await _headers(jsonBody: true),
+            body: json.encode({
+              if (displayName != null) 'display_name': displayName,
+              if (clearAvatarColor) 'avatar_color': null else if (avatarColor != null) 'avatar_color': avatarColor,
+            }),
+          )
+          .timeout(AppConfig.apiTimeout);
+      return _error(res);
+    } catch (_) {
+      return 'Mất kết nối máy chủ.';
+    }
+  }
 }

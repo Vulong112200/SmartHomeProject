@@ -4,6 +4,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:http/http.dart' as http;
 import '../theme/app_colors.dart';
 import '../core/auth_service.dart';
+import '../core/avatar.dart';
+import 'profile_screen.dart';
 import '../core/config.dart';
 import '../core/device_api.dart';
 import '../core/device_order.dart';
@@ -25,11 +27,15 @@ class DashboardTab extends StatefulWidget {
   /// Gọi khi bấm Đăng xuất.
   final Future<void> Function()? onSignOut;
 
+  /// Gọi khi người dùng sửa hồ sơ (tên/màu avatar) ở màn Hồ sơ.
+  final ValueChanged<HouseholdProfile>? onProfileChanged;
+
   const DashboardTab({
     super.key,
     this.isVisible = true,
     this.profile = HouseholdProfile.openHouse,
     this.onSignOut,
+    this.onProfileChanged,
   });
 
   @override
@@ -77,11 +83,13 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
 
   /// Tên chào. Ưu tiên tên hiển thị, rồi phần trước @ của email; chưa đăng
   /// nhập (backend chạy xác thực TẮT) thì giữ lời chào chung.
-  String get _greetingName {
-    final p = widget.profile;
-    if (p.displayName.trim().isNotEmpty) return '${p.displayName} 🖖';
-    if (p.email.contains('@')) return '${p.email.split('@').first} 🖖';
-    return 'Nhà mình 🖖';
+  String get _greetingName => '${widget.profile.friendlyName ?? 'Nhà mình'} 🖖';
+
+  Future<void> _openProfile() async {
+    final updated = await Navigator.of(context).push<HouseholdProfile>(MaterialPageRoute(
+      builder: (_) => ProfileScreen(profile: widget.profile, onSignOut: widget.onSignOut),
+    ));
+    if (updated != null) widget.onProfileChanged?.call(updated);
   }
 
   /// Nút tài khoản: hiện vai + khu được cấp, và lối đăng xuất. Không có nó thì
@@ -99,6 +107,7 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
       color: context.palette.surface,
       onSelected: (v) {
         if (v == 'signout') widget.onSignOut?.call();
+        if (v == 'profile') _openProfile();
         if (v == 'admin') {
           Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => AdminScreen(profile: p),
@@ -122,6 +131,16 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
           ),
         ),
         const PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'profile',
+          child: Row(
+            children: [
+              Icon(Icons.person_outline, size: 18, color: context.palette.textSub),
+              const SizedBox(width: 10),
+              Text('Hồ sơ & giao diện', style: TextStyle(color: context.palette.textMain)),
+            ],
+          ),
+        ),
         // Chỉ chủ nhà mới có mục Quản trị — người khác bấm vào cũng chỉ nhận
         // 403 từ API, hiện nút ra là mời người ta vào ngõ cụt.
         // Menu LUÔN hiện kể cả khi chưa bật đăng nhập: chủ nhà cần vào đây
@@ -152,7 +171,7 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
           ),
       ],
       child: Container(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(6, 6, 12, 6),
         decoration: BoxDecoration(
           color: context.palette.surface,
           borderRadius: BorderRadius.circular(16),
@@ -160,6 +179,8 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            UserAvatar(profile: p, size: 30),
+            const SizedBox(width: 8),
             Text(
               roleLabel[p.role] ?? 'Tài khoản',
               style: TextStyle(color: context.palette.textMain, fontSize: 13),

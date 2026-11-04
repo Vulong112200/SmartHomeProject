@@ -33,6 +33,10 @@ class MemberModel(Base):
     # blocked — bị chặn
     status = Column(String, nullable=False, default="pending")
 
+    # Màu avatar (#RRGGBB) do chính người dùng chọn ở màn Hồ sơ. NULL = app tự
+    # suy màu từ user_id (ổn định, không cần lưu).
+    avatar_color = Column(String, nullable=True)
+
 
 ROLES = ("owner", "adult", "kid", "guest")
 STATUSES = ("pending", "active", "blocked")

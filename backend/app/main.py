@@ -203,6 +203,12 @@ class ZoneUpdate(BaseModel):
     sort_order: int | None = None
 
 
+class MeUpdate(BaseModel):
+    """PATCH /api/me — chỉ thông tin hiển thị của CHÍNH MÌNH, không có vai/trạng thái."""
+    display_name: str | None = None
+    avatar_color: str | None = None  # "#RRGGBB"; null tường minh = về màu tự động
+
+
 class MemberUpdate(BaseModel):
     """PATCH /api/members/{user_id} — zone_ids thay CẢ BỘ, không phải add/remove."""
     role: str | None = None
@@ -893,6 +899,35 @@ async def whoami(
             "zones": zones,
         },
     }
+
+
+@app.patch("/api/me")
+async def update_me(
+    body: MeUpdate,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_member),
+):
+    """
+    Sửa hồ sơ của chính mình. Dùng get_member (cho cả pending) để người mới đặt
+    được tên thật — chủ nhà nhận ra ai đang chờ duyệt. Người bị chặn thì không.
+    Không có trường vai/trạng thái: quyền chỉ đổi qua PATCH /api/members (chủ nhà).
+    """
+    if member.status == "blocked":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Tài khoản đã bị chặn.")
+    fields = body.model_dump(exclude_unset=True)
+    if "display_name" in fields:
+        name = (fields["display_name"] or "").strip()
+        if not 1 <= len(name) <= 40:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Tên hiển thị phải từ 1 đến 40 ký tự.")
+        member.display_name = name
+    if "avatar_color" in fields:
+        color = fields["avatar_color"]
+        if color is not None and not _re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Màu phải có dạng #RRGGBB.")
+        member.avatar_color = color
+    db.commit()
+    db.refresh(member)
+    return {"status": "success", "data": member_to_dict(member, zone_ids_of(db, member.user_id))}
 
 
 @app.post("/api/auth/app-token")

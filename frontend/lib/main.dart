@@ -79,6 +79,9 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
+  // Bản hồ sơ đang dùng: sửa ở màn Hồ sơ thì cập nhật ở đây để lời chào /
+  // avatar đổi ngay, không phải gọi lại /api/me.
+  late HouseholdProfile _profile = widget.profile;
 
   Future<void> _signOut() async {
     await AuthService.signOut();
@@ -96,12 +99,13 @@ class _MainScreenState extends State<MainScreen> {
         children: [
           DashboardTab(
             isVisible: _currentIndex == 0,
-            profile: widget.profile,
+            profile: _profile,
+            onProfileChanged: (p) => setState(() => _profile = p),
             // Chỉ hiện nút Đăng xuất khi thật sự có đăng nhập; bản build chưa
             // cấu hình Supabase thì nút đó không làm được gì.
             onSignOut: AppConfig.authEnabled ? _signOut : null,
           ),
-          const AIAssistantTab(),
+          AIAssistantTab(profile: _profile),
           const ScheduleTab(),
         ],
       ),
