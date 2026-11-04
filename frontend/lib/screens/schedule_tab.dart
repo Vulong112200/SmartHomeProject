@@ -9,71 +9,15 @@ import '../theme/app_colors.dart';
 /// Nhãn ngày trong tuần theo weekday Python (0=Thứ2 … 6=CN) — khớp backend.
 const List<String> _dayLabels = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
 
-/// Một lựa chọn hành động trong form (hiển thị + giá trị gửi backend).
-class _ActionOption {
-  final String label;
-  final String actionType;   // on | off | mode
-  final String? actionValue; // đi kèm khi actionType == mode
-  const _ActionOption(this.label, this.actionType, [this.actionValue]);
-
-  String get key => '$actionType:${actionValue ?? ''}';
-}
-
-/// Danh sách hành động khả dụng theo loại thiết bị.
-List<_ActionOption> _actionsFor(DeviceType type) {
-  switch (type) {
-    case DeviceType.airPurifier:
-      return const [
-        _ActionOption('Bật', 'on'),
-        _ActionOption('Tắt', 'off'),
-        _ActionOption('Lọc Thấp', 'mode', '1'),
-        _ActionOption('Lọc TB', 'mode', '2'),
-        _ActionOption('Lọc Cao', 'mode', '3'),
-        _ActionOption('Lọc Auto', 'mode', 'auto'),
-        _ActionOption('Lọc Ngủ', 'mode', 'sleep'),
-      ];
-    case DeviceType.curtain:
-      return const [
-        _ActionOption('Mở cửa', 'mode', 'open'),
-        _ActionOption('Đóng cửa', 'mode', 'close'),
-      ];
-    case DeviceType.feeder:
-      return const [
-        _ActionOption('Nhả 1 phần', 'mode', '1'),
-        _ActionOption('Nhả 2 phần', 'mode', '2'),
-        _ActionOption('Nhả 3 phần', 'mode', '3'),
-      ];
-    case DeviceType.powerSwitch:
-    case DeviceType.unknown:
-      return const [
-        _ActionOption('Bật', 'on'),
-        _ActionOption('Tắt', 'off'),
-      ];
-  }
-}
-
-/// Nhãn tiếng Việt cho 1 hành động (dùng cho cả hành động bắt đầu lẫn kết thúc).
-String _actionLabelFor(String actionType, String? actionValue, DeviceType type) {
-  for (final opt in _actionsFor(type)) {
-    if (opt.actionType == actionType && opt.actionValue == actionValue) {
-      return opt.label;
-    }
-  }
-  // Fallback khi loại thiết bị không xác định được từ tên.
-  if (actionType == 'on') return 'Bật';
-  if (actionType == 'off') return 'Tắt';
-  return 'Chế độ ${actionValue ?? '?'}';
-}
-
 /// Nhãn tiếng Việt cho hành động của một lịch (hiện trên danh sách).
 String _actionLabel(Schedule s, DeviceType type) =>
-    _actionLabelFor(s.actionType, s.actionValue, type);
+    deviceActionLabel(s.actionType, s.actionValue, type);
 
 /// Mô tả hành động đầy đủ của lịch: đơn "Lọc Cao", khoảng "Lọc Cao → Lọc TB".
 String _actionSummary(Schedule s, DeviceType type) {
   final start = _actionLabel(s, type);
   if (!s.isRange) return start;
-  return '$start → ${_actionLabelFor(s.endActionType ?? '', s.endActionValue, type)}';
+  return '$start → ${deviceActionLabel(s.endActionType ?? '', s.endActionValue, type)}';
 }
 
 /// Nhãn ngày lặp: "Mỗi ngày" / "T2, T4, CN".
@@ -376,7 +320,7 @@ class _ScheduleForm extends StatefulWidget {
 
 class _ScheduleFormState extends State<_ScheduleForm> {
   late String _deviceId;
-  late String _actionKey; // key của _ActionOption đang chọn
+  late String _actionKey; // key của DeviceActionOption đang chọn
   late TimeOfDay _time;
   late Set<int> _days; // rỗng = mỗi ngày
   late final TextEditingController _nameCtrl;
@@ -391,7 +335,7 @@ class _ScheduleFormState extends State<_ScheduleForm> {
 
   DeviceType get _deviceType =>
       deviceTypeOf('${_device['name'] ?? ''}', category: _device['category'] as String?);
-  List<_ActionOption> get _actions => _actionsFor(_deviceType);
+  List<DeviceActionOption> get _actions => deviceActionOptions(_deviceType);
 
   @override
   void initState() {

@@ -10,6 +10,9 @@ import '../core/config.dart';
 import '../core/device_api.dart';
 import '../core/device_order.dart';
 import '../core/device_type.dart';
+import '../core/scene_api.dart';
+import '../core/zone_groups.dart';
+import 'scene_editor_screen.dart';
 import '../core/shortcut_service.dart';
 import '../core/shortcut_handler.dart';
 import '../core/widget_service.dart';
@@ -50,6 +53,11 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
   bool isWaking = false;  // Đang đánh thức server (Render free-tier ngủ -> cold start)
   Timer? _retryTimer;     // Bộ đếm giờ tự thử lại
   bool _appActive = true; // App đang ở foreground? (pause poll khi vào nền)
+  List<Scene> _scenes = [];
+  final Set<int> _runningScenes = {};
+  String _zoneFilter = allZonesKey;
+  // Thứ tự khu theo backend (zones.sort_order), lấy TRƯỚC khi áp thứ tự kéo-thả.
+  List<String> _zoneOrder = [];
 
   @override
   void initState() {
@@ -221,9 +229,17 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
       }
       // Sắp theo thứ tự người dùng đã kéo-thả (lưu cục bộ); thiết bị mới xuống cuối.
       final order = await DeviceOrder.load();
+      // Kịch bản tải kèm; lỗi thì giữ danh sách cũ (không làm hỏng màn hình chính).
+      final scenes = await SceneApi.fetchScenes();
       if (!mounted) return;
       setState(() {
+        _zoneOrder = <String>{for (final d in data) zoneKeyOf(d)}.toList();
         devices = DeviceOrder.apply(List<dynamic>.from(data), order);
+        if (scenes != null) _scenes = scenes;
+        // Khu đang lọc không còn thiết bị nào (bị xóa/chuyển) -> về "Tất cả".
+        if (_zoneFilter != allZonesKey && !devices.any((d) => zoneKeyOf(d) == _zoneFilter)) {
+          _zoneFilter = allZonesKey;
+        }
         isLoading = false;
         isOffline = false; // Đã có mạng
       });
@@ -277,6 +293,135 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
     );
   }
 
+  // ---------------- Kịch bản ----------------
+  Future<void> _runScene(Scene scene) async {
+    if (_runningScenes.contains(scene.id)) return;
+    // Kịch bản có MỞ CỬA: xác nhận trước — chạm nhầm 1 cái là cửa nhà mở toang.
+    if (sceneOpensDoor(scene, devices)) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('Chạy "${scene.name}"?'),
+          content: const Text('Kịch bản này sẽ MỞ CỬA CUỐN.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Chạy')),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    setState(() => _runningScenes.add(scene.id));
+    final (result, err) = await SceneApi.run(scene.id);
+    if (!mounted) return;
+    setState(() => _runningScenes.remove(scene.id));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(err ?? '${scene.name}: ${result!.summary}'),
+      backgroundColor: (err != null || result!.failed > 0) ? Colors.redAccent : context.palette.primary,
+    ));
+  }
+
+  Future<void> _editScene([Scene? scene]) async {
+    final changed = await Navigator.of(context).push<bool>(MaterialPageRoute(
+      builder: (_) => SceneEditorScreen(scene: scene, devices: devices),
+    ));
+    if (changed == true) fetchDevices();
+  }
+
+  Widget _scenesRow() {
+    final p = context.palette;
+    final canEdit = widget.profile.canEditScenes;
+    return SizedBox(
+      height: 86,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        children: [
+          for (final sc in _scenes)
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(18),
+                onTap: () => _runScene(sc),
+                onLongPress: canEdit ? () => _editScene(sc) : null,
+                child: Container(
+                  width: 104,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: p.card,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: p.outline),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      _runningScenes.contains(sc.id)
+                          ? SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: p.primary))
+                          : Icon(sceneIconOf(sc), color: p.primary, size: 24),
+                      Text(sc.name, maxLines: 2, overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: p.textMain, fontSize: 12, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          if (canEdit)
+            InkWell(
+              borderRadius: BorderRadius.circular(18),
+              onTap: devices.isEmpty ? null : () => _editScene(),
+              child: Container(
+                width: 86,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: p.primary.withValues(alpha: 0.4)),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.add, color: p.primary),
+                    Text('Kịch bản', style: TextStyle(color: p.primary, fontSize: 12)),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ---------------- Nhà theo khu ----------------
+  Widget _zoneChips(List<ZoneGroup> groups) {
+    final p = context.palette;
+    Widget chip(String key, String label, {bool shared = false}) {
+      final selected = _zoneFilter == key;
+      return Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: ChoiceChip(
+          avatar: shared ? Icon(Icons.home_rounded, size: 16, color: selected ? Colors.white : p.primary) : null,
+          label: Text(label),
+          selected: selected,
+          showCheckmark: false,
+          selectedColor: p.primary,
+          labelStyle: TextStyle(color: selected ? Colors.white : p.textMain, fontSize: 12),
+          onSelected: (_) => setState(() => _zoneFilter = key),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 44,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        children: [
+          chip(allZonesKey, 'Tất cả ${devices.length}'),
+          for (final g in groups) chip(g.key, '${g.name} ${g.on}/${g.total}', shared: g.shared),
+        ],
+      ),
+    );
+  }
+
   // Kéo-thả đổi thứ tự thiết bị (chỉ ảnh hưởng hiển thị, lưu cục bộ SharedPreferences).
   // Dùng onReorderItem: newIndex ĐÃ được điều chỉnh cho item bị gỡ tại oldIndex.
   void _onReorder(int oldIndex, int newIndex) {
@@ -290,6 +435,10 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
   @override
   Widget build(BuildContext context) {
     int activeCount = devices.where((d) => d['is_active'] == true).length;
+    final zoneGroups = zoneGroupsOf(devices, _zoneOrder);
+    // Kéo-thả chỉ khi xem "Tất cả": thứ tự lưu là thứ tự TOÀN BỘ danh sách.
+    final canReorder = _zoneFilter == allZonesKey;
+    final shown = devicesInZone(devices, _zoneFilter);
 
     return SafeArea(
       child: Column(
@@ -372,9 +521,9 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                _buildStat("Nhiệt độ", "24°C", Icons.thermostat),
-                                _buildStat("Độ ẩm", "60%", Icons.water_drop),
-                                _buildStat("Đang bật", "$activeCount thiết bị", Icons.bolt),
+                                _buildStat("Thiết bị", "${devices.length}", Icons.devices_other),
+                                _buildStat("Đang bật", "$activeCount", Icons.bolt),
+                                _buildStat("Khu vực", "${zoneGroups.where((g) => g.key != unassignedKey).length}", Icons.meeting_room),
                               ],
                             ),
                           ).animate().fade(duration: 500.ms).slideY(begin: 0.2),
@@ -388,7 +537,15 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                       child: Center(child: Text("Không có dữ liệu thiết bị", style: TextStyle(color: context.palette.textSub))),
                     )
                   else ...[
-                    if (devices.length > 1)
+                    if (_scenes.isNotEmpty || widget.profile.canEditScenes)
+                      SliverToBoxAdapter(
+                        child: Padding(padding: const EdgeInsets.only(bottom: 16), child: _scenesRow()),
+                      ),
+                    if (zoneGroups.length > 1)
+                      SliverToBoxAdapter(
+                        child: Padding(padding: const EdgeInsets.only(bottom: 8), child: _zoneChips(zoneGroups)),
+                      ),
+                    if (canReorder && devices.length > 1)
                       SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.only(left: 24, right: 24, bottom: 4),
@@ -402,7 +559,7 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                         ),
                       ),
                     SliverReorderableList(
-                      itemCount: devices.length,
+                      itemCount: shown.length,
                       onReorderItem: _onReorder,
                       // Thẻ nổi lên gọn gàng (bo góc + đổ bóng) khi đang kéo.
                       proxyDecorator: (child, index, animation) => Material(
@@ -413,7 +570,7 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                         child: child,
                       ),
                       itemBuilder: (context, index) {
-                        final device = devices[index];
+                        final device = shown[index];
                         // Key ổn định theo id (PK) để list giữ đúng state card khi đổi chỗ.
                         // CHỈ kéo bằng tay cầm riêng (drag handle) — không bọc cả thẻ, tránh
                         // xung đột cử chỉ với nút/switch bên trong (gây message lỗi khi nhấn giữ).
@@ -428,13 +585,15 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                             pollingEnabled: widget.isVisible && _appActive,
                             onToggle: (val) => _toggleDeviceState(device, val),
                             onStatusChanged: (isOn) => _onDeviceStatusChanged(device, isOn),
-                            dragHandle: ReorderableDragStartListener(
-                              index: index,
-                              child: Padding(
-                                padding: const EdgeInsets.all(4),
-                                child: Icon(Icons.drag_indicator, color: context.palette.textSub, size: 22),
-                              ),
-                            ),
+                            dragHandle: canReorder
+                                ? ReorderableDragStartListener(
+                                    index: index,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(4),
+                                      child: Icon(Icons.drag_indicator, color: context.palette.textSub, size: 22),
+                                    ),
+                                  )
+                                : null,
                           ),
                         );
                       },

@@ -10,13 +10,16 @@ class Zone {
   final int id;
   final String name;
   final int sortOrder;
+  /// Khu DÙNG CHUNG: mọi thành viên thấy + điều khiển, không cần cấp từng người.
+  final bool isShared;
 
-  const Zone({required this.id, required this.name, required this.sortOrder});
+  const Zone({required this.id, required this.name, required this.sortOrder, this.isShared = false});
 
   factory Zone.fromJson(Map<String, dynamic> j) => Zone(
-        id: j['id'] as int,
+        id: (j['id'] as num).toInt(),
         name: '${j['name'] ?? ''}',
-        sortOrder: (j['sort_order'] ?? 0) as int,
+        sortOrder: ((j['sort_order'] ?? 0) as num).toInt(),
+        isShared: j['is_shared'] == true,
       );
 }
 

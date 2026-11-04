@@ -1,0 +1,236 @@
+import 'package:flutter/material.dart';
+
+import '../core/device_type.dart';
+import '../core/scene_api.dart';
+import '../theme/app_colors.dart';
+
+/// Icon chọn được cho kịch bản (tên lưu ở backend -> IconData ở app).
+const Map<String, IconData> sceneIcons = {
+  'home': Icons.home_rounded,
+  'logout': Icons.logout_rounded,
+  'bedtime': Icons.bedtime_rounded,
+  'wb_sunny': Icons.wb_sunny_rounded,
+  'water_drop': Icons.water_drop_rounded,
+  'pets': Icons.pets_rounded,
+  'movie': Icons.movie_rounded,
+  'shield': Icons.shield_rounded,
+};
+
+IconData sceneIconOf(Scene s) => sceneIcons[s.icon] ?? Icons.auto_awesome_rounded;
+
+DeviceType _typeOf(Map device) =>
+    deviceTypeOf('${device['name'] ?? ''}', category: device['category'] as String?);
+
+/// Kịch bản có hành động MỞ CỬA không — chạy kịch bản kiểu này cần xác nhận.
+bool sceneOpensDoor(Scene s, List<dynamic> devices) => s.actions.any((a) {
+      final d = devices.cast<Map>().where((d) => '${d['id']}' == a.deviceId).firstOrNull;
+      return d != null && _typeOf(d) == DeviceType.curtain && a.actionValue == 'open';
+    });
+
+/// Tạo / sửa kịch bản. Trả `true` qua Navigator.pop khi có thay đổi (lưu/xóa).
+class SceneEditorScreen extends StatefulWidget {
+  final Scene? scene;          // null = tạo mới
+  final List<dynamic> devices; // thiết bị người dùng thấy được (từ dashboard)
+
+  const SceneEditorScreen({super.key, this.scene, required this.devices});
+
+  @override
+  State<SceneEditorScreen> createState() => _SceneEditorScreenState();
+}
+
+class _SceneEditorScreenState extends State<SceneEditorScreen> {
+  late final TextEditingController _name = TextEditingController(text: widget.scene?.name ?? '');
+  late String _icon = widget.scene?.icon ?? 'home';
+  late final List<SceneAction> _actions = [...?widget.scene?.actions];
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Map? _device(String id) => widget.devices.cast<Map>().where((d) => '${d['id']}' == id).firstOrNull;
+
+  void _snack(String msg, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: error ? Colors.redAccent : context.palette.primary,
+    ));
+  }
+
+  Future<void> _addAction() async {
+    final p = context.palette;
+    // Bước 1: chọn thiết bị.
+    final device = await showModalBottomSheet<Map>(
+      context: context,
+      backgroundColor: p.surface,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(title: Text('Chọn thiết bị', style: TextStyle(fontWeight: FontWeight.bold))),
+            for (final d in widget.devices.cast<Map>())
+              ListTile(
+                leading: const Icon(Icons.devices_other),
+                title: Text('${d['name']}'),
+                subtitle: d['zone_name'] != null ? Text('${d['zone_name']}') : null,
+                onTap: () => Navigator.pop(ctx, d),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (device == null || !mounted) return;
+
+    // Bước 2: chọn hành động hợp lệ với loại thiết bị.
+    final options = deviceActionOptions(_typeOf(device));
+    final opt = await showModalBottomSheet<DeviceActionOption>(
+      context: context,
+      backgroundColor: p.surface,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${device['name']}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final o in options) ActionChip(label: Text(o.label), onPressed: () => Navigator.pop(ctx, o)),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (opt == null) return;
+    setState(() => _actions.add(SceneAction('${device['id']}', opt.actionType, opt.actionValue)));
+  }
+
+  Future<void> _save() async {
+    final name = _name.text.trim();
+    if (name.isEmpty) return _snack('Đặt tên cho kịch bản.', error: true);
+    if (_actions.isEmpty) return _snack('Thêm ít nhất 1 hành động.', error: true);
+    setState(() => _saving = true);
+    final err = await SceneApi.save(id: widget.scene?.id, name: name, icon: _icon, actions: _actions);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (err != null) return _snack(err, error: true);
+    Navigator.pop(context, true);
+  }
+
+  Future<void> _delete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Xóa kịch bản "${widget.scene!.name}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Xóa', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final err = await SceneApi.delete(widget.scene!.id);
+    if (!mounted) return;
+    if (err != null) return _snack(err, error: true);
+    Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.scene == null ? 'Kịch bản mới' : 'Sửa kịch bản'),
+        actions: [
+          if (widget.scene != null)
+            IconButton(tooltip: 'Xóa', icon: const Icon(Icons.delete_outline, color: Colors.redAccent), onPressed: _delete),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _saving ? null : _save,
+        backgroundColor: p.primary,
+        foregroundColor: Colors.white,
+        icon: _saving
+            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+            : const Icon(Icons.check),
+        label: const Text('Lưu'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 100),
+        children: [
+          TextField(
+            controller: _name,
+            maxLength: 40,
+            style: TextStyle(color: p.textMain),
+            decoration: const InputDecoration(labelText: 'Tên kịch bản', hintText: 'Ra khỏi nhà, Đi ngủ...'),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (final e in sceneIcons.entries)
+                ChoiceChip(
+                  label: Icon(e.value, size: 20, color: _icon == e.key ? Colors.white : p.textMain),
+                  selected: _icon == e.key,
+                  selectedColor: p.primary,
+                  showCheckmark: false,
+                  onSelected: (_) => setState(() => _icon = e.key),
+                ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          Text('HÀNH ĐỘNG (chạy lần lượt từ trên xuống)',
+              style: TextStyle(color: p.textSub, fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          ReorderableListView(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            // onReorderItem: newIndex ĐÃ được điều chỉnh cho phần tử bị gỡ ở oldIndex.
+            onReorderItem: (oldIndex, newIndex) => setState(() {
+              _actions.insert(newIndex, _actions.removeAt(oldIndex));
+            }),
+            children: [
+              for (var i = 0; i < _actions.length; i++)
+                Card(
+                  key: ValueKey('a$i-${_actions[i].deviceId}-${_actions[i].actionType}-${_actions[i].actionValue}'),
+                  color: p.card,
+                  child: ListTile(
+                    leading: ReorderableDragStartListener(index: i, child: const Icon(Icons.drag_indicator)),
+                    title: Text('${_device(_actions[i].deviceId)?['name'] ?? 'Thiết bị đã xóa'}'),
+                    subtitle: Text(_device(_actions[i].deviceId) == null
+                        ? 'Sẽ được bỏ qua khi chạy'
+                        : deviceActionLabel(_actions[i].actionType, _actions[i].actionValue,
+                            _typeOf(_device(_actions[i].deviceId)!))),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => setState(() => _actions.removeAt(i)),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: widget.devices.isEmpty ? null : _addAction,
+            icon: const Icon(Icons.add),
+            label: const Text('Thêm hành động'),
+          ),
+        ],
+      ),
+    );
+  }
+}

@@ -228,6 +228,9 @@ class HouseholdProfile {
     return null;
   }
 
+  /// Tạo/sửa/xóa kịch bản (chủ nhà + người lớn). Chạy thì ai cũng được.
+  bool get canEditScenes => role == 'owner' || role == 'adult';
+
   bool get isPending => status == 'pending';
   bool get isBlocked => status == 'blocked';
   bool get isActive => status == 'active';

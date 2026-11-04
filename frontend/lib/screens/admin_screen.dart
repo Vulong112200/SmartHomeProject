@@ -344,9 +344,10 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                       children: [
                         for (final z in _zones)
                           FilterChip(
-                            label: Text(z.name),
-                            selected: zoneIds.contains(z.id),
-                            onSelected: (on) => setSheet(() {
+                            label: Text(z.isShared ? '${z.name} • dùng chung' : z.name),
+                            // Khu dùng chung: ai cũng có sẵn, tick vào chẳng đổi gì.
+                            selected: z.isShared || zoneIds.contains(z.id),
+                            onSelected: z.isShared ? null : (on) => setSheet(() {
                               if (on) {
                                 zoneIds.add(z.id);
                               } else {
@@ -455,18 +456,26 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
       color: context.palette.surface,
       margin: const EdgeInsets.only(bottom: 10),
       child: ExpansionTile(
-        leading: Icon(Icons.meeting_room_outlined, color: context.palette.primary),
+        leading: Icon(z.isShared ? Icons.home_rounded : Icons.meeting_room_outlined, color: context.palette.primary),
         title: Text(z.name),
-        subtitle: Text('${devices.length} thiết bị', style: const TextStyle(fontSize: 12)),
+        subtitle: Text(
+          '${devices.length} thiết bị${z.isShared ? ' • dùng chung cả nhà' : ''}',
+          style: const TextStyle(fontSize: 12),
+        ),
         trailing: PopupMenuButton<String>(
           color: context.palette.surface,
           onSelected: (v) {
             if (v == 'rename') _renameZone(z);
+            if (v == 'share') _toggleShared(z);
             if (v == 'delete') _deleteZone(z, devices.length);
           },
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'rename', child: Text('Đổi tên')),
-            PopupMenuItem(value: 'delete', child: Text('Xóa khu')),
+          itemBuilder: (_) => [
+            const PopupMenuItem(value: 'rename', child: Text('Đổi tên')),
+            PopupMenuItem(
+              value: 'share',
+              child: Text(z.isShared ? 'Bỏ dùng chung' : 'Dùng chung cả nhà'),
+            ),
+            const PopupMenuItem(value: 'delete', child: Text('Xóa khu')),
           ],
         ),
         children: [
@@ -642,6 +651,15 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     await _run(
       HouseholdApi.updateZone(z.id, {'name': name.trim()}),
       'Đã đổi tên khu',
+    );
+  }
+
+  /// Khu dùng chung: trẻ em/khách thấy + điều khiển thiết bị trong khu mà không
+  /// cần cấp từng người — hợp với máy bơm, cửa cuốn... cả nhà cùng dùng.
+  Future<void> _toggleShared(Zone z) async {
+    await _run(
+      HouseholdApi.updateZone(z.id, {'is_shared': !z.isShared}),
+      z.isShared ? 'Đã bỏ dùng chung "${z.name}"' : '"${z.name}" giờ dùng chung cả nhà',
     );
   }
 
