@@ -27,7 +27,7 @@ backend/
 │   └── services/
 │       ├── base_connector.py       # Lớp trừu tượng: connect/turn_on/turn_off/get_device_state (+set_mode tùy chọn)
 │       ├── connector_manager.py    # device_manager: register_connector / get_connector theo brand
-│       ├── tuya_connector.py       # Tuya Cloud — cửa cuốn/rèm (control open/close/stop, position 0-100); credential từ env
+│       ├── tuya_connector.py       # Tuya Cloud — cửa cuốn (control open/close/stop; trạng thái từ shadow/properties có thời điểm) + công tắc (switch_1, tự nhận theo category Tuya); credential từ env
 │       ├── vesync_connector.py     # VeSync — máy lọc khí (mode, speed)
 │       ├── rojeco_connector.py     # Rojeco — máy cho ăn: state = online + feed_state + last_feed (feed_report); credential từ env
 │       ├── local_parser.py         # parse_command_locally: lệnh đơn giản không cần AI; câu CÓ GIỜ → intent schedule (không thi hành ngay)
@@ -46,6 +46,7 @@ backend/
 │   ├── test_household_scope.py     # pytest ma trận quyền: device_query theo khu, 403-vs-404, pending/blocked,
 │                                   # lịch lọc theo thiết bị chứ không theo người tạo, quy tắc bật/tắt xác thực,
 │                                   # + test qua HTTP để bắt lỗi QUÊN GẮN dependency vào endpoint
+│   ├── test_switch_device.py       # pytest máy bơm (công tắc Tuya) + cửa cuốn: parser chọn theo LOẠI, bẫy 'tăng áp'/'ăn', switch_1, cửa theo thời gian
 │   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)
 ├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL,
 │                                   # SUPABASE_JWT_SECRET, ADMIN_EMAILS, AUTH_DISABLED) — gitignored
@@ -100,6 +101,7 @@ frontend/
 │       └── app_theme.dart          # ThemeData
 └── android/app/src/main/
     ├── kotlin/com/example/frontend/MainActivity.kt              # MethodChannel: pinShortcut/updateShortcut/getInitialAction; buildShortcut + resolveIcon
+    ├── kotlin/com/example/frontend/WidgetRefreshWorker.kt       # WorkManager 15 phút: bắn smarthome://refresh để widget tự làm mới khi app đóng
     ├── kotlin/com/example/frontend/SmartHomeWidgetProvider.kt   # AppWidgetProvider: render 3 khe thiết bị, gắn HomeWidgetBackgroundIntent cho nút
     ├── AndroidManifest.xml                            # launcher_icon; MainActivity singleTop; đăng ký widget provider + home_widget receiver/service
     └── res/

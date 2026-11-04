@@ -37,7 +37,7 @@
 - **Status:** ✅ done
 - **Backend:** `DeviceModel` (`models/device.py`) · `/api/devices` GET/POST/DELETE (`main.py:118-155`).
 - **Frontend:** `device_api.dart` (`fetchDevices`/`fetchStatus`/`sendMode`/`sendAction`) · `dashboard_tab.dart` (list + card).
-- **Key logic:** loại thiết bị phân ở client qua `core/device_type.dart` (**nơi duy nhất**): `deviceTypeOf(name, category:)` — `category` từ backend (`purifier`/`curtain`/`feeder`) thắng, NULL/lạ → suy từ TÊN ('lọc'→airPurifier, 'cửa'→curtain, 'mèo'/'ăn'→feeder) — dùng chung bởi dashboard, widget_service, schedule_tab. Card máy lọc & cửa có nhãn trạng thái sống (`statusLabel`) đọc từ `/status`. Base URL/timeout gom về `core/config.dart` (`AppConfig`).
+- **Key logic:** loại thiết bị phân ở client qua `core/device_type.dart` (**nơi duy nhất**): `deviceTypeOf(name, category:)` — `category` từ backend (`purifier`/`curtain`/`feeder`/`switch`) thắng, NULL/lạ → suy từ TÊN ('bơm'/'tăng áp'/'công tắc'→powerSwitch — kiểm TRƯỚC vì "tăng áp" chứa "ăn"; 'lọc'→airPurifier, 'cửa'→curtain, 'mèo'/'ăn'→feeder). Card powerSwitch: switch bật/tắt + nhãn Đang chạy/Đã tắt/Mất kết nối, poll 6s như máy lọc — dùng chung bởi dashboard, widget_service, schedule_tab. Card máy lọc & cửa có nhãn trạng thái sống (`statusLabel`) đọc từ `/status`. Base URL/timeout gom về `core/config.dart` (`AppConfig`).
 
 ### Điều khiển bật/tắt & chế độ
 - **Status:** ✅ done
@@ -107,6 +107,7 @@
   - Dữ liệu đẩy qua `HomeWidget.saveWidgetData` (string), vẽ lại bằng `updateWidget(qualifiedAndroidName: com.example.frontend.SmartHomeWidgetProvider)`.
   - Nút bấm → `HomeWidgetBackgroundIntent` (URI `smarthome://action?type&brand&id` hoặc `smarthome://refresh`) → `widgetBackgroundCallback` (@pragma vm:entry-point) chạy NỀN, gọi DeviceApi rồi `refreshAll()` cập nhật lại. KHÔNG mở app.
   - App đang mở: `dashboard_tab.fetchDevices` thành công → `WidgetService.refreshAll()` đồng bộ widget.
+  - App ĐÓNG: `WidgetRefreshWorker` (WorkManager, 15 phút, cần mạng) bắn `smarthome://refresh` → `refreshAll()` ở isolate nền (chỉ đọc). Trước đây widget chỉ cập nhật khi mở app/bấm ↻.
   - ⚠️ Giới hạn: chỉ hiện 1 thiết bị/loại (nếu có 2 máy lọc chỉ hiện 1). Trạng thái phụ thuộc backend (Render free có thể ngủ → "Không rõ").
 
 ### Automation engine
@@ -181,7 +182,7 @@
 
 | Table | Status | Ghi chú |
 |---|---|---|
-| devices (`DeviceModel`) | ✅ | id (PK = id hãng), name, brand, is_active, **zone_id** (FK zones, ON DELETE SET NULL, NULL = "hộp thư đến"), **category** (`purifier`\|`curtain`\|`feeder`, NULL = suy từ tên; PATCH validate → 400). `seed_defaults()` nạp 3 thiết bị (kèm category) khi bảng rỗng, giữ nguyên id. |
+| devices (`DeviceModel`) | ✅ | id (PK = id hãng), name, brand, is_active, **zone_id** (FK zones, ON DELETE SET NULL, NULL = "hộp thư đến"), **category** (`purifier`\|`curtain`\|`feeder`\|`switch`, NULL = suy từ tên; PATCH validate → 400). `seed_defaults()` nạp 3 thiết bị (kèm category) khi bảng rỗng, giữ nguyên id. |
 | zones (`ZoneModel`) | ✅ | id, name, sort_order. `seed_defaults()` tạo khu 'Nhà' khi bảng rỗng và gán thiết bị chưa phân khu vào đó. |
 | members (`MemberModel`) | ✅ | user_id (PK, = auth.users.id dạng text), email, display_name, role (owner\|adult\|kid\|guest), status (pending\|active\|blocked). |
 | member_zone_access (`MemberZoneAccessModel`) | ✅ | (user_id, zone_id) PK ghép. Grant CHỈ cho kid/guest — owner/adult thấy mọi khu theo luật vai nên không có hàng nào ở đây. |
