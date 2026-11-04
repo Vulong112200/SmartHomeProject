@@ -134,7 +134,8 @@
 
 ### Đăng nhập (Supabase Auth) + AuthGate
 - **Status:** 🚧 code xong, chưa bật production (chờ tạo project Supabase và build APK kèm khóa)
-- **Backend:** `core/auth.py` (`issue_app_token`, chấp nhận app-token trong `get_current_user`) · `POST /api/auth/app-token`
+- **Backend:** `core/auth.py` (`issue_app_token`, chấp nhận app-token trong `get_current_user`; `_decode_supabase_token` verify ES256 qua JWKS của `SUPABASE_URL` hoặc HS256 qua `SUPABASE_JWT_SECRET`) · `POST /api/auth/app-token`
+- **⚠️ Project Supabase của nhà ký token bằng ES256** (Settings → JWT Keys). App dùng **Publishable key** `sb_publishable_...` (thay "anon key" cũ) cho `--dart-define=SUPABASE_ANON_KEY`.
 - **Frontend:** `core/auth_service.dart` · `screens/auth_gate.dart` · `screens/login_screen.dart` · `screens/pending_screen.dart` (+ `OfflineScreen`) · header gắn ở `device_api`/`schedule_api`/`ai_assistant_tab`/`dashboard_tab` · `main.dart` init Supabase trước `runApp` · test `test/auth_service_test.dart`, `test/widget_test.dart`
 - **Key logic:**
   - **⚠️ Isolate nền là đường hỏng ÂM THẦM của phase này.** `widgetBackgroundCallback` (`@pragma('vm:entry-point')`) và shortcut handler chạy ở **isolate riêng**, nơi `Supabase.instance` chưa từng được khởi tạo ⇒ không lấy được access token ⇒ Home Widget hiện "Không rõ" và nút bấm **không làm gì, không báo lỗi, không crash**. Ba cách sai đã loại: (a) init Supabase trong isolate → hai isolate refresh song song, mà Supabase **xoay vòng refresh token** ⇒ isolate này vô hiệu hóa token của isolate kia, cả nhà bị đăng xuất ngẫu nhiên; (b) cache access token 1 giờ → hỏng mỗi khi bấm widget sau 1 giờ, tức hầu như luôn; (c) bỏ qua → mất 2 tính năng đầu bảng. **Giải:** `POST /api/auth/app-token` cấp JWT dài hạn do backend ký (`iss="smarthome-app"`), lưu SharedPreferences — đọc được ở mọi isolate. Thu hồi = đổi `APP_TOKEN_SECRET`.
@@ -189,7 +190,7 @@
 ### Cấu hình & bảo mật (env)
 - **Status:** ✅ done
 - **Backend:** `load_dotenv()` đầu `main.py` · `backend/.env` (thật, gitignore) · `backend/.env.example` (mẫu).
-- **Key logic:** `VESYNC_EMAIL/PASSWORD` (main.py), `TUYA_ACCESS_ID/KEY/API_ENDPOINT` (tuya_connector + rojeco_connector dùng chung), `OPENROUTER_API_KEY` (ai_parser), `DATABASE_URL` (core/database.py), `SUPABASE_JWT_SECRET` + `ADMIN_EMAILS` + `AUTH_DISABLED` (core/auth.py).
+- **Key logic:** `VESYNC_EMAIL/PASSWORD` (main.py), `TUYA_ACCESS_ID/KEY/API_ENDPOINT` (tuya_connector + rojeco_connector dùng chung), `OPENROUTER_API_KEY` (ai_parser), `DATABASE_URL` (core/database.py), `SUPABASE_URL` (verify ES256 qua JWKS) / `SUPABASE_JWT_SECRET` (HS256 cũ) + `ADMIN_EMAILS` + `APP_TOKEN_SECRET` + `AUTH_DISABLED` (core/auth.py).
   - ⚠️ **Xác thực TỰ SUY, không mặc định bật.** `AUTH_DISABLED` không đặt ⇒ suy từ `SUPABASE_JWT_SECRET`: thiếu secret thì backend **không verify nổi token**, bật xác thực chỉ làm mọi request 401 và app cả nhà chết. Mà service Render được tạo tay trên dashboard nên **KHÔNG đọc `render.yaml`** — quên set biến là đủ gây sự cố thật. Có secret ⇒ tự bật. Đặt `AUTH_DISABLED=0` tường minh để ép bật kể cả khi thiếu secret (fail closed). Lifespan log to trạng thái mỗi lần boot: `🔒 Xác thực BẬT` / `🔓 Xác thực TẮT`.
   - `ADMIN_EMAILS` (phân tách dấu phẩy) là **cứu hộ cấp env**: các email này luôn thành `owner`/`active` mỗi lần đăng nhập, kể cả khi vai trong DB bị hạ. Trên Render set qua Dashboard > Environment. Lifespan bọc try/except từng connector — 1 hãng lỗi không sập app; Tuya/Rojeco `connect()` chạy `asyncio.to_thread` và chỉ set `is_connected` khi token response `success`.
 

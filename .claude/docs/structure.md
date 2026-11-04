@@ -10,7 +10,8 @@ backend/
 │   ├── main.py                     # FastAPI app: endpoints (devices/control/status/ai/schedules), init_db() + lifespan (khởi tạo DB → connectors → scheduler task), cờ db_ready, middleware đo thời gian
 │   ├── core/
 │   │   ├── auth.py                 # Verify JWT Supabase -> CurrentUser; CỐ TÌNH sạch model + sạch DB.
-│   │   │                           # auth_disabled() TỰ SUY từ SUPABASE_JWT_SECRET khi AUTH_DISABLED không đặt
+│   │   │                           # Token Supabase ES256 qua JWKS (SUPABASE_URL) hoặc HS256 (SUPABASE_JWT_SECRET);
+│   │   │                           # auth_disabled() TỰ SUY: bật khi có 1 trong 2, AUTH_DISABLED đặt tường minh thắng
 │   │   ├── household.py            # NƠI DUY NHẤT quyết định quyền: provision_member, get_current_member,
 │   │   │                           # require_owner, device_query/schedule_query (lọc theo khu),
 │   │   │                           # require_device_access (403 vs 404), require_schedule_write
@@ -51,6 +52,7 @@ backend/
 │   ├── test_switch_device.py       # pytest máy bơm (công tắc Tuya) + cửa cuốn: parser chọn theo LOẠI, bẫy 'tăng áp'/'ăn', switch_1, cửa theo thời gian
 │   ├── conftest.py                 # fixture `api`: đăng nhập theo vai, MỌI lệnh tới thiết bị bị ghi lại (không gửi thật)
 │   ├── test_security_fixes.py      # vượt quyền AI/lịch/PATCH, action lạ → 400, Tuya không rõ loại không gửi, 'tắt hết'
+│   ├── test_auth_jwks.py           # verify ES256 qua JWKS (khóa EC tự sinh, không gọi mạng), HS256 cũ, app-token, alg none -> 401
 │   ├── test_profile.py             # PATCH /api/me chỉ sửa chính mình, validate tên/màu
 │   ├── test_shared_zones_scenes.py # khu dùng chung, kịch bản (quyền tạo/chạy, bỏ qua ngoài khu), kịch bản bằng giọng nói
 │   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)

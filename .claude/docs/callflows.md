@@ -236,10 +236,15 @@ uvicorn app.main:app
 ```
 Request có Bearer token
   → core/auth.py get_current_user()
-      auth_disabled()?  (AUTH_DISABLED tường minh > suy từ SUPABASE_JWT_SECRET)
+      auth_disabled()?  (AUTH_DISABLED tường minh > bật khi có SUPABASE_URL hoặc SUPABASE_JWT_SECRET)
         TẮT  → CurrentUser giả, is_admin=True     # giai đoạn chưa gắn đăng nhập
-        BẬT  → jwt.decode(HS256, aud="authenticated") -> sub + email
-               thiếu/sai token -> 401
+        BẬT  → app-token (iss=smarthome-app, APP_TOKEN_SECRET)?  -> dùng luôn (Widget/shortcut)
+               không phải → _decode_supabase_token theo `alg` trong header:
+                 ES256/RS256 → khóa công khai JWKS {SUPABASE_URL}/auth/v1/.well-known/jwks.json
+                               (PyJWKClient cache), kiểm aud=authenticated + iss  # project của nhà
+                 HS256       → SUPABASE_JWT_SECRET                                # project kiểu cũ
+                 khác        → 401
+               -> sub + email; thiếu/sai token -> 401
       is_admin = email ∈ ADMIN_EMAILS
 
   → core/household.py get_member()  [Depends]
