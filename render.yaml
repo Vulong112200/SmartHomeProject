@@ -1,0 +1,31 @@
+# Cau hinh deploy Render (Blueprint).
+# LUU Y: file nay chi duoc Render doc khi service duoc tao/quan ly bang Blueprint.
+# Service tao tay tren dashboard van dung Root Directory + Build/Start Command trong
+# dashboard -> phai sua tay cho khop, hoac chuyen service sang Blueprint.
+services:
+  - type: web
+    name: vuhp-smarthome
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.5"
+      # --- Tuya Cloud (cua cuon + may cho an Rojeco dung chung 1 project) ---
+      - key: TUYA_ACCESS_ID
+        sync: false
+      - key: TUYA_ACCESS_KEY
+        sync: false
+      - key: TUYA_API_ENDPOINT
+        value: https://openapi-sg.iotbing.com/
+      # --- VeSync (may loc khi - 1 tai khoan dung chung ca nha) ---
+      - key: VESYNC_EMAIL
+        sync: false
+      - key: VESYNC_PASSWORD
+        sync: false
+      # --- OpenRouter (AI parse lenh giong noi) ---
+      - key: OPENROUTER_API_KEY
+        sync: false

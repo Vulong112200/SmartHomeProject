@@ -152,7 +152,8 @@ schedule_tab.dart (FAB ＋ / tap card) → _ScheduleForm (bottom sheet)
 
 **Vòng lặp kích hoạt (chạy nền trên server):**
 ```
-main.py lifespan → asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
+main.py lifespan → init_db() (try/except -> db_ready) → connectors
+  → CHỈ KHI db_ready: asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
   → mỗi 30s: now = datetime.now(Asia/Ho_Chi_Minh); duyệt schedules enabled==True
     → start ĐẾN GIỜ khi: weekday ∈ days (hoặc days rỗng) VÀ 0 <= now - time < 120s
                          VÀ last_fired_date != hôm nay
