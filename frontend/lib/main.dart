@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 // Import các file bạn vừa tạo
@@ -10,6 +11,7 @@ import 'screens/schedule_tab.dart';
 import 'core/auth_service.dart';
 import 'core/config.dart';
 import 'core/shortcut_handler.dart';
+import 'core/theme_controller.dart';
 import 'core/widget_service.dart';
 import 'screens/auth_gate.dart';
 
@@ -27,6 +29,9 @@ Future<void> main() async {
     }
   }
 
+  // Đọc sáng/tối đã chọn TRƯỚC runApp để không nháy theme sai lúc mở app.
+  await ThemeController.load();
+
   runApp(const ProviderScope(child: SmartHomeApp()));
   // Lắng nghe khi người dùng bấm icon shortcut trên home screen.
   ShortcutHandler.register();
@@ -39,14 +44,27 @@ class SmartHomeApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Smart Home Premium',
-      debugShowCheckedModeBanner: false,
-      navigatorKey: appNavigatorKey, // Cho phép shortcut hiện dialog/snackbar
-      theme: AppTheme.darkTheme, // Áp dụng theme mới
-      // AuthGate quyết định: đang tải / chưa đăng nhập / chờ duyệt / mất mạng
-      // / vào app. Hồ sơ được truyền xuống để không màn nào phải fetch lại.
-      home: AuthGate(builder: (profile) => MainScreen(profile: profile)),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: ThemeController.mode,
+      builder: (context, themeMode, _) => MaterialApp(
+        title: 'Smart Home Premium',
+        debugShowCheckedModeBanner: false,
+        navigatorKey: appNavigatorKey, // Cho phép shortcut hiện dialog/snackbar
+        theme: AppTheme.lightTheme,
+        darkTheme: AppTheme.darkTheme,
+        themeMode: themeMode,
+        // Icon thanh trạng thái theo nền: app không dùng AppBar nên phải tự đặt,
+        // không thì nền sáng mà icon trắng -> mất giờ/pin.
+        builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+          value: Theme.of(context).brightness == Brightness.dark
+              ? SystemUiOverlayStyle.light
+              : SystemUiOverlayStyle.dark,
+          child: child!,
+        ),
+        // AuthGate quyết định: đang tải / chưa đăng nhập / chờ duyệt / mất mạng
+        // / vào app. Hồ sơ được truyền xuống để không màn nào phải fetch lại.
+        home: AuthGate(builder: (profile) => MainScreen(profile: profile)),
+      ),
     );
   }
 }
@@ -92,22 +110,22 @@ class _MainScreenState extends State<MainScreen> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) => setState(() => _currentIndex = index),
-        backgroundColor: AppColors.surface,
-        indicatorColor: AppColors.primary.withValues(alpha: 0.2), // Fix chuẩn Flutter 3.27+
-        destinations: const [
+        backgroundColor: context.palette.surface,
+        indicatorColor: context.palette.primary.withValues(alpha: 0.2), // Fix chuẩn Flutter 3.27+
+        destinations: [
           NavigationDestination(
-            icon: Icon(Icons.dashboard_outlined),
-            selectedIcon: Icon(Icons.dashboard, color: AppColors.primary),
+            icon: const Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard, color: context.palette.primary),
             label: 'Home',
           ),
           NavigationDestination(
-            icon: Icon(Icons.auto_awesome_outlined),
-            selectedIcon: Icon(Icons.auto_awesome, color: AppColors.primary),
+            icon: const Icon(Icons.auto_awesome_outlined),
+            selectedIcon: Icon(Icons.auto_awesome, color: context.palette.primary),
             label: 'AI Assistant',
           ),
           NavigationDestination(
-            icon: Icon(Icons.schedule_outlined),
-            selectedIcon: Icon(Icons.schedule, color: AppColors.primary),
+            icon: const Icon(Icons.schedule_outlined),
+            selectedIcon: Icon(Icons.schedule, color: context.palette.primary),
             label: 'Hẹn giờ',
           ),
         ],

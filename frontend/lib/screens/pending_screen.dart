@@ -24,7 +24,7 @@ class PendingScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final blocked = profile.isBlocked;
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: context.palette.background,
       body: SafeArea(
         child: Center(
           child: Padding(
@@ -35,7 +35,7 @@ class PendingScreen extends StatelessWidget {
                 Icon(
                   blocked ? Icons.block : Icons.hourglass_top_rounded,
                   size: 72,
-                  color: blocked ? Colors.redAccent : AppColors.primary,
+                  color: blocked ? Colors.redAccent : context.palette.primary,
                 ),
                 const SizedBox(height: 20),
                 Text(
@@ -87,7 +87,7 @@ class OfflineScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: context.palette.background,
       body: SafeArea(
         child: Center(
           child: Padding(
@@ -95,7 +95,7 @@ class OfflineScreen extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.cloud_off, size: 72, color: AppColors.primary),
+                Icon(Icons.cloud_off, size: 72, color: context.palette.primary),
                 const SizedBox(height: 20),
                 Text(
                   'Không kết nối được máy chủ',

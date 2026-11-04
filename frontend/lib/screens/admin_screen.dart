@@ -89,13 +89,13 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: context.palette.background,
       appBar: AppBar(
         title: const Text('Quản trị nhà'),
-        backgroundColor: AppColors.surface,
+        backgroundColor: context.palette.surface,
         bottom: TabBar(
           controller: _tabs,
-          indicatorColor: AppColors.primary,
+          indicatorColor: context.palette.primary,
           tabs: const [
             Tab(icon: Icon(Icons.people_outline), text: 'Thành viên'),
             Tab(icon: Icon(Icons.meeting_room_outlined), text: 'Khu vực'),
@@ -180,20 +180,20 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     }
 
     return Card(
-      color: AppColors.surface,
+      color: context.palette.surface,
       margin: const EdgeInsets.only(bottom: 10),
       child: ListTile(
         leading: CircleAvatar(
           backgroundColor: m.isPending
               ? Colors.orangeAccent.withValues(alpha: 0.2)
-              : AppColors.primary.withValues(alpha: 0.2),
+              : context.palette.primary.withValues(alpha: 0.2),
           child: Icon(
             m.status == 'blocked'
                 ? Icons.block
                 : m.isPending
                     ? Icons.hourglass_top
                     : Icons.person,
-            color: m.isPending ? Colors.orangeAccent : AppColors.primary,
+            color: m.isPending ? Colors.orangeAccent : context.palette.primary,
             size: 20,
           ),
         ),
@@ -206,9 +206,9 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
               ),
             ),
             if (isMe)
-              const Padding(
-                padding: EdgeInsets.only(left: 6),
-                child: Text('(bạn)', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+              Padding(
+                padding: const EdgeInsets.only(left: 6),
+                child: Text('(bạn)', style: TextStyle(color: context.palette.textSub, fontSize: 12)),
               ),
           ],
         ),
@@ -237,7 +237,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
     final saved = await showModalBottomSheet<bool>(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: context.palette.surface,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -274,7 +274,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                     ),
 
                   const SizedBox(height: 12),
-                  const Text('Vai trò', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+                  Text('Vai trò', style: TextStyle(color: context.palette.textSub, fontSize: 12)),
                   const SizedBox(height: 6),
                   Wrap(
                     spacing: 8,
@@ -296,7 +296,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                   ),
 
                   const SizedBox(height: 16),
-                  const Text('Trạng thái', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+                  Text('Trạng thái', style: TextStyle(color: context.palette.textSub, fontSize: 12)),
                   const SizedBox(height: 6),
                   Wrap(
                     spacing: 8,
@@ -317,17 +317,17 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                   ),
 
                   const SizedBox(height: 16),
-                  const Text('Khu vực được dùng',
-                      style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+                  Text('Khu vực được dùng',
+                      style: TextStyle(color: context.palette.textSub, fontSize: 12)),
                   const SizedBox(height: 6),
                   if (seesAll)
                     // Không hiện ô tick cho owner/adult: họ thấy mọi khu theo
                     // luật vai, tick vào chẳng thay đổi gì mà lại gây hiểu nhầm.
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Text(
                         'Vai này thấy mọi khu vực, không cần cấp riêng.',
-                        style: TextStyle(color: AppColors.textSub, fontSize: 12),
+                        style: TextStyle(color: context.palette.textSub, fontSize: 12),
                       ),
                     )
                   else if (_zones.isEmpty)
@@ -424,11 +424,11 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         padding: const EdgeInsets.all(16),
         children: [
           if (_zones.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 24),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
               child: Text(
                 'Chưa có khu vực nào. Thêm phòng để chia quyền cho trẻ em và khách.',
-                style: TextStyle(color: AppColors.textSub),
+                style: TextStyle(color: context.palette.textSub),
                 textAlign: TextAlign.center,
               ),
             ),
@@ -452,14 +452,14 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   Widget _zoneCard(Zone z) {
     final devices = _devices.where((d) => d['zone_id'] == z.id).toList();
     return Card(
-      color: AppColors.surface,
+      color: context.palette.surface,
       margin: const EdgeInsets.only(bottom: 10),
       child: ExpansionTile(
-        leading: const Icon(Icons.meeting_room_outlined, color: AppColors.primary),
+        leading: Icon(Icons.meeting_room_outlined, color: context.palette.primary),
         title: Text(z.name),
         subtitle: Text('${devices.length} thiết bị', style: const TextStyle(fontSize: 12)),
         trailing: PopupMenuButton<String>(
-          color: AppColors.surface,
+          color: context.palette.surface,
           onSelected: (v) {
             if (v == 'rename') _renameZone(z);
             if (v == 'delete') _deleteZone(z, devices.length);
@@ -471,12 +471,12 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         ),
         children: [
           if (devices.isEmpty)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text('Chưa có thiết bị nào trong khu này.',
-                    style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+                    style: TextStyle(color: context.palette.textSub, fontSize: 12)),
               ),
             ),
           ...devices.map((d) => _deviceRow(d, currentZoneId: z.id)),
@@ -487,7 +487,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   Widget _unassignedCard(List<Map<String, dynamic>> devices) {
     return Card(
-      color: AppColors.surface,
+      color: context.palette.surface,
       margin: const EdgeInsets.only(bottom: 10),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
@@ -510,7 +510,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     final categoryLabel = deviceCategoryLabels[d['category']] ?? 'Loại: tự đoán theo tên';
     return ListTile(
       dense: true,
-      leading: const Icon(Icons.devices_other, size: 20, color: AppColors.textSub),
+      leading: Icon(Icons.devices_other, size: 20, color: context.palette.textSub),
       title: Text('${d['name']}', style: const TextStyle(fontSize: 14)),
       subtitle: Text('${d['brand']} • $categoryLabel', style: const TextStyle(fontSize: 11)),
       onTap: () => _setCategory(d),
@@ -524,7 +524,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   Future<void> _moveDevice(Map<String, dynamic> device, int? currentZoneId) async {
     final chosen = await showModalBottomSheet<Object?>(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: context.palette.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -576,7 +576,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     final current = device['category'] as String?;
     final chosen = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: context.palette.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -649,7 +649,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
+        backgroundColor: context.palette.surface,
         title: Text('Xóa khu "${z.name}"?'),
         content: Text(
           deviceCount == 0
@@ -680,7 +680,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     return showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
+        backgroundColor: context.palette.surface,
         title: Text(title),
         content: TextField(
           controller: ctrl,
@@ -709,8 +709,8 @@ class _SectionLabel extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 8),
         child: Text(
           text.toUpperCase(),
-          style: const TextStyle(
-            color: AppColors.textSub,
+          style: TextStyle(
+            color: context.palette.textSub,
             fontSize: 11,
             letterSpacing: 1.1,
             fontWeight: FontWeight.bold,
@@ -732,13 +732,13 @@ class _EmptyView extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 56, color: AppColors.textSub),
+              Icon(icon, size: 56, color: context.palette.textSub),
               const SizedBox(height: 16),
               Text(title, style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
               Text(subtitle,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: AppColors.textSub, fontSize: 13)),
+                  style: TextStyle(color: context.palette.textSub, fontSize: 13)),
             ],
           ),
         ),
@@ -757,7 +757,7 @@ class _ErrorView extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.cloud_off, size: 56, color: AppColors.textSub),
+              Icon(Icons.cloud_off, size: 56, color: context.palette.textSub),
               const SizedBox(height: 16),
               Text(message, textAlign: TextAlign.center),
               const SizedBox(height: 20),

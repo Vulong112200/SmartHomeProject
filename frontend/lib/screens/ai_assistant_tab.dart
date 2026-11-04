@@ -232,13 +232,13 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Expanded( // <--- BỌC EXPANDED Ở ĐÂY
+              Expanded( // <--- BỌC EXPANDED Ở ĐÂY
                 child: Row(
                   children: [
-                    Icon(Icons.auto_awesome, color: AppColors.primary),
-                    SizedBox(width: 8),
+                    Icon(Icons.auto_awesome, color: context.palette.primary),
+                    const SizedBox(width: 8),
                     // Thêm Flexible và TextOverflow để chống tràn chữ
-                    Flexible(
+                    const Flexible(
                       child: Text(
                         "Trợ lý Smart Home", 
                         style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -255,13 +255,13 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: wsState.isConnected ? AppColors.success.withValues(alpha: 0.1) : Colors.redAccent.withValues(alpha: 0.1),
+                    color: wsState.isConnected ? context.palette.success.withValues(alpha: 0.1) : Colors.redAccent.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: wsState.isConnected ? AppColors.success : Colors.redAccent),
+                    border: Border.all(color: wsState.isConnected ? context.palette.success : Colors.redAccent),
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.circle, size: 8, color: wsState.isConnected ? AppColors.success : Colors.redAccent),
+                      Icon(Icons.circle, size: 8, color: wsState.isConnected ? context.palette.success : Colors.redAccent),
                       const SizedBox(width: 6),
                       Text(wsState.isConnected ? "Live" : "Mất kết nối", style: const TextStyle(fontSize: 12)),
                     ],
@@ -290,8 +290,8 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: AppColors.surface,
-            border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.05))),
+            color: context.palette.surface,
+            border: Border(top: BorderSide(color: context.palette.outline)),
           ),
           child: SafeArea(
             child: Row(
@@ -303,22 +303,22 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: _isListening ? AppColors.success.withValues(alpha: 0.2) : AppColors.cardLight,
-                      border: Border.all(color: _isListening ? AppColors.success : Colors.transparent),
+                      color: _isListening ? context.palette.success.withValues(alpha: 0.2) : context.palette.cardLight,
+                      border: Border.all(color: _isListening ? context.palette.success : Colors.transparent),
                     ),
-                    child: Icon(_isListening ? Icons.stop : Icons.mic_none, color: _isListening ? AppColors.success : AppColors.textMain),
-                  ).animate(target: _isListening ? 1 : 0).shimmer(duration: 1.seconds, color: AppColors.success),
+                    child: Icon(_isListening ? Icons.stop : Icons.mic_none, color: _isListening ? context.palette.success : context.palette.textMain),
+                  ).animate(target: _isListening ? 1 : 0).shimmer(duration: 1.seconds, color: context.palette.success),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
                     controller: _commandController,
-                    style: const TextStyle(color: AppColors.textMain),
+                    style: TextStyle(color: context.palette.textMain),
                     decoration: InputDecoration(
                       hintText: _isListening ? "Đang nghe..." : "Nhập lệnh hoặc đọc...",
-                      hintStyle: const TextStyle(color: AppColors.textSub),
+                      hintStyle: TextStyle(color: context.palette.textSub),
                       filled: true,
-                      fillColor: AppColors.card,
+                      fillColor: context.palette.card,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(30), borderSide: BorderSide.none),
                     ),
@@ -327,7 +327,7 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
                 ),
                 const SizedBox(width: 8),
                 IconButton(
-                  icon: const Icon(Icons.send_rounded, color: AppColors.primary),
+                  icon: Icon(Icons.send_rounded, color: context.palette.primary),
                   onPressed: _sendCommand,
                 ),
               ],

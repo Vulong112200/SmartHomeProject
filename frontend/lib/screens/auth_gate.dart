@@ -134,15 +134,15 @@ class _LoadingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: AppColors.background,
+    return Scaffold(
+      backgroundColor: context.palette.background,
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.home_rounded, size: 56, color: AppColors.primary),
-            SizedBox(height: 20),
-            SizedBox(
+            Icon(Icons.home_rounded, size: 56, color: context.palette.primary),
+            const SizedBox(height: 20),
+            const SizedBox(
               height: 24,
               width: 24,
               child: CircularProgressIndicator(strokeWidth: 2),

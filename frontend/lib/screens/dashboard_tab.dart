@@ -96,7 +96,7 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
     };
     return PopupMenuButton<String>(
       tooltip: 'Tài khoản',
-      color: AppColors.surface,
+      color: context.palette.surface,
       onSelected: (v) {
         if (v == 'signout') widget.onSignOut?.call();
         if (v == 'admin') {
@@ -112,11 +112,11 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(p.email.isEmpty ? 'Chưa đăng nhập' : p.email,
-                  style: const TextStyle(color: AppColors.textMain, fontSize: 13)),
+                  style: TextStyle(color: context.palette.textMain, fontSize: 13)),
               const SizedBox(height: 2),
               Text(
                 p.scopeLabel,
-                style: const TextStyle(color: AppColors.textSub, fontSize: 12),
+                style: TextStyle(color: context.palette.textSub, fontSize: 12),
               ),
             ],
           ),
@@ -128,25 +128,25 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
         // chia phòng TRƯỚC, rồi mới bật xác thực — ngược lại thì không có
         // khu nào để cấp cho trẻ em lúc duyệt.
         if (p.canAdmin)
-          const PopupMenuItem<String>(
+          PopupMenuItem<String>(
             value: 'admin',
             child: Row(
               children: [
-                Icon(Icons.admin_panel_settings_outlined, size: 18, color: AppColors.textSub),
-                SizedBox(width: 10),
-                Text('Quản trị nhà', style: TextStyle(color: AppColors.textMain)),
+                Icon(Icons.admin_panel_settings_outlined, size: 18, color: context.palette.textSub),
+                const SizedBox(width: 10),
+                Text('Quản trị nhà', style: TextStyle(color: context.palette.textMain)),
               ],
             ),
           ),
         // Đăng xuất chỉ có nghĩa khi thật sự có đăng nhập.
         if (widget.onSignOut != null)
-          const PopupMenuItem<String>(
+          PopupMenuItem<String>(
             value: 'signout',
             child: Row(
               children: [
-                Icon(Icons.logout, size: 18, color: AppColors.textSub),
-                SizedBox(width: 10),
-                Text('Đăng xuất', style: TextStyle(color: AppColors.textMain)),
+                Icon(Icons.logout, size: 18, color: context.palette.textSub),
+                const SizedBox(width: 10),
+                Text('Đăng xuất', style: TextStyle(color: context.palette.textMain)),
               ],
             ),
           ),
@@ -154,7 +154,7 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
       child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: AppColors.surface,
+          color: context.palette.surface,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Row(
@@ -162,10 +162,10 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
           children: [
             Text(
               roleLabel[p.role] ?? 'Tài khoản',
-              style: const TextStyle(color: AppColors.textMain, fontSize: 13),
+              style: TextStyle(color: context.palette.textMain, fontSize: 13),
             ),
             const SizedBox(width: 4),
-            const Icon(Icons.expand_more, size: 16, color: AppColors.textSub),
+            Icon(Icons.expand_more, size: 16, color: context.palette.textSub),
           ],
         ),
       ),
@@ -295,12 +295,12 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const CircularProgressIndicator(color: AppColors.primary),
+                    CircularProgressIndicator(color: context.palette.primary),
                     if (isWaking) ...[
                       const SizedBox(height: 16),
-                      const Text(
+                      Text(
                         "Đang đánh thức máy chủ...",
-                        style: TextStyle(color: AppColors.textSub, fontSize: 13),
+                        style: TextStyle(color: context.palette.textSub, fontSize: 13),
                       ),
                     ],
                   ],
@@ -309,8 +309,8 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
             // 4. KÉO ĐỂ REFRESH (Pull to Refresh)
             : RefreshIndicator(
               onRefresh: fetchDevices,
-              color: AppColors.primary,
-              backgroundColor: AppColors.surface,
+              color: context.palette.primary,
+              backgroundColor: context.palette.surface,
               child: CustomScrollView(
                 physics: const AlwaysScrollableScrollPhysics(), // Ép cho phép cuộn để Refresh kể cả khi danh sách ngắn
                 slivers: [
@@ -327,12 +327,12 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Text("Welcome Home,", style: TextStyle(color: AppColors.textSub, fontSize: 14)),
+                                    Text("Welcome Home,", style: TextStyle(color: context.palette.textSub, fontSize: 14)),
                                     Text(
                                       _greetingName,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(color: AppColors.textMain, fontSize: 28, fontWeight: FontWeight.bold),
+                                      style: TextStyle(color: context.palette.textMain, fontSize: 28, fontWeight: FontWeight.bold),
                                     ),
                                   ],
                                 ),
@@ -344,9 +344,9 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                           Container(
                             padding: const EdgeInsets.all(20),
                             decoration: BoxDecoration(
-                              gradient: AppColors.primaryGradient,
+                              gradient: context.palette.primaryGradient,
                               borderRadius: BorderRadius.circular(24),
-                              boxShadow: [BoxShadow(color: AppColors.primary.withValues(alpha: 0.3), blurRadius: 20, offset: const Offset(0, 8))],
+                              boxShadow: [BoxShadow(color: context.palette.primary.withValues(alpha: 0.3), blurRadius: 20, offset: const Offset(0, 8))],
                             ),
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -363,19 +363,19 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                   ),
 
                   if (devices.isEmpty && !isLoading)
-                    const SliverFillRemaining(
-                      child: Center(child: Text("Không có dữ liệu thiết bị", style: TextStyle(color: AppColors.textSub))),
+                    SliverFillRemaining(
+                      child: Center(child: Text("Không có dữ liệu thiết bị", style: TextStyle(color: context.palette.textSub))),
                     )
                   else ...[
                     if (devices.length > 1)
-                      const SliverToBoxAdapter(
+                      SliverToBoxAdapter(
                         child: Padding(
-                          padding: EdgeInsets.only(left: 24, right: 24, bottom: 4),
+                          padding: const EdgeInsets.only(left: 24, right: 24, bottom: 4),
                           child: Row(
                             children: [
-                              Icon(Icons.drag_indicator, size: 14, color: AppColors.textSub),
-                              SizedBox(width: 4),
-                              Text("Kéo biểu tượng ⋮⋮ bên phải thẻ để sắp xếp", style: TextStyle(color: AppColors.textSub, fontSize: 11)),
+                              Icon(Icons.drag_indicator, size: 14, color: context.palette.textSub),
+                              const SizedBox(width: 4),
+                              Text("Kéo biểu tượng ⋮⋮ bên phải thẻ để sắp xếp", style: TextStyle(color: context.palette.textSub, fontSize: 11)),
                             ],
                           ),
                         ),
@@ -409,9 +409,9 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
                             onStatusChanged: (isOn) => _onDeviceStatusChanged(device, isOn),
                             dragHandle: ReorderableDragStartListener(
                               index: index,
-                              child: const Padding(
-                                padding: EdgeInsets.all(4),
-                                child: Icon(Icons.drag_indicator, color: AppColors.textSub, size: 22),
+                              child: Padding(
+                                padding: const EdgeInsets.all(4),
+                                child: Icon(Icons.drag_indicator, color: context.palette.textSub, size: 22),
                               ),
                             ),
                           ),
@@ -646,7 +646,7 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
       final ok = await DeviceApi.sendMode(_brand, _id, modeValue);
       if (!mounted) return;
       if (ok) {
-        _snack('Đã chọn: $label', AppColors.primary);
+        _snack('Đã chọn: $label', context.palette.primary);
         _refreshAfterCommand(); // reconcile trạng thái thật (có lặp lại vài nhịp)
       } else {
         setState(() {
@@ -678,10 +678,10 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
         style: TextStyle(
           fontSize: 12,
           fontWeight: FontWeight.w600,
-          color: selected ? Colors.white : (enabled ? AppColors.textMain : AppColors.textSub),
+          color: selected ? Colors.white : (enabled ? context.palette.textMain : context.palette.textSub),
         ),
       ),
-      backgroundColor: selected ? glowColor : AppColors.surface,
+      backgroundColor: selected ? glowColor : context.palette.surface,
       side: BorderSide(color: glowColor.withValues(alpha: selected ? 0.9 : 0.3), width: 1),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       onPressed: enabled ? () => _sendMode(label, modeValue) : null,
@@ -691,8 +691,8 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   Widget _buildShortcutButton(String type, String label, String iconRes, Color glowColor) {
     return ActionChip(
       avatar: Icon(Icons.add_to_home_screen, size: 16, color: glowColor),
-      label: const Text('Tạo icon xử lý nhanh', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textMain)),
-      backgroundColor: AppColors.surface,
+      label: Text('Tạo icon xử lý nhanh', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: context.palette.textMain)),
+      backgroundColor: context.palette.surface,
       side: BorderSide(color: glowColor.withValues(alpha: 0.4), width: 1),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       onPressed: () => _createShortcut(type, label, iconRes),
@@ -706,13 +706,13 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
         ? '${_status!['status']}'.toUpperCase() == 'ON'
         : (widget.device['is_active'] == true);
 
-    Color glowColor = AppColors.primary;
+    Color glowColor = context.palette.primary;
     IconData icon = Icons.device_hub;
 
-    if (_isAirPurifier) { glowColor = AppColors.cyan; icon = Icons.air; }
-    if (_isFeeder) { glowColor = AppColors.purple; icon = Icons.pets; }
-    if (_isCurtain) { glowColor = AppColors.success; icon = Icons.blinds; }
-    if (_isSwitch) { glowColor = AppColors.cyan; icon = Icons.water_drop; }
+    if (_isAirPurifier) { glowColor = context.palette.cyan; icon = Icons.air; }
+    if (_isFeeder) { glowColor = context.palette.purple; icon = Icons.pets; }
+    if (_isCurtain) { glowColor = context.palette.success; icon = Icons.blinds; }
+    if (_isSwitch) { glowColor = context.palette.cyan; icon = Icons.water_drop; }
 
     // ----- Trạng thái cửa (để đổi icon/nhãn + tô sáng nút đang hoạt động) -----
     final String doorState = '${_status?['door_state'] ?? 'unknown'}'.toLowerCase();
@@ -775,9 +775,9 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
       duration: const Duration(milliseconds: 300),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: AppColors.card,
+        color: context.palette.card,
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: isActive ? glowColor.withValues(alpha: 0.5) : Colors.white10, width: 1.5),
+        border: Border.all(color: isActive ? glowColor.withValues(alpha: 0.5) : context.palette.outline, width: 1.5),
         boxShadow: isActive ? [BoxShadow(color: glowColor.withValues(alpha: 0.15), blurRadius: 20, spreadRadius: 2)] : [],
       ),
       child: Column(
@@ -787,18 +787,18 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
             children: [
               Container(
                 padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(color: isActive ? glowColor.withValues(alpha: 0.2) : AppColors.surface, shape: BoxShape.circle),
-                child: Icon(icon, color: isActive ? glowColor : AppColors.textSub, size: 24),
+                decoration: BoxDecoration(color: isActive ? glowColor.withValues(alpha: 0.2) : context.palette.surface, shape: BoxShape.circle),
+                child: Icon(icon, color: isActive ? glowColor : context.palette.textSub, size: 24),
               ),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(_name, style: const TextStyle(color: AppColors.textMain, fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text(_name, style: TextStyle(color: context.palette.textMain, fontWeight: FontWeight.bold, fontSize: 16)),
                     Text(
                       statusLabel ?? widget.device['brand'].toString().toUpperCase(),
-                      style: TextStyle(color: statusLabel != null ? glowColor : AppColors.textSub, fontSize: 12),
+                      style: TextStyle(color: statusLabel != null ? glowColor : context.palette.textSub, fontSize: 12),
                     ),
                   ],
                 ),

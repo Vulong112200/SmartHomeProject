@@ -95,7 +95,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: context.palette.background,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -108,7 +108,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Icon(Icons.home_rounded, size: 64, color: AppColors.primary),
+                    Icon(Icons.home_rounded, size: 64, color: context.palette.primary),
                     const SizedBox(height: 16),
                     Text(
                       'Nhà thông minh',
@@ -232,7 +232,7 @@ class _Banner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = isError ? Colors.redAccent : AppColors.primary;
+    final color = isError ? Colors.redAccent : context.palette.primary;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(

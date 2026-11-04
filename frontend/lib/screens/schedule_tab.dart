@@ -136,7 +136,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(msg),
-      backgroundColor: error ? Colors.redAccent : AppColors.primary,
+      backgroundColor: error ? Colors.redAccent : context.palette.primary,
       duration: const Duration(seconds: 2),
     ));
   }
@@ -154,11 +154,11 @@ class _ScheduleTabState extends State<ScheduleTab> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        title: const Text('Xóa lịch?', style: TextStyle(color: AppColors.textMain)),
+        backgroundColor: context.palette.card,
+        title: Text('Xóa lịch?', style: TextStyle(color: context.palette.textMain)),
         content: Text(
           'Xóa lịch "${s.name.isNotEmpty ? s.name : '${s.time} • ${_actionLabel(s, _typeOf(s))}'}"?',
-          style: const TextStyle(color: AppColors.textSub),
+          style: TextStyle(color: context.palette.textSub),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
@@ -193,7 +193,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
     final saved = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: AppColors.surface,
+      backgroundColor: context.palette.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -212,20 +212,20 @@ class _ScheduleTabState extends State<ScheduleTab> {
         backgroundColor: Colors.transparent,
         floatingActionButton: FloatingActionButton(
           onPressed: () => _openForm(),
-          backgroundColor: AppColors.primary,
+          backgroundColor: context.palette.primary,
           child: const Icon(Icons.add, color: Colors.white),
         ),
         body: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(24, 16, 24, 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
               child: Row(
                 children: [
-                  Icon(Icons.schedule, color: AppColors.primary),
-                  SizedBox(width: 8),
+                  Icon(Icons.schedule, color: context.palette.primary),
+                  const SizedBox(width: 8),
                   Text('Hẹn giờ thiết bị',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.textMain)),
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: context.palette.textMain)),
                 ],
               ),
             ),
@@ -239,20 +239,20 @@ class _ScheduleTabState extends State<ScheduleTab> {
               ),
             Expanded(
               child: _loading
-                  ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+                  ? Center(child: CircularProgressIndicator(color: context.palette.primary))
                   : RefreshIndicator(
                       onRefresh: _load,
-                      color: AppColors.primary,
-                      backgroundColor: AppColors.surface,
+                      color: context.palette.primary,
+                      backgroundColor: context.palette.surface,
                       child: _schedules.isEmpty
                           ? ListView(
                               physics: const AlwaysScrollableScrollPhysics(),
-                              children: const [
-                                SizedBox(height: 120),
+                              children: [
+                                const SizedBox(height: 120),
                                 Center(
                                   child: Text('Chưa có lịch nào.\nBấm ＋ để tạo lịch hẹn giờ đầu tiên.',
                                       textAlign: TextAlign.center,
-                                      style: TextStyle(color: AppColors.textSub)),
+                                      style: TextStyle(color: context.palette.textSub)),
                                 ),
                               ],
                             )
@@ -281,7 +281,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
     final deviceName = '${device?['name'] ?? s.deviceId}';
     final type = deviceTypeOf(deviceName, category: device?['category'] as String?);
     final enabled = s.enabled;
-    final color = enabled ? AppColors.primary : AppColors.textSub;
+    final color = enabled ? context.palette.primary : context.palette.textSub;
     // Khoảng qua đêm (end < start): đánh dấu giờ kết thúc thuộc hôm sau.
     final overnight = s.isRange && s.endTime!.compareTo(s.time) < 0;
     final timeText = s.isRange ? '${s.time} → ${s.endTime}${overnight ? '⁺¹' : ''}' : s.time;
@@ -290,9 +290,9 @@ class _ScheduleTabState extends State<ScheduleTab> {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppColors.card,
+        color: context.palette.card,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: enabled ? AppColors.primary.withValues(alpha: 0.35) : Colors.white10),
+        border: Border.all(color: enabled ? context.palette.primary.withValues(alpha: 0.35) : context.palette.outline),
       ),
       child: InkWell(
         onTap: () => _openForm(edit: s),
@@ -305,7 +305,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
                 Text(timeText,
                     style: TextStyle(
                         fontSize: s.isRange ? 18 : 26, fontWeight: FontWeight.bold,
-                        color: enabled ? AppColors.textMain : AppColors.textSub)),
+                        color: enabled ? context.palette.textMain : context.palette.textSub)),
                 Row(
                   children: [
                     Text(_daysLabel(s.days), style: TextStyle(fontSize: 11, color: color)),
@@ -315,7 +315,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                           decoration: BoxDecoration(
-                            color: AppColors.primary.withValues(alpha: 0.15),
+                            color: context.palette.primary.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text('1 lần', style: TextStyle(fontSize: 9, color: color)),
@@ -333,13 +333,13 @@ class _ScheduleTabState extends State<ScheduleTab> {
                 children: [
                   Text(
                     s.name.isNotEmpty ? s.name : _actionSummary(s, type),
-                    style: const TextStyle(color: AppColors.textMain, fontWeight: FontWeight.w600),
+                    style: TextStyle(color: context.palette.textMain, fontWeight: FontWeight.w600),
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 2),
                   Text(
                     '${_actionSummary(s, type)} • $deviceName',
-                    style: const TextStyle(color: AppColors.textSub, fontSize: 12),
+                    style: TextStyle(color: context.palette.textSub, fontSize: 12),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ],
@@ -347,11 +347,11 @@ class _ScheduleTabState extends State<ScheduleTab> {
             ),
             Switch.adaptive(
               value: enabled,
-              activeTrackColor: AppColors.primary,
+              activeTrackColor: context.palette.primary,
               onChanged: (v) => _toggleEnabled(s, v),
             ),
             IconButton(
-              icon: const Icon(Icons.delete_outline, color: AppColors.textSub, size: 20),
+              icon: Icon(Icons.delete_outline, color: context.palette.textSub, size: 20),
               onPressed: () => _delete(s),
             ),
           ],
@@ -507,17 +507,17 @@ class _ScheduleFormState extends State<_ScheduleForm> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           decoration: BoxDecoration(
-            color: AppColors.card,
+            color: context.palette.card,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.white10),
+            border: Border.all(color: context.palette.outline),
           ),
           child: Row(
             children: [
-              const Icon(Icons.access_time, color: AppColors.primary, size: 20),
+              Icon(Icons.access_time, color: context.palette.primary, size: 20),
               const SizedBox(width: 12),
               Text(value,
-                  style: const TextStyle(
-                      fontSize: 20, fontWeight: FontWeight.bold, color: AppColors.textMain)),
+                  style: TextStyle(
+                      fontSize: 20, fontWeight: FontWeight.bold, color: context.palette.textMain)),
             ],
           ),
         ),
@@ -533,10 +533,10 @@ class _ScheduleFormState extends State<_ScheduleForm> {
               label: Text(a.label,
                   style: TextStyle(
                       fontSize: 12,
-                      color: selectedKey == a.key ? Colors.white : AppColors.textMain)),
+                      color: selectedKey == a.key ? Colors.white : context.palette.textMain)),
               selected: selectedKey == a.key,
-              selectedColor: AppColors.primary,
-              backgroundColor: AppColors.card,
+              selectedColor: context.palette.primary,
+              backgroundColor: context.palette.card,
               onSelected: (_) => onSelect(a.key),
             ),
         ],
@@ -561,17 +561,17 @@ class _ScheduleFormState extends State<_ScheduleForm> {
           children: [
             Text(
               widget.edit == null ? 'Tạo lịch hẹn giờ' : 'Sửa lịch hẹn giờ',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.textMain),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: context.palette.textMain),
             ),
             const SizedBox(height: 20),
 
             // ---- Thiết bị ----
-            const Text('Thiết bị', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+            Text('Thiết bị', style: TextStyle(color: context.palette.textSub, fontSize: 12)),
             const SizedBox(height: 6),
             DropdownButtonFormField<String>(
               initialValue: _deviceId,
-              dropdownColor: AppColors.card,
-              style: const TextStyle(color: AppColors.textMain),
+              dropdownColor: context.palette.card,
+              style: TextStyle(color: context.palette.textMain),
               decoration: _inputDecoration(),
               items: [
                 for (final d in widget.devices)
@@ -590,7 +590,7 @@ class _ScheduleFormState extends State<_ScheduleForm> {
             const SizedBox(height: 16),
 
             // ---- Loại lịch: Một lần (1 mốc) / Khoảng (bắt đầu -> kết thúc) ----
-            const Text('Loại lịch', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+            Text('Loại lịch', style: TextStyle(color: context.palette.textSub, fontSize: 12)),
             const SizedBox(height: 6),
             SizedBox(
               width: double.infinity,
@@ -602,11 +602,11 @@ class _ScheduleFormState extends State<_ScheduleForm> {
                 selected: {_isRange},
                 onSelectionChanged: (v) => setState(() => _isRange = v.first),
                 style: SegmentedButton.styleFrom(
-                  backgroundColor: AppColors.card,
-                  foregroundColor: AppColors.textMain,
-                  selectedBackgroundColor: AppColors.primary,
+                  backgroundColor: context.palette.card,
+                  foregroundColor: context.palette.textMain,
+                  selectedBackgroundColor: context.palette.primary,
                   selectedForegroundColor: Colors.white,
-                  side: const BorderSide(color: Colors.white10),
+                  side: BorderSide(color: context.palette.outline),
                 ),
                 showSelectedIcon: false,
               ),
@@ -615,39 +615,39 @@ class _ScheduleFormState extends State<_ScheduleForm> {
 
             // ---- Hành động (bắt đầu) ----
             Text(_isRange ? 'Hành động bắt đầu' : 'Hành động',
-                style: const TextStyle(color: AppColors.textSub, fontSize: 12)),
+                style: TextStyle(color: context.palette.textSub, fontSize: 12)),
             const SizedBox(height: 6),
             _actionChips(_actionKey, (k) => setState(() => _actionKey = k)),
             const SizedBox(height: 16),
 
             // ---- Giờ (bắt đầu) ----
             Text(_isRange ? 'Giờ bắt đầu' : 'Giờ kích hoạt',
-                style: const TextStyle(color: AppColors.textSub, fontSize: 12)),
+                style: TextStyle(color: context.palette.textSub, fontSize: 12)),
             const SizedBox(height: 6),
             _timeTile(timeStr, _pickTime),
             const SizedBox(height: 16),
 
             // ---- Kết thúc (chỉ với lịch khoảng) ----
             if (_isRange) ...[
-              const Text('Giờ kết thúc', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+              Text('Giờ kết thúc', style: TextStyle(color: context.palette.textSub, fontSize: 12)),
               const SizedBox(height: 6),
               _timeTile(_fmt(_endTime), _pickEndTime),
               if (overnight)
-                const Padding(
-                  padding: EdgeInsets.only(top: 6),
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
                   child: Text('Kết thúc vào ngày hôm sau (lịch qua đêm).',
-                      style: TextStyle(color: AppColors.primary, fontSize: 11)),
+                      style: TextStyle(color: context.palette.primary, fontSize: 11)),
                 ),
               const SizedBox(height: 16),
-              const Text('Hành động kết thúc', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+              Text('Hành động kết thúc', style: TextStyle(color: context.palette.textSub, fontSize: 12)),
               const SizedBox(height: 6),
               _actionChips(_endActionKey, (k) => setState(() => _endActionKey = k)),
               const SizedBox(height: 16),
             ],
 
             // ---- Ngày lặp ----
-            const Text('Lặp lại (bỏ trống = mỗi ngày)',
-                style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+            Text('Lặp lại (bỏ trống = mỗi ngày)',
+                style: TextStyle(color: context.palette.textSub, fontSize: 12)),
             const SizedBox(height: 6),
             Wrap(
               spacing: 8,
@@ -658,10 +658,10 @@ class _ScheduleFormState extends State<_ScheduleForm> {
                     label: Text(_dayLabels[d],
                         style: TextStyle(
                             fontSize: 12,
-                            color: _days.contains(d) ? Colors.white : AppColors.textMain)),
+                            color: _days.contains(d) ? Colors.white : context.palette.textMain)),
                     selected: _days.contains(d),
-                    selectedColor: AppColors.primary,
-                    backgroundColor: AppColors.card,
+                    selectedColor: context.palette.primary,
+                    backgroundColor: context.palette.card,
                     showCheckmark: false,
                     onSelected: (v) =>
                         setState(() => v ? _days.add(d) : _days.remove(d)),
@@ -671,11 +671,11 @@ class _ScheduleFormState extends State<_ScheduleForm> {
             const SizedBox(height: 16),
 
             // ---- Tên (tùy chọn) ----
-            const Text('Tên lịch (tùy chọn)', style: TextStyle(color: AppColors.textSub, fontSize: 12)),
+            Text('Tên lịch (tùy chọn)', style: TextStyle(color: context.palette.textSub, fontSize: 12)),
             const SizedBox(height: 6),
             TextField(
               controller: _nameCtrl,
-              style: const TextStyle(color: AppColors.textMain),
+              style: TextStyle(color: context.palette.textMain),
               decoration: _inputDecoration(hint: 'VD: Bật lọc mạnh buổi sáng'),
             ),
             const SizedBox(height: 24),
@@ -686,7 +686,7 @@ class _ScheduleFormState extends State<_ScheduleForm> {
               child: FilledButton(
                 onPressed: _saving ? null : _save,
                 style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.primary,
+                  backgroundColor: context.palette.primary,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
@@ -706,9 +706,9 @@ class _ScheduleFormState extends State<_ScheduleForm> {
 
   InputDecoration _inputDecoration({String? hint}) => InputDecoration(
         hintText: hint,
-        hintStyle: const TextStyle(color: AppColors.textSub, fontSize: 13),
+        hintStyle: TextStyle(color: context.palette.textSub, fontSize: 13),
         filled: true,
-        fillColor: AppColors.card,
+        fillColor: context.palette.card,
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),

@@ -20,7 +20,7 @@ class ChatBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (!isUser) ...[
-            const CircleAvatar(backgroundColor: AppColors.cardLight, child: Icon(Icons.auto_awesome, color: AppColors.cyan, size: 18)),
+            CircleAvatar(backgroundColor: context.palette.cardLight, child: Icon(Icons.auto_awesome, color: context.palette.cyan, size: 18)),
             const SizedBox(width: 12),
           ],
           
@@ -28,8 +28,8 @@ class ChatBubble extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                gradient: isUser ? AppColors.primaryGradient : null,
-                color: isUser ? null : AppColors.card,
+                gradient: isUser ? context.palette.primaryGradient : null,
+                color: isUser ? null : context.palette.card,
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(20),
                   topRight: const Radius.circular(20),
@@ -40,22 +40,22 @@ class ChatBubble extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(message['text'], style: TextStyle(color: isUser ? Colors.white : AppColors.textMain, fontSize: 15, height: 1.4)),
+                  Text(message['text'], style: TextStyle(color: isUser ? Colors.white : context.palette.textMain, fontSize: 15, height: 1.4)),
                   
                   // BOX THỂ HIỆN HÀNH ĐỘNG CỦA AI ĐÃ THỰC THI (PARSED JSON)
                   if (!isUser && actions.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     Container(
                       padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: AppColors.background, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white10)),
+                      decoration: BoxDecoration(color: context.palette.background, borderRadius: BorderRadius.circular(12), border: Border.all(color: context.palette.outline)),
                       child: Column(
                         children: actions.map((act) => Padding(
                           padding: const EdgeInsets.only(bottom: 8),
                           child: Row(
                             children: [
-                              Icon(act['success'] ? Icons.check_circle : Icons.error, color: act['success'] ? AppColors.success : Colors.redAccent, size: 16),
+                              Icon(act['success'] ? Icons.check_circle : Icons.error, color: act['success'] ? context.palette.success : Colors.redAccent, size: 16),
                               const SizedBox(width: 8),
-                              Expanded(child: Text("${act['device_name']} ➔ ${act['action']}", style: const TextStyle(fontSize: 13, color: AppColors.textSub))),
+                              Expanded(child: Text("${act['device_name']} ➔ ${act['action']}", style: TextStyle(fontSize: 13, color: context.palette.textSub))),
                             ],
                           ),
                         )).toList(),
@@ -79,9 +79,9 @@ class TypingIndicator extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 24, left: 40),
-      child: const Text("AI đang xử lý...", style: TextStyle(color: AppColors.textSub, fontStyle: FontStyle.italic))
+      child: Text("AI đang xử lý...", style: TextStyle(color: context.palette.textSub, fontStyle: FontStyle.italic))
           .animate(onPlay: (controller) => controller.repeat())
-          .shimmer(duration: 1.seconds, color: AppColors.cyan),
+          .shimmer(duration: 1.seconds, color: context.palette.cyan),
     );
   }
 }
