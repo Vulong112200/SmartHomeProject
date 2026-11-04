@@ -456,7 +456,7 @@ def test_thieu_secret_thi_xac_thuc_tu_tat(monkeypatch):
     monkeypatch.delenv("AUTH_DISABLED", raising=False)
     monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
     assert auth.auth_disabled() is True
-    assert auth.auth_status() == (False, "thiếu SUPABASE_JWT_SECRET")
+    assert auth.auth_status() == (False, "thiếu SUPABASE_URL / SUPABASE_JWT_SECRET")
 
 
 def test_co_secret_thi_xac_thuc_tu_bat(monkeypatch):

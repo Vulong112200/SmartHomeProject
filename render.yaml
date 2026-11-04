@@ -41,6 +41,11 @@ services:
       # chu nha). Dat vao -> xac thuc tu BAT. Khong can AUTH_DISABLED.
       # Chi dat SUPABASE_JWT_SECRET SAU KHI app da co dang nhap va da cai len
       # het dien thoai trong nha, neu khong ca nha bi 401.
+      # Project Supabase moi ky token bang ES256 (JWT Signing Keys) -> backend
+      # verify qua JWKS cua SUPABASE_URL. SUPABASE_JWT_SECRET chi can cho project
+      # cu (HS256). Dat 1 trong 2 la xac thuc TU BAT.
+      - key: SUPABASE_URL
+        sync: false
       - key: SUPABASE_JWT_SECRET
         sync: false
       - key: ADMIN_EMAILS

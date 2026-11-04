@@ -1,6 +1,13 @@
 # backend/app/core/auth.py
 """
-Xác thực người dùng qua JWT của Supabase (HS256, legacy JWT secret).
+Xác thực người dùng qua JWT của Supabase.
+
+Hai kiểu ký token, chọn theo `alg` trong header của token:
+  - ES256 / RS256 (JWT Signing Keys — mặc định của project Supabase MỚI): verify
+    bằng khóa công khai lấy từ JWKS `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`.
+    Cần SUPABASE_URL. Không cần secret nào.
+  - HS256 (legacy JWT secret — project cũ): verify bằng SUPABASE_JWT_SECRET.
+Project của nhà dùng ES256: chỉ verify HS256 thì đăng nhập xong mọi request 401.
 
 File này CỐ TÌNH sạch model và sạch DB: nó chỉ verify token và trích
 user_id/email. Mọi thứ liên quan tới vai/khu vực/quyền nằm ở core/household.py.
@@ -61,7 +68,16 @@ def auth_disabled() -> bool:
     raw = os.getenv("AUTH_DISABLED")
     if raw is not None and raw.strip() != "":
         return raw.strip().lower() in ("1", "true", "yes")
-    return not os.getenv("SUPABASE_JWT_SECRET", "").strip()
+    return not _can_verify_supabase()
+
+
+def _supabase_url() -> str:
+    return os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+
+
+def _can_verify_supabase() -> bool:
+    """Có cách verify token Supabase nào không (JWKS qua SUPABASE_URL, hoặc secret HS256)."""
+    return bool(_supabase_url() or os.getenv("SUPABASE_JWT_SECRET", "").strip())
 
 
 def auth_status() -> tuple[bool, str]:
@@ -70,9 +86,11 @@ def auth_status() -> tuple[bool, str]:
     if raw is not None and raw.strip() != "":
         explicit = raw.strip().lower() in ("1", "true", "yes")
         return (not explicit, f"AUTH_DISABLED={raw.strip()} (đặt tường minh)")
+    if _supabase_url():
+        return (True, "có SUPABASE_URL (verify JWKS)")
     if os.getenv("SUPABASE_JWT_SECRET", "").strip():
-        return (True, "có SUPABASE_JWT_SECRET")
-    return (False, "thiếu SUPABASE_JWT_SECRET")
+        return (True, "có SUPABASE_JWT_SECRET (verify HS256)")
+    return (False, "thiếu SUPABASE_URL / SUPABASE_JWT_SECRET")
 
 
 # =========================================================
@@ -131,6 +149,50 @@ def _decode_app_token(token: str) -> dict | None:
         return None
 
 
+# =========================================================
+# Token Supabase
+# =========================================================
+_jwks_clients: dict[str, "jwt.PyJWKClient"] = {}
+
+
+def _jwks_client(url: str) -> "jwt.PyJWKClient":
+    """1 client/URL, cache khóa: chỉ tải JWKS lần đầu và khi gặp `kid` lạ (xoay khóa)."""
+    if url not in _jwks_clients:
+        _jwks_clients[url] = jwt.PyJWKClient(url, cache_keys=True, lifespan=3600, timeout=10)
+    return _jwks_clients[url]
+
+
+def _decode_supabase_token(token: str) -> dict:
+    """Verify access token Supabase theo `alg` của nó. Sai -> HTTP 401."""
+    try:
+        alg = jwt.get_unverified_header(token).get("alg")
+    except jwt.PyJWTError as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Token không hợp lệ: {e}")
+
+    try:
+        if alg in ("ES256", "RS256"):
+            base = _supabase_url()
+            if not base:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "Server chưa cấu hình SUPABASE_URL (cần để verify token ES256).",
+                )
+            key = _jwks_client(f"{base}/auth/v1/.well-known/jwks.json").get_signing_key_from_jwt(token).key
+            return jwt.decode(token, key, algorithms=[alg], audience="authenticated",
+                              issuer=f"{base}/auth/v1")
+        if alg == "HS256":
+            secret = os.getenv("SUPABASE_JWT_SECRET", "").strip()
+            if not secret:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "Server chưa cấu hình SUPABASE_JWT_SECRET (cần để verify token HS256).",
+                )
+            return jwt.decode(token, secret, algorithms=["HS256"], audience="authenticated")
+    except (jwt.PyJWTError, jwt.PyJWKClientError) as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Token không hợp lệ: {e}")
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Thuật toán token không hỗ trợ: {alg}")
+
+
 def get_current_user(
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> CurrentUser:
@@ -147,21 +209,7 @@ def get_current_user(
     payload = _decode_app_token(creds.credentials)
 
     if payload is None:
-        secret = os.getenv("SUPABASE_JWT_SECRET", "").strip()
-        if not secret:
-            raise HTTPException(
-                status.HTTP_500_INTERNAL_SERVER_ERROR,
-                "Server chưa cấu hình SUPABASE_JWT_SECRET.",
-            )
-        try:
-            payload = jwt.decode(
-                creds.credentials,
-                secret,
-                algorithms=["HS256"],
-                audience="authenticated",
-            )
-        except jwt.PyJWTError as e:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Token không hợp lệ: {e}")
+        payload = _decode_supabase_token(creds.credentials)
 
     user_id = payload.get("sub")
     if not user_id:

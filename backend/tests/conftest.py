@@ -17,6 +17,14 @@ from app.models.zone import MemberZoneAccessModel, ZoneModel
 # =========================================================
 # Fixture: app qua HTTP, chọn được người đăng nhập, mọi lệnh bị ghi lại
 # =========================================================
+@pytest.fixture(autouse=True)
+def _clean_auth_env(monkeypatch):
+    """Test không được phụ thuộc backend/.env của máy dev (app.main gọi load_dotenv
+    lúc import): xóa các biến xác thực, test nào cần thì tự đặt."""
+    for name in ("AUTH_DISABLED", "SUPABASE_URL", "SUPABASE_JWT_SECRET", "APP_TOKEN_SECRET", "ADMIN_EMAILS"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "0")
