@@ -103,6 +103,13 @@ _WANTED_COLUMNS = {
         # Đợt 2 — màu avatar ở màn Hồ sơ.
         "avatar_color": {"sqlite": "TEXT", "postgresql": "TEXT"},
     },
+    "zones": {
+        # Đợt 2 — khu dùng chung cả nhà.
+        "is_shared": {
+            "sqlite": "INTEGER NOT NULL DEFAULT 0",
+            "postgresql": "BOOLEAN NOT NULL DEFAULT FALSE",
+        },
+    },
 }
 
 # verify_schema kiểm đúng những cột mà code thật sự đọc/ghi.
@@ -115,8 +122,9 @@ _REQUIRED_SCHEMA = {
         "created_by",
     },
     "members": {"user_id", "email", "display_name", "role", "status", "avatar_color"},
-    "zones": {"id", "name", "sort_order"},
+    "zones": {"id", "name", "sort_order", "is_shared"},
     "member_zone_access": {"user_id", "zone_id"},
+    "scenes": {"id", "name", "icon", "sort_order", "actions", "created_by"},
 }
 
 
@@ -254,7 +262,7 @@ def init_db(bind=None) -> None:
     bind = bind if bind is not None else engine
 
     # import để models đăng ký vào Base.metadata trước khi create_all
-    from app.models import device, member, schedule, zone  # noqa: F401
+    from app.models import device, member, scene, schedule, zone  # noqa: F401
 
     Base.metadata.create_all(bind=bind)
     run_startup_migrations(bind)

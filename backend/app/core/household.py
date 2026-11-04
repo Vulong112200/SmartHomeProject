@@ -16,6 +16,9 @@ Ma trận quyền:
 | Thiết bị zone_id IS NULL (chưa phân khu) | ✅    | ✅    | ❌  | ❌            |
 | Tạo/sửa lịch cho thiết bị mình dùng được | ✅    | ✅    | ✅  | ❌            |
 | Sửa/xóa lịch NGƯỜI KHÁC tạo              | ✅    | ✅    | ❌  | ❌            |
+| Thiết bị trong khu DÙNG CHUNG (is_shared) | ✅   | ✅    | ✅  | ✅ (active)   |
+| Tạo/sửa/xóa kịch bản                     | ✅    | ✅    | ❌  | ❌            |
+| Chạy kịch bản (chỉ phần thiết bị mình dùng được) | ✅ | ✅ | ✅ | ✅       |
 | Thêm/xóa thiết bị, khu, thành viên       | ✅    | ❌    | ❌  | ❌            |
 
 Hai tính chất đáng chú ý:
@@ -25,6 +28,7 @@ Hai tính chất đáng chú ý:
      `device_query` / `require_device_access` / `require_owner`.
 """
 from fastapi import Depends, HTTPException, status
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -41,6 +45,8 @@ _ADMIN_ROLES = ("owner",)
 _CAN_SCHEDULE_ROLES = ("owner", "adult", "kid")
 # Vai được sửa/xóa lịch do NGƯỜI KHÁC tạo.
 _CAN_EDIT_OTHERS_SCHEDULE = ("owner", "adult")
+# Vai được tạo/sửa/xóa kịch bản (kịch bản là của cả nhà, nên không cho kid/guest).
+_CAN_EDIT_SCENES = ("owner", "adult")
 
 _PENDING_MESSAGE = "Đang chờ chủ nhà phê duyệt."
 _BLOCKED_MESSAGE = "Tài khoản đã bị chặn."
@@ -139,22 +145,27 @@ def sees_all_zones(member: MemberModel) -> bool:
     return member.role in ROLES_SEE_ALL_ZONES
 
 
+def _visible_zone_ids(member: MemberModel):
+    """
+    Subquery id các khu kid/guest được thấy: khu được CẤP hoặc khu DÙNG CHUNG.
+    Một chỗ duy nhất cho cả thiết bị, khu và lịch — thêm luật mới chỉ sửa ở đây.
+    """
+    granted = select(MemberZoneAccessModel.zone_id).where(MemberZoneAccessModel.user_id == member.user_id)
+    return select(ZoneModel.id).where(or_(ZoneModel.id.in_(granted), ZoneModel.is_shared.is_(True)))
+
+
 def device_query(db: Session, member: MemberModel):
     """
     Query các thiết bị mà `member` được phép thấy và điều khiển.
 
     owner/adult: tất cả, kể cả thiết bị chưa phân khu.
-    kid/guest:   INNER JOIN grant theo khu — thiết bị `zone_id IS NULL` tự động
-                 rơi ra ngoài, đúng ý "hộp thư đến chỉ chủ nhà thấy", không cần
-                 viết case đặc biệt nào.
+    kid/guest:   thiết bị thuộc khu được cấp hoặc khu dùng chung. Thiết bị
+                 `zone_id IS NULL` tự rơi ra ngoài (IN không bao giờ khớp NULL),
+                 đúng ý "hộp thư đến chỉ chủ nhà thấy", không cần case đặc biệt.
     """
     if sees_all_zones(member):
         return db.query(DeviceModel)
-    return (
-        db.query(DeviceModel)
-        .join(MemberZoneAccessModel, MemberZoneAccessModel.zone_id == DeviceModel.zone_id)
-        .filter(MemberZoneAccessModel.user_id == member.user_id)
-    )
+    return db.query(DeviceModel).filter(DeviceModel.zone_id.in_(_visible_zone_ids(member)))
 
 
 def require_device_access(db: Session, member: MemberModel, device_id: str) -> DeviceModel:
@@ -182,8 +193,7 @@ def accessible_zones(db: Session, member: MemberModel) -> list[ZoneModel]:
         return db.query(ZoneModel).order_by(ZoneModel.sort_order, ZoneModel.name).all()
     return (
         db.query(ZoneModel)
-        .join(MemberZoneAccessModel, MemberZoneAccessModel.zone_id == ZoneModel.id)
-        .filter(MemberZoneAccessModel.user_id == member.user_id)
+        .filter(ZoneModel.id.in_(_visible_zone_ids(member)))
         .order_by(ZoneModel.sort_order, ZoneModel.name)
         .all()
     )
@@ -204,8 +214,7 @@ def schedule_query(db: Session, member: MemberModel):
     return (
         db.query(ScheduleModel)
         .join(DeviceModel, DeviceModel.id == ScheduleModel.device_id)
-        .join(MemberZoneAccessModel, MemberZoneAccessModel.zone_id == DeviceModel.zone_id)
-        .filter(MemberZoneAccessModel.user_id == member.user_id)
+        .filter(DeviceModel.zone_id.in_(_visible_zone_ids(member)))
     )
 
 
@@ -245,6 +254,14 @@ def require_schedule_write(db: Session, member: MemberModel, schedule_id: int) -
     )
 
 
+def require_scene_write(member: MemberModel) -> None:
+    """Tạo/sửa/xóa kịch bản: chỉ owner/adult. Chạy thì ai cũng được (lọc theo thiết bị)."""
+    if member.role not in _CAN_EDIT_SCENES:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Chỉ chủ nhà hoặc người lớn mới tạo/sửa được kịch bản."
+        )
+
+
 # =========================================================
 # Serialize
 # =========================================================
@@ -258,6 +275,7 @@ def member_to_dict(member: MemberModel, zone_ids: list[int] | None = None) -> di
         "status": member.status,
         "can_admin": member.role in _ADMIN_ROLES,
         "can_schedule": member.role in _CAN_SCHEDULE_ROLES,
+        "can_edit_scenes": member.role in _CAN_EDIT_SCENES,
         "sees_all_zones": sees_all_zones(member),
     }
     if zone_ids is not None:

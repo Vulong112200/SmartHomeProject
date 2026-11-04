@@ -47,8 +47,29 @@ def api(tmp_path, monkeypatch):
     async def _fake_ai(text, devices):
         return ai_reply["actions"]
 
+    class _FakeConnector:
+        """Endpoint control/status gọi connector trực tiếp — cũng phải là giả."""
+        def __init__(self, brand):
+            self.brand = brand
+
+        async def turn_on(self, device_id):
+            sent.append((self.brand, device_id, "on", None))
+            return True
+
+        async def turn_off(self, device_id):
+            sent.append((self.brand, device_id, "off", None))
+            return True
+
+        async def set_mode(self, device_id, mode):
+            sent.append((self.brand, device_id, "mode", mode))
+            return True
+
+        async def get_device_state(self, device_id):
+            return {"device_id": device_id, "status": "OFF"}
+
     monkeypatch.setattr(main, "execute_schedule_action", _fake_execute)
     monkeypatch.setattr(main, "parse_command_with_ai", _fake_ai)
+    monkeypatch.setattr(main.device_manager, "get_connector", lambda brand: _FakeConnector(brand))
 
     state = {}
     main.app.dependency_overrides[get_db] = _db

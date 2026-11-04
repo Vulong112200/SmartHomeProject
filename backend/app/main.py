@@ -3,6 +3,7 @@
 import sys
 import os
 import asyncio
+import json
 import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -50,6 +51,7 @@ from app.core.household import (
     require_can_schedule,
     require_device_access,
     require_owner,
+    require_scene_write,
     require_schedule_write,
     schedule_query,
     zone_ids_of,
@@ -58,6 +60,7 @@ from app.models.member import ROLES, STATUSES, MemberModel
 from app.models.zone import MemberZoneAccessModel, ZoneModel
 from app.models.device import DEVICE_CATEGORIES, DeviceModel
 from app.models.schedule import ScheduleModel  # đăng ký bảng schedules với Base
+from app.models.scene import SceneModel
 
 import time
 from fastapi import Request
@@ -196,11 +199,17 @@ class DeviceUpdate(BaseModel):
 class ZoneCreate(BaseModel):
     name: str
     sort_order: int = 0
+    is_shared: bool = False
 
 
 class ZoneUpdate(BaseModel):
     name: str | None = None
     sort_order: int | None = None
+    is_shared: bool | None = None
+
+
+def _zone_to_dict(z: ZoneModel) -> dict:
+    return {"id": z.id, "name": z.name, "sort_order": z.sort_order, "is_shared": bool(z.is_shared)}
 
 
 class MeUpdate(BaseModel):
@@ -217,14 +226,15 @@ class MemberUpdate(BaseModel):
     zone_ids: list[int] | None = None
 
 
-def _device_to_dict(d: DeviceModel, zone_name: str | None = None) -> dict:
+def _device_to_dict(d: DeviceModel, zone: ZoneModel | None = None) -> dict:
     return {
         "id": d.id,
         "name": d.name,
         "brand": d.brand,
         "is_active": d.is_active,
         "zone_id": d.zone_id,
-        "zone_name": zone_name,
+        "zone_name": zone.name if zone else None,
+        "zone_shared": bool(zone.is_shared) if zone else False,
         "category": d.category,
     }
 
@@ -239,11 +249,11 @@ async def get_all_devices(
     rows = (
         device_query(db, member)
         .outerjoin(ZoneModel, ZoneModel.id == DeviceModel.zone_id)
-        .with_entities(DeviceModel, ZoneModel.name)
+        .with_entities(DeviceModel, ZoneModel)
         .order_by(ZoneModel.sort_order, DeviceModel.name)
         .all()
     )
-    return {"status": "success", "data": [_device_to_dict(d, zn) for d, zn in rows]}
+    return {"status": "success", "data": [_device_to_dict(d, z) for d, z in rows]}
 
 # =========================================================
 # API - Add & Delete Device (chỉ chủ nhà)
@@ -310,11 +320,10 @@ async def update_device(
     db.commit()
     db.refresh(device)
 
-    zone_name = None
+    zone = None
     if device.zone_id is not None:
         zone = db.query(ZoneModel).filter(ZoneModel.id == device.zone_id).first()
-        zone_name = zone.name if zone else None
-    return {"status": "success", "data": _device_to_dict(device, zone_name)}
+    return {"status": "success", "data": _device_to_dict(device, zone)}
 
 
 @app.delete("/api/devices/{device_id}")
@@ -877,6 +886,162 @@ async def run_schedule_now(
         return {"status": "error", "message": str(e)}
 
 # =========================================================
+# API - Kịch bản (1 nút chạy nhiều hành động)
+# =========================================================
+_MAX_SCENE_ACTIONS = 20
+
+
+class SceneAction(BaseModel):
+    device_id: str
+    action_type: str                  # on | off | mode
+    action_value: str | None = None
+
+
+class SceneBody(BaseModel):
+    name: str
+    icon: str | None = None
+    sort_order: int = 0
+    actions: list[SceneAction] = []
+
+
+class SceneUpdate(BaseModel):
+    name: str | None = None
+    icon: str | None = None
+    sort_order: int | None = None
+    actions: list[SceneAction] | None = None
+
+
+def _scene_to_dict(s: SceneModel) -> dict:
+    return {
+        "id": s.id, "name": s.name, "icon": s.icon, "sort_order": s.sort_order,
+        "actions": json.loads(s.actions or "[]"), "created_by": s.created_by,
+    }
+
+
+def _normalize_scene_actions(db: Session, member: MemberModel, actions: list[SceneAction]) -> str:
+    """Kiểm từng hành động (thiết bị tồn tại + mình dùng được + hợp lệ với loại) -> JSON đã chuẩn hóa."""
+    if not actions:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Kịch bản cần ít nhất 1 hành động.")
+    if len(actions) > _MAX_SCENE_ACTIONS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Tối đa {_MAX_SCENE_ACTIONS} hành động.")
+    out = []
+    for a in actions:
+        device = require_device_access(db, member, a.device_id)
+        try:
+            action_type, action_value = normalize_action(device, a.action_type, a.action_value)
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{device.name}: {e}")
+        out.append({"device_id": device.id, "action_type": action_type, "action_value": action_value})
+    return json.dumps(out, ensure_ascii=False)
+
+
+def _clean_scene_name(name: str | None) -> str:
+    name = (name or "").strip()
+    if not 1 <= len(name) <= 40:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Tên kịch bản phải từ 1 đến 40 ký tự.")
+    return name
+
+
+@app.get("/api/scenes")
+async def list_scenes(
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    # Kịch bản là của cả nhà: ai cũng thấy; chạy thì chỉ phần mình dùng được.
+    scenes = db.query(SceneModel).order_by(SceneModel.sort_order, SceneModel.id).all()
+    return {"status": "success", "data": [_scene_to_dict(s) for s in scenes]}
+
+
+@app.post("/api/scenes")
+async def create_scene(
+    body: SceneBody,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    require_scene_write(member)
+    scene = SceneModel(
+        name=_clean_scene_name(body.name), icon=body.icon, sort_order=body.sort_order,
+        actions=_normalize_scene_actions(db, member, body.actions), created_by=member.user_id,
+    )
+    db.add(scene)
+    db.commit()
+    db.refresh(scene)
+    logger.info(f"🎬 Đã tạo kịch bản #{scene.id}: {scene.name}")
+    return {"status": "success", "data": _scene_to_dict(scene)}
+
+
+def _get_scene(db: Session, scene_id: int) -> SceneModel:
+    scene = db.query(SceneModel).filter(SceneModel.id == scene_id).first()
+    if scene is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy kịch bản.")
+    return scene
+
+
+@app.patch("/api/scenes/{scene_id}")
+async def update_scene(
+    scene_id: int,
+    body: SceneUpdate,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    require_scene_write(member)
+    scene = _get_scene(db, scene_id)
+    fields = body.model_dump(exclude_unset=True)
+    if "name" in fields:
+        scene.name = _clean_scene_name(fields["name"])
+    if "icon" in fields:
+        scene.icon = fields["icon"]
+    if fields.get("sort_order") is not None:
+        scene.sort_order = fields["sort_order"]
+    if body.actions is not None:
+        scene.actions = _normalize_scene_actions(db, member, body.actions)
+    db.commit()
+    db.refresh(scene)
+    return {"status": "success", "data": _scene_to_dict(scene)}
+
+
+@app.delete("/api/scenes/{scene_id}")
+async def delete_scene(
+    scene_id: int,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    require_scene_write(member)
+    db.delete(_get_scene(db, scene_id))
+    db.commit()
+    return {"status": "success", "message": f"Đã xóa kịch bản #{scene_id}"}
+
+
+async def _run_scene(db: Session, member: MemberModel, scene: SceneModel) -> dict:
+    """
+    Chạy kịch bản TUẦN TỰ (không song song: 2 lệnh cùng connector Tuya chen nhau
+    thì interlock stop->open của cửa có thể lẫn với lệnh khác). Hành động trên
+    thiết bị ngoài khu của người chạy bị BỎ QUA và báo lại, không chạy thay.
+    """
+    devices_by_id = {d.id: d for d in device_query(db, member).all()}
+    results, skipped = [], 0
+    for a in json.loads(scene.actions or "[]"):
+        device = devices_by_id.get(a.get("device_id"))
+        if device is None:
+            skipped += 1
+            continue
+        results.append(await _execute_device_action(device, a.get("action_type"), a.get("action_value")))
+    return {"scene": scene.name, "results": results, "skipped": skipped}
+
+
+@app.post("/api/scenes/{scene_id}/run")
+async def run_scene(
+    scene_id: int,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    data = await _run_scene(db, member, _get_scene(db, scene_id))
+    logger.info(f"🎬 {member.user_id} chạy kịch bản #{scene_id}: "
+                f"{sum(r['success'] for r in data['results'])}/{len(data['results'])} ok, bỏ qua {data['skipped']}")
+    return {"status": "success", "data": data}
+
+
+# =========================================================
 # API - Tôi là ai (app gọi ngay sau đăng nhập để biết vào màn hình nào)
 # =========================================================
 @app.get("/api/me")
@@ -888,10 +1053,7 @@ async def whoami(
     Dùng get_member (KHÔNG chặn pending) — app phải đọc được trạng thái của
     chính mình để biết hiện màn hình chờ duyệt hay màn hình chính.
     """
-    zones = [
-        {"id": z.id, "name": z.name, "sort_order": z.sort_order}
-        for z in accessible_zones(db, member)
-    ]
+    zones = [_zone_to_dict(z) for z in accessible_zones(db, member)]
     return {
         "status": "success",
         "data": {
@@ -954,10 +1116,7 @@ async def list_zones(
     member: MemberModel = Depends(get_current_member),
 ):
     zones = accessible_zones(db, member)
-    return {
-        "status": "success",
-        "data": [{"id": z.id, "name": z.name, "sort_order": z.sort_order} for z in zones],
-    }
+    return {"status": "success", "data": [_zone_to_dict(z) for z in zones]}
 
 
 @app.post("/api/zones")
@@ -969,15 +1128,12 @@ async def create_zone(
     name = body.name.strip()
     if not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Tên khu vực không được để trống.")
-    zone = ZoneModel(name=name, sort_order=body.sort_order)
+    zone = ZoneModel(name=name, sort_order=body.sort_order, is_shared=body.is_shared)
     db.add(zone)
     db.commit()
     db.refresh(zone)
     logger.info(f"Đã tạo khu vực #{zone.id}: {zone.name}")
-    return {
-        "status": "success",
-        "data": {"id": zone.id, "name": zone.name, "sort_order": zone.sort_order},
-    }
+    return {"status": "success", "data": _zone_to_dict(zone)}
 
 
 @app.patch("/api/zones/{zone_id}")
@@ -999,10 +1155,7 @@ async def update_zone(
         setattr(zone, key, value)
     db.commit()
     db.refresh(zone)
-    return {
-        "status": "success",
-        "data": {"id": zone.id, "name": zone.name, "sort_order": zone.sort_order},
-    }
+    return {"status": "success", "data": _zone_to_dict(zone)}
 
 
 @app.delete("/api/zones/{zone_id}")

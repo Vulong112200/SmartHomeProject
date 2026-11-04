@@ -1,5 +1,5 @@
 # backend/app/models/zone.py
-from sqlalchemy import Column, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, false
 
 from app.core.database import Base
 
@@ -19,6 +19,12 @@ class ZoneModel(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
     name = Column(String, nullable=False)
     sort_order = Column(Integer, nullable=False, default=0)  # thứ tự hiển thị
+
+    # Khu DÙNG CHUNG cả nhà (vd "Toàn nhà": máy bơm, cửa cuốn): mọi thành viên
+    # active đều thấy + điều khiển, KHÔNG cần cấp từng người. Nếu không có cờ
+    # này, chủ nhà phải tick khu đó cho từng đứa trẻ/khách.
+    # server_default: seed_defaults chèn khu bằng SQL thô, không qua ORM.
+    is_shared = Column(Boolean, nullable=False, default=False, server_default=false())
 
 
 class MemberZoneAccessModel(Base):

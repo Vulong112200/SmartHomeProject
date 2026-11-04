@@ -15,8 +15,11 @@
 create table if not exists public.zones (
     id         serial primary key,
     name       text not null,
-    sort_order integer not null default 0    -- thứ tự hiển thị
+    sort_order integer not null default 0,   -- thứ tự hiển thị
+    is_shared  boolean not null default false -- khu DÙNG CHUNG: mọi thành viên thấy, không cần cấp
 );
+
+alter table public.zones add column if not exists is_shared boolean not null default false;
 
 -- ---------------------------------------------------------------------
 -- members — thành viên trong nhà
@@ -99,6 +102,20 @@ alter table public.schedules add column if not exists created_by text;
 create index if not exists idx_schedules_enabled on public.schedules (enabled);
 
 -- ---------------------------------------------------------------------
+-- scenes — kịch bản: 1 nút chạy nhiều hành động
+--   actions = JSON text [{"device_id","action_type","action_value"}] đã chuẩn
+--   hóa theo loại thiết bị lúc lưu (services/device_actions.py).
+-- ---------------------------------------------------------------------
+create table if not exists public.scenes (
+    id         serial primary key,
+    name       text not null,
+    icon       text,
+    sort_order integer not null default 0,
+    actions    text not null default '[]',
+    created_by text
+);
+
+-- ---------------------------------------------------------------------
 -- Seed 3 thiết bị đang chạy thật
 --
 -- ⚠️ GIỮ NGUYÊN id. Shortcut đã pin ra màn hình chính và các slot Home Widget
@@ -149,6 +166,7 @@ alter table public.schedules          enable row level security;
 alter table public.zones              enable row level security;
 alter table public.members            enable row level security;
 alter table public.member_zone_access enable row level security;
+alter table public.scenes             enable row level security;
 
 -- ---------------------------------------------------------------------
 -- Kiểm tra nhanh sau khi chạy (nên thấy 3 dòng, rowsecurity = true)
