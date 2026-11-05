@@ -373,3 +373,30 @@ Menu tài khoản → "Lịch sử điều khiển" → HistoryScreen
 Dashboard poll /status (máy lọc VeSync, đọc thật không cache)
   → device_history.observe_state → đổi so với lần trước & không có lệnh 60s → record source=external
 ```
+
+## 10. Sơ đồ mặt bằng 2D
+
+### Xem + điều khiển
+```
+Tab "Sơ đồ" lần đầu hiển thị (isVisible) → FloorPlanTab._load
+  → song song: DeviceApi.fetchDevices (GET /api/devices, đã lọc khu)
+               FloorPlanApi.fetch      (GET /api/floor-plan → visible_layout: devices ∩ device_query)
+  → PlanGeometry.fit(plan, khung) → CustomPaint(FloorPlanPainter) + DeviceMarker tại toPx(phòng.xy + thiết bị.xy)
+  → đọc /status mọi thiết bị; poll 6s (máy lọc/cửa/công tắc) khi tab hiển thị + foreground
+Chạm icon → showDeviceControlSheet (deviceActionOptions theo loại)
+  → chọn hành động → DeviceApi.sendMode / sendAction (via=app)
+      → GET /api/test-control/... (kiểm quyền, normalize, connector, ghi Lịch sử — y như Dashboard)
+  → false  → "Thiết bị không nhận lệnh" (không báo thành công)
+  → true   → đọc /status?fresh=1 theo confirmDelays (0,7/1,3/2/3/3 s) tới khi statusConfirms
+           → "Đã xác nhận: …" hoặc cảnh báo "chưa báo trạng thái mới"
+  (chỉ ValueNotifier của thiết bị đó đổi → chỉ icon + bảng đó vẽ lại)
+```
+
+### Sửa (chỉ chủ nhà)
+```
+Nút "Sửa" (profile.canAdmin) → _draft = _plan; tắt pan/zoom khung nhìn
+  kéo: _hitTest (thiết bị > cửa > phòng) → moveDevice (tự đổi phòng, kẹp) | slideDoor | moveRoom (hút 5 cm + khít mép)
+  chạm: phòng → thêm cửa / kích thước; cửa → bề rộng / xóa; thiết bị → bỏ khỏi sơ đồ; hàng dưới → pickRoom → placeDevice
+  "Lưu" → FloorPlanApi.save → PUT /api/floor-plan (require_owner → sanitize_layout → 400 nếu sai, không ghi)
+        → floor_plans id=1 ← JSON; trả về bản đã lọc → thoát chế độ sửa
+```

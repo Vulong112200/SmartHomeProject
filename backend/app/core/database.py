@@ -132,6 +132,8 @@ _REQUIRED_SCHEMA = {
         "id", "at_ms", "device_id", "device_name", "action_type", "action_value",
         "action_label", "source", "user_id", "user_name", "success", "detail", "ext_id",
     },
+    # Bảng mới (create_all tạo) — có trong đây để enable_rls bật RLS cho nó.
+    "floor_plans": {"id", "layout", "updated_by", "updated_at_ms"},
 }
 
 
@@ -269,7 +271,7 @@ def init_db(bind=None) -> None:
     bind = bind if bind is not None else engine
 
     # import để models đăng ký vào Base.metadata trước khi create_all
-    from app.models import command_log, device, member, scene, schedule, zone  # noqa: F401
+    from app.models import command_log, device, floor_plan, member, scene, schedule, zone  # noqa: F401
 
     Base.metadata.create_all(bind=bind)
     run_startup_migrations(bind)

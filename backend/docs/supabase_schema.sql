@@ -118,6 +118,19 @@ create table if not exists public.scenes (
 );
 
 -- ---------------------------------------------------------------------
+-- floor_plans — sơ đồ mặt bằng 2D (1 hàng duy nhất, id = 1)
+-- Backend TỰ TẠO bảng này lúc boot (create_all); khối này chỉ để tham khảo.
+-- layout = JSON text {rooms, doors, devices} theo MÉT, đã làm sạch bởi
+-- services/floor_plan.sanitize_layout. Không có hàng = bố cục mặc định.
+-- ---------------------------------------------------------------------
+create table if not exists public.floor_plans (
+    id            integer primary key,
+    layout        text not null,
+    updated_by    text,
+    updated_at_ms bigint
+);
+
+-- ---------------------------------------------------------------------
 -- command_logs — lịch sử lệnh điều khiển + sự kiện ngoài app (nút vật lý...)
 -- Backend TỰ TẠO bảng này lúc boot (create_all); khối này chỉ để tham khảo.
 -- at_ms = epoch mili-giây UTC. ext_id chống trùng khi đồng bộ nhật ký Tuya.
@@ -193,6 +206,7 @@ alter table public.members            enable row level security;
 alter table public.member_zone_access enable row level security;
 alter table public.scenes             enable row level security;
 alter table public.command_logs       enable row level security;
+alter table public.floor_plans        enable row level security;
 
 -- ---------------------------------------------------------------------
 -- Kiểm tra nhanh sau khi chạy (nên thấy 3 dòng, rowsecurity = true)

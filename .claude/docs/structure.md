@@ -26,6 +26,7 @@ backend/
 │   │   ├── zone.py                 # ZoneModel (zones: id, name, sort_order) + MemberZoneAccessModel
 │   │   │                           # (member_zone_access: grant theo khu, CHỈ cho kid/guest)
 │   │   ├── command_log.py          # CommandLogModel (command_logs: at_ms, device/user ẢNH CHỤP, action_label, source, success NULL = quan sát, ext_id UNIQUE)
+│   │   ├── floor_plan.py           # FloorPlanModel (floor_plans: 1 hàng id=1, layout JSON {rooms, doors, devices} theo MÉT, updated_by/at_ms)
 │   │   ├── scene.py                # SceneModel (scenes: name, icon, actions JSON đã chuẩn hóa, created_by) — kịch bản của cả nhà
 │   │   └── schedule.py             # ScheduleModel (bảng schedules: time HH:MM, days CSV, action, last_fired_date + lịch KHOẢNG end_time/end_action_*/last_end_fired_date, one_shot, created_by)
 │   └── services/
@@ -34,6 +35,7 @@ backend/
 │       ├── tuya_connector.py       # Tuya Cloud — cửa cuốn (control open/close/stop; trạng thái từ shadow/properties có thời điểm) + công tắc (switch_1, tự nhận theo category Tuya); credential từ env
 │       ├── vesync_connector.py     # VeSync — máy lọc khí (mode, speed)
 │       ├── rojeco_connector.py     # Rojeco — máy cho ăn: state = online + feed_state + last_feed (feed_report); credential từ env
+│       ├── floor_plan.py           # Sơ đồ 2D thuần dữ liệu: DEFAULT_LAYOUT (2 phòng kích thước thật), sanitize_layout (400 khi hình học sai, bỏ thiết bị lạ, kẹp tọa độ), parse_stored, visible_layout (lọc thiết bị theo quyền)
 │       ├── device_actions.py       # normalize_action: whitelist hành động theo LOẠI thiết bị cho AI/lịch giọng nói/kịch bản
 │       ├── local_parser.py         # parse_command_locally: lệnh đơn giản không cần AI; câu CÓ GIỜ → intent schedule (không thi hành ngay)
 │       ├── vn_time_parser.py       # extract_schedule_times: parse giờ tiếng Việt (16h30, 4 giờ chiều, từ X đến Y, mai, mỗi ngày) + resolve_target_days
@@ -61,6 +63,7 @@ backend/
 │   ├── test_device_order.py        # members.sort_order: lưu/đọc, khử trùng, lọc ngoài quyền, mỗi tài khoản riêng, giá trị hỏng không làm hỏng API
 │   ├── test_shared_zones_scenes.py # khu dùng chung, kịch bản (quyền tạo/chạy, bỏ qua ngoài khu), kịch bản bằng giọng nói
 │   ├── test_command_history.py    # lịch sử: người/nguồn/kết quả, via không giả được, giọng nói/kịch bản/lịch, lọc theo khu, phân loại nhật ký Tuya, VeSync
+│   ├── test_floor_plan.py          # sơ đồ: mặc định đúng kích thước, chỉ chủ nhà PUT, kid chỉ thấy thiết bị khu mình, validate hình học, layout hỏng → mặc định, DB cũ được tạo bảng
 │   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)
 ├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL,
 │                                   # SUPABASE_JWT_SECRET, ADMIN_EMAILS, AUTH_DISABLED) — gitignored
@@ -85,7 +88,7 @@ backend/
 frontend/
 ├── supabase.example.json       # mẫu khóa Supabase cho build (--dart-define-from-file); bản thật supabase.json gitignore
 ├── lib/
-│   ├── main.dart                   # Entry: khởi động app, đăng ký ShortcutHandler, MaterialApp + appNavigatorKey, 3 tab (Home/AI/Hẹn giờ) + isVisible cho Dashboard
+│   ├── main.dart                   # Entry: khởi động app, đăng ký ShortcutHandler, MaterialApp + appNavigatorKey, 4 tab (Home/Sơ đồ/AI/Hẹn giờ) + isVisible cho Dashboard và Sơ đồ
 │   ├── core/
 │   │   ├── config.dart             # AppConfig: baseUrl / wsUrl / timeout — nơi DUY NHẤT khai báo địa chỉ backend
 │   │   │                           # + supabaseUrl/anonKey qua --dart-define; authEnabled=false ⇒ app bỏ qua đăng nhập
@@ -93,6 +96,8 @@ frontend/
 │   │   ├── auth_service.dart       # accessToken() Supabase → fallback app-token (isolate nền), headers() ném
 │   │   │                           # NotAuthenticatedException, handleUnauthorized(); HouseholdProfile + fetchMe()
 │   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus / sendMode / sendAction (+ via) + PurifierCycle
+│   │   ├── floor_plan.dart         # FloorPlan/PlanRoom/PlanDoor/DevicePlacement (bất biến, mét) + thao tác sửa (kéo/hút/kẹp) + PlanGeometry (mét↔px, 1 tỷ lệ chung) + FloorPlanApi (GET/PUT /api/floor-plan)
+│   │   ├── device_status.dart      # Diễn giải /status: describeDeviceStatus (active/idle/moving/offline/unknown + nhãn), currentActionKey, statusConfirms, needsPolling
 │   │   ├── device_type.dart        # deviceTypeOf(name, category:): category backend thắng, fallback suy từ tên; deviceCategoryLabels (nơi duy nhất)
 │   │   ├── history_api.dart        # HistoryEntry + HistorySource (nơi duy nhất map nguồn → nhãn/icon) + HistoryApi.fetch (timeout 20s)
 │   │   ├── scene_api.dart          # Scene/SceneAction model + SceneApi: fetch/save/delete/run (SceneRunResult.summary)
@@ -113,6 +118,12 @@ frontend/
 │   │   ├── auth_gate.dart          # 5 trạng thái loading|signedOut|pending|offline|ready; chọn màn hiển thị
 │   │   ├── login_screen.dart       # Đăng nhập/đăng ký email+mật khẩu (Supabase Auth), dịch lỗi sang tiếng Việt
 │   │   ├── pending_screen.dart     # Màn chờ chủ nhà duyệt + OfflineScreen (mất mạng ≠ hết phiên)
+│   │   ├── floor_plan/             # Tab "Sơ đồ" (mặt bằng 2D)
+│   │   │   ├── floor_plan_tab.dart       # Màn + FloorPlanDataSource (API thật / giả cho test), poll khi hiển thị, gửi lệnh + chờ xác nhận, chế độ Sửa (chủ nhà)
+│   │   │   ├── floor_plan_painter.dart   # CustomPainter phòng/lưới 1 m/tường/cửa/nhãn kích thước; KHÔNG vẽ thiết bị
+│   │   │   ├── plan_device.dart          # PlanDevice, DeviceLive (trạng thái sống/lệnh), DeviceMarker (icon theo trạng thái), icon/màu theo loại
+│   │   │   ├── device_control_sheet.dart # Bottom sheet điều khiển 1 thiết bị (deviceActionOptions), hiện kết quả lệnh
+│   │   │   └── plan_edit_sheets.dart     # Bảng sửa: phòng (thêm cửa, kích thước), cửa (bề rộng/xóa), bỏ thiết bị, chọn phòng
 │   │   ├── dashboard_tab.dart      # UI danh sách thiết bị, nút điều khiển + nút "Tạo icon xử lý nhanh"; poll pause theo isVisible/lifecycle
 │   │   ├── ai_assistant_tab.dart   # Trợ lý giọng nói (speech-to-text → /api/ai/parse)
 │   │   ├── schedule_tab.dart       # Tab Hẹn giờ: danh sách lịch + form thêm/sửa (bottom sheet)

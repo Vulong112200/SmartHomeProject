@@ -8,6 +8,7 @@ import 'theme/app_colors.dart';
 import 'screens/dashboard_tab.dart';
 import 'screens/ai_assistant_tab.dart';
 import 'screens/schedule_tab.dart';
+import 'screens/floor_plan/floor_plan_tab.dart';
 import 'core/auth_service.dart';
 import 'core/config.dart';
 import 'core/shortcut_handler.dart';
@@ -117,6 +118,9 @@ class _MainScreenState extends State<MainScreen> {
             // cấu hình Supabase thì nút đó không làm được gì.
             onSignOut: AppConfig.authEnabled ? _signOut : null,
           ),
+          // Sơ đồ mặt bằng 2D: tách riêng khỏi Dashboard; chỉ tải lần đầu khi
+          // được mở và chỉ poll trạng thái khi đang hiển thị.
+          FloorPlanTab(isVisible: _currentIndex == 1, profile: _profile),
           AIAssistantTab(profile: _profile),
           const ScheduleTab(),
         ],
@@ -133,6 +137,11 @@ class _MainScreenState extends State<MainScreen> {
             icon: const Icon(Icons.dashboard_outlined),
             selectedIcon: Icon(Icons.dashboard, color: context.palette.primary),
             label: 'Home',
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.map_outlined),
+            selectedIcon: Icon(Icons.map, color: context.palette.primary),
+            label: 'Sơ đồ',
           ),
           NavigationDestination(
             icon: const Icon(Icons.auto_awesome_outlined),

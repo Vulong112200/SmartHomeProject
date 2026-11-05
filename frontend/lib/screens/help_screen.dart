@@ -22,6 +22,18 @@ const List<HelpTopic> helpTopics = [
     'Kéo biểu tượng ⋮⋮ bên phải thẻ để sắp xếp lại (chỉ khi đang xem "Tất cả").',
     'Kéo màn hình xuống để tải lại.',
   ]),
+  HelpTopic(Icons.map_outlined, 'Sơ đồ nhà', [
+    'Tab Sơ đồ vẽ mặt bằng nhà theo kích thước thật; mỗi thiết bị là 1 icon đúng vị trí trong phòng.',
+    'Icon sáng màu = đang bật / cửa đang mở; viền đỏ + ☁ = thiết bị mất kết nối; vòng xoay = đang xử lý lệnh.',
+    'Chạm icon để điều khiển (giống thẻ ở tab Home). Kết quả chỉ báo "Đã xác nhận" khi thiết bị thật sự đổi trạng thái.',
+    'Chụm 2 ngón để phóng to, kéo để di chuyển; nút ⛶ đưa về khung nhìn ban đầu.',
+    'Thiết bị chưa được đặt lên sơ đồ nằm ở hàng dưới cùng — vẫn chạm để điều khiển được.',
+  ]),
+  HelpTopic(Icons.edit_location_alt_outlined, 'Sửa sơ đồ (chủ nhà)', [
+    'Tab Sơ đồ → Sửa. Kéo phòng để đặt đúng vị trí so với phòng kia (tự hút khít mép tường).',
+    'Chạm phòng để thêm cửa ra vào hoặc sửa kích thước; kéo cửa dọc tường để chỉnh vị trí.',
+    'Chạm thiết bị ở hàng dưới để đặt vào phòng, rồi kéo tới đúng chỗ. Bấm Lưu — cả nhà thấy cùng một sơ đồ.',
+  ], adminOnly: true),
   HelpTopic(Icons.meeting_room_outlined, 'Nhà theo khu', [
     'Hàng chip phía trên lọc thiết bị theo khu, ví dụ "Phòng khách 1/3" = 1 trong 3 thiết bị đang bật.',
     'Khu có biểu tượng 🏠 là khu dùng chung: mọi người trong nhà đều dùng được.',

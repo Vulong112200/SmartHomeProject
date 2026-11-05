@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from pydantic import BaseModel
-from fastapi import FastAPI, WebSocket, Depends, HTTPException, status
+from fastapi import Body, FastAPI, WebSocket, Depends, HTTPException, status
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -67,6 +67,8 @@ from app.models.zone import MemberZoneAccessModel, ZoneModel
 from app.models.device import DEVICE_CATEGORIES, DeviceModel, device_kind
 from app.models.schedule import ScheduleModel  # đăng ký bảng schedules với Base
 from app.models.scene import SceneModel
+from app.models.floor_plan import FLOOR_PLAN_ID, FloorPlanModel
+from app.services import floor_plan
 
 import time
 from fastapi import Request
@@ -1332,6 +1334,65 @@ async def delete_zone(
     if moved:
         message += f"; {moved} thiết bị chuyển về mục chưa phân khu"
     return {"status": "success", "message": message}
+
+
+# =========================================================
+# API - Sơ đồ mặt bằng 2D (ai cũng xem; chỉ chủ nhà sửa)
+# =========================================================
+def _visible_ids(db: Session, member: MemberModel) -> set[str]:
+    return {row[0] for row in device_query(db, member).with_entities(DeviceModel.id).all()}
+
+
+def _floor_plan_response(row: FloorPlanModel | None, layout: dict, db: Session, member: MemberModel) -> dict:
+    return {
+        "status": "success",
+        "data": {
+            **floor_plan.visible_layout(layout, _visible_ids(db, member)),
+            # false = chưa ai cấu hình: app hiện bố cục mặc định + nhắc chủ nhà.
+            "configured": row is not None,
+            "updated_at_ms": row.updated_at_ms if row is not None else None,
+        },
+    }
+
+
+@app.get("/api/floor-plan")
+async def get_floor_plan(
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    """Phòng/cửa của cả nhà + vị trí CHỈ những thiết bị người gọi thấy được."""
+    row = db.query(FloorPlanModel).filter(FloorPlanModel.id == FLOOR_PLAN_ID).first()
+    layout = floor_plan.parse_stored(row.layout) if row is not None else None
+    if row is not None and layout is None:
+        logger.warning("floor_plans.layout hỏng — trả bố cục mặc định")
+    return _floor_plan_response(row, layout or floor_plan.default_layout(), db, member)
+
+
+@app.put("/api/floor-plan")
+async def save_floor_plan(
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(require_owner),
+):
+    """Ghi đè CẢ sơ đồ (1 lần Lưu ở chế độ Sửa sơ đồ). Chỉ chủ nhà."""
+    try:
+        layout = floor_plan.sanitize_layout(body, _visible_ids(db, member))
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    row = db.query(FloorPlanModel).filter(FloorPlanModel.id == FLOOR_PLAN_ID).first()
+    if row is None:
+        row = FloorPlanModel(id=FLOOR_PLAN_ID)
+        db.add(row)
+    row.layout = json.dumps(layout, ensure_ascii=False)
+    row.updated_by = member.user_id
+    row.updated_at_ms = int(time.time() * 1000)
+    db.commit()
+    db.refresh(row)
+    logger.info(
+        f"🗺️ {member.user_id} lưu sơ đồ: {len(layout['rooms'])} phòng, "
+        f"{len(layout['doors'])} cửa, {len(layout['devices'])} thiết bị"
+    )
+    return _floor_plan_response(row, layout, db, member)
 
 
 # =========================================================

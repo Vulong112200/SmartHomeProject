@@ -7,6 +7,19 @@
 ```
 
 
+### Sơ đồ mặt bằng 2D
+- **Status:** ✅ code xong, chưa lên production (nhánh release/prod-ready)
+- **Backend:** `models/floor_plan.py` (bảng `floor_plans`, 1 hàng id=1, `layout` JSON text) · `services/floor_plan.py` (`DEFAULT_LAYOUT`, `sanitize_layout`, `parse_stored`, `visible_layout` — thuần, không DB) · `GET /api/floor-plan` (active member) + `PUT /api/floor-plan` (`require_owner`) trong `main.py`
+- **Frontend:** tab "Sơ đồ" (`main.dart`, index 1) · `core/floor_plan.dart` (`FloorPlan`/`PlanRoom`/`PlanDoor`/`DevicePlacement`, `PlanGeometry`, `FloorPlanApi`) · `core/device_status.dart` (`describeDeviceStatus`, `currentActionKey`, `statusConfirms`, `needsPolling`) · `screens/floor_plan/` (`floor_plan_tab.dart` màn + chế độ sửa, `floor_plan_painter.dart` vẽ phòng/tường/cửa/nhãn, `plan_device.dart` `DeviceMarker` + `DeviceLive`, `device_control_sheet.dart`, `plan_edit_sheets.dart`) · 2 mục `helpTopics`
+- **Key logic:**
+  - **Lưu ở DB, không ở máy**: sơ đồ là thuộc tính của NHÀ (như khu) — cả nhà thấy cùng 1 bố cục, chủ nhà sửa 1 lần. Không lưu từng máy (mỗi người phải tự đặt lại) và không hardcode (không sửa được trong app).
+  - Đơn vị MÉT; thiết bị lưu theo tọa độ trong PHÒNG ⇒ không phụ thuộc màn hình/zoom, kéo phòng thì thiết bị + cửa đi theo. Kích thước thật mặc định: Phòng chính 4,09×3,00, Phòng tắm 2,17×3,06. **Không đoán** vị trí tương đối, cửa, vị trí thiết bị: mặc định để cạnh nhau, không cửa, `configured:false` ⇒ app hiện lời nhắc. Cửa vẽ = khe tường, KHÔNG vẽ chiều mở (chưa có dữ liệu).
+  - Hiển thị: `PlanGeometry.fit` giữ tỷ lệ (không kéo giãn trục); icon là widget riêng đặt trong cùng `InteractiveViewer` và thu theo 1/zoom quanh đúng tâm ⇒ vị trí không lệch, kích thước icon không đổi. Mỗi thiết bị 1 `ValueNotifier<DeviceLive>` ⇒ đổi trạng thái chỉ vẽ lại icon đó; painter nằm trong `RepaintBoundary`.
+  - Trạng thái icon: sáng = bật/mở; viền + chữ đỏ + ☁ = thiết bị `offline`; vòng xoay = đang gửi/chờ xác nhận hoặc cửa đang chạy; "?" = chưa đọc được (2 lần đọc lỗi liên tiếp → coi là cũ). Máy chủ không trả lời → banner đỏ + thử lại 5s, bảng điều khiển khóa nút.
+  - Điều khiển: hành động lấy từ `deviceActionOptions` (cùng list với Hẹn giờ/Kịch bản — cửa chỉ mở/dừng/đóng, máy cho ăn 1-3 phần). Lệnh lỗi → báo lỗi; gửi được nhưng trạng thái thật không đổi sau ~10s → cảnh báo "chưa báo trạng thái mới", KHÔNG báo xác nhận.
+  - Thiết bị chưa đặt → hàng dưới sơ đồ, vẫn chạm để điều khiển (không thiết bị nào bị "mất"). Chế độ sửa: tắt pan/zoom của khung nhìn (1 ngón dùng để kéo vật), chọn vật theo chỗ chạm xuống (`DragStartBehavior.down`), tỷ lệ chỉ tính lại khi thả (tránh co giãn dưới ngón tay).
+  - Test: `backend/tests/test_floor_plan.py` (quyền, lọc theo khu, validate, DB cũ được tạo bảng không mất dữ liệu) · `frontend/test/floor_plan_test.dart` (tỷ lệ, mét↔px, kéo/hút/kẹp, diễn giải trạng thái) · `frontend/test/floor_plan_screen_test.dart` (vị trí icon trước/sau zoom+pan, chạm mở đúng thiết bị, lệnh lỗi không báo thành công, offline, chủ nhà sửa + lưu).
+
 ### Lịch sử điều khiển (ai / từ đâu / lúc nào)
 - **Status:** ✅
 - **Backend:** `models/command_log.py` (bảng `command_logs`) · `services/command_log.py` (`record`, `action_label`, `mark_sent`/`recently_sent`, `prune_old` 90 ngày) · `services/device_history.py` (`classify_tuya_logs` thuần, `sync_external_events`, `observe_state`) · `fetch_event_logs` trong `tuya_connector.py`/`rojeco_connector.py` (helper chung `fetch_tuya_logs`, CHỈ ĐỌC) · `GET /api/history` · `?via=` trên 2 endpoint control · `scheduler._fire`
@@ -232,6 +245,7 @@
 | zones (`ZoneModel`) | ✅ | id, name, sort_order. `seed_defaults()` tạo khu 'Nhà' khi bảng rỗng và gán thiết bị chưa phân khu vào đó. |
 | members (`MemberModel`) | ✅ | user_id (PK, = auth.users.id dạng text), email, display_name, role (owner\|adult\|kid\|guest), status (pending\|active\|blocked). |
 | member_zone_access (`MemberZoneAccessModel`) | ✅ | (user_id, zone_id) PK ghép. Grant CHỈ cho kid/guest — owner/adult thấy mọi khu theo luật vai nên không có hàng nào ở đây. |
+| floor_plans (`FloorPlanModel`) | ✅ | 1 hàng id=1: `layout` JSON text `{rooms, doors, devices}` (mét), `updated_by`, `updated_at_ms`. Bảng mới do `create_all` tạo (không ALTER); RLS bật qua `_REQUIRED_SCHEMA`. Không có hàng = bố cục mặc định. |
 | schedules (`ScheduleModel`) | ✅ | id, name, brand, device_id, action_type, action_value, time, days, enabled, last_fired_date + end_time, end_action_type, end_action_value, last_end_fired_date, one_shot, **created_by** (lịch khoảng/one-shot; cột mới qua `run_startup_migrations`, chạy được trên cả SQLite lẫn Postgres). |
 
 **Nơi lưu:** `DATABASE_URL` → Postgres (Supabase); không đặt → SQLite `backend/smarthome.db`.
