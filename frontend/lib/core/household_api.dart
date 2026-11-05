@@ -270,4 +270,21 @@ class HouseholdApi {
       return 'Mất kết nối máy chủ.';
     }
   }
+
+  /// Lưu thứ tự thiết bị trên Dashboard (list id) lên tài khoản. Chỉ gửi
+  /// `sort_order` nên không đụng tên/màu avatar. Trả lỗi hoặc null nếu thành công.
+  static Future<String?> saveDeviceOrder(List<String> ids) async {
+    try {
+      final res = await http
+          .patch(
+            Uri.parse('$_base/api/me'),
+            headers: await _headers(jsonBody: true),
+            body: json.encode({'sort_order': ids}),
+          )
+          .timeout(AppConfig.apiTimeout);
+      return _error(res);
+    } catch (_) {
+      return 'Mất kết nối máy chủ.';
+    }
+  }
 }

@@ -283,6 +283,49 @@ def member_to_dict(member: MemberModel, zone_ids: list[int] | None = None) -> di
     return data
 
 
+# ---------------------------------------------------------
+# Thứ tự thiết bị trên Dashboard (members.sort_order)
+# ---------------------------------------------------------
+# Giới hạn chống payload rác; nhà thật chỉ có vài chục thiết bị.
+DEVICE_ORDER_MAX_ITEMS = 500
+DEVICE_ORDER_MAX_ID_LEN = 128
+
+
+def _visible_device_ids(db: Session, member: MemberModel) -> set[str]:
+    return {row[0] for row in device_query(db, member).with_entities(DeviceModel.id).all()}
+
+
+def _dedupe_visible(ids, visible: set[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for i in ids:
+        if isinstance(i, str) and i in visible and i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+
+def device_order_of(db: Session, member: MemberModel) -> list[str]:
+    """
+    Thứ tự đã lưu, CHỈ gồm thiết bị `member` đang được thấy. Lọc lúc ĐỌC chứ
+    không ghi lại DB: thiết bị bị xóa / mất quyền tự biến mất, được cấp lại thì
+    vị trí cũ quay về. Giá trị hỏng (không phải list) -> [] = thứ tự mặc định.
+    """
+    raw = member.sort_order
+    if not isinstance(raw, list) or not raw:
+        return []
+    return _dedupe_visible(raw, _visible_device_ids(db, member))
+
+
+def sanitize_device_order(db: Session, member: MemberModel, ids: list[str]) -> list[str]:
+    """
+    Làm sạch danh sách client gửi lên: khử trùng (giữ lần xuất hiện đầu), bỏ
+    id không tồn tại hoặc ngoài quyền. Bỏ âm thầm thay vì 400: thiết bị có thể
+    vừa bị xóa giữa lúc kéo-thả và lúc lưu — 400 thì app sẽ thử lại mãi.
+    """
+    return _dedupe_visible(ids, _visible_device_ids(db, member))
+
+
 def zone_ids_of(db: Session, user_id: str) -> list[int]:
     rows = (
         db.query(MemberZoneAccessModel.zone_id)

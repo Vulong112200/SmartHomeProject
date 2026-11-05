@@ -21,7 +21,8 @@ backend/
 │   │   ├── device.py               # DeviceModel (devices: id = id HÃNG làm PK, name, brand, is_active,
 │   │   │                           # zone_id FK ON DELETE SET NULL — NULL = "hộp thư đến", category)
 │   │   ├── member.py               # MemberModel (members: user_id = auth.users.id dạng text, email,
-│   │   │                           # display_name, role owner|adult|kid|guest, status pending|active|blocked)
+│   │   │                           # display_name, role owner|adult|kid|guest, status pending|active|blocked,
+│   │   │                           # avatar_color, sort_order JSON/JSONB deferred = thứ tự Dashboard riêng từng người)
 │   │   ├── zone.py                 # ZoneModel (zones: id, name, sort_order) + MemberZoneAccessModel
 │   │   │                           # (member_zone_access: grant theo khu, CHỈ cho kid/guest)
 │   │   ├── command_log.py          # CommandLogModel (command_logs: at_ms, device/user ẢNH CHỤP, action_label, source, success NULL = quan sát, ext_id UNIQUE)
@@ -57,6 +58,7 @@ backend/
 │   ├── test_security_fixes.py      # vượt quyền AI/lịch/PATCH, action lạ → 400, Tuya không rõ loại không gửi, 'tắt hết'
 │   ├── test_auth_jwks.py           # verify ES256 qua JWKS (khóa EC tự sinh, không gọi mạng), HS256 cũ, app-token (+ token DEV cấp lúc auth tắt -> 401), alg none -> 401
 │   ├── test_profile.py             # PATCH /api/me chỉ sửa chính mình, validate tên/màu
+│   ├── test_device_order.py        # members.sort_order: lưu/đọc, khử trùng, lọc ngoài quyền, mỗi tài khoản riêng, giá trị hỏng không làm hỏng API
 │   ├── test_shared_zones_scenes.py # khu dùng chung, kịch bản (quyền tạo/chạy, bỏ qua ngoài khu), kịch bản bằng giọng nói
 │   ├── test_command_history.py    # lịch sử: người/nguồn/kết quả, via không giả được, giọng nói/kịch bản/lịch, lọc theo khu, phân loại nhật ký Tuya, VeSync
 │   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)
@@ -99,7 +101,7 @@ frontend/
 │   │   ├── voice_feedback.dart     # TTS vi-VN đọc phản hồi trợ lý + summarize(execution_results); bật/tắt ở Hồ sơ
 │   │   ├── avatar.dart             # UserAvatar (chữ cái đầu + màu tự chọn/ổn định theo user_id)
 │   │   ├── schedule_api.dart       # Schedule model + ScheduleApi: fetch/create/update/delete/runNow (/api/schedules)
-│   │   ├── device_order.dart       # Lưu/áp thứ tự hiển thị thiết bị (kéo-thả) vào SharedPreferences (cục bộ)
+│   │   ├── device_order.dart       # DeviceOrder.apply (sắp theo id) + DeviceOrderSync (debounce 2s, thử lại, bản chờ lưu SharedPreferences) → PATCH /api/me sort_order; cục bộ device_order_v1 khi chưa bật đăng nhập
 │   │   ├── widget_service.dart      # Đẩy trạng thái lên App Widget + callback nền xử lý nút widget (home_widget)
 │   │   ├── shortcut_service.dart   # Singleton: MethodChannel 'smarthome/shortcuts' ↔ Android; quick_actions iOS; pin/update/consume action
 │   │   ├── shortcut_handler.dart   # Điều phối khi bấm shortcut (purifier cycle / door toggle / feeder); ShortcutIcons map trạng thái→drawable; appNavigatorKey

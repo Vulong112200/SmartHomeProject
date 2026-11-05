@@ -113,15 +113,23 @@
   - `_create_schedule_from_intent` (main.py): map verb parser (`turn_on/turn_off/set_mode` | `on/off`) → cột lịch (`on/off/mode`), `resolve_target_days` ghim thứ ngày đích + `one_shot=True` (recurring → days rỗng, không one-shot; giờ đã qua hôm nay → tự roll sang mai), tạo row qua `_create_schedule_row` dùng chung với POST endpoint, KHÔNG chạm connector/cache. Lỗi validate → bubble "Lỗi hẹn giờ: ..." success=False.
   - AI fallback (câu phức): prompt `ai_parser.py` rule 4 + 3 few-shot schedule, output shape GIỐNG HỆT local parser → cùng đi qua `_create_schedule_from_intent`; thời gian AI trả bị re-validate server-side (regex) nên garbage không crash.
 
-### Sắp xếp thứ tự thiết bị (kéo-thả)
+### Sắp xếp thứ tự thiết bị (kéo-thả, đồng bộ theo tài khoản)
 - **Status:** ✅ done
-- **Backend:** không đổi (thứ tự là tuỳ biến hiển thị phía client; `DeviceModel` không có cột thứ tự).
-- **Frontend:** `core/device_order.dart` (lưu/áp thứ tự qua `shared_preferences`) · `dashboard_tab.dart` (`SliverReorderableList` + `ReorderableDelayedDragStartListener`).
+- **Backend:** `members.sort_order` (JSON/JSONB, nullable, `deferred`) · `core/household.py` `device_order_of` (đọc + lọc theo `device_query`) / `sanitize_device_order` (khử trùng, bỏ id lạ/ngoài quyền) · `GET`/`PATCH /api/me` · migration `_WANTED_COLUMNS["members"]["sort_order"]` · test `tests/test_device_order.py`.
+- **Frontend:** `core/device_order.dart` (`DeviceOrder.apply` + `DeviceOrderSync`) · `HouseholdProfile.sortOrder` · `HouseholdApi.saveDeviceOrder` · `dashboard_tab.dart` (`SliverReorderableList`, `_resolveOrder`, `_pullToRefresh`) · test `test/device_order_test.dart`.
+- **Đồng bộ:**
+  - Thứ tự ban đầu = `profile.sortOrder` (AuthGate đã gọi `/api/me`). Kéo xuống làm mới gọi lại `fetchMe()` để nhận thứ tự vừa sắp trên máy khác (bỏ qua nếu đang có bản chờ gửi).
+  - Kéo-thả → đổi giao diện ngay → `DeviceOrderSync.schedule(ids)`: ghi bản chờ vào SharedPreferences `device_order_pending_v2:<userId>`, hẹn gửi sau **2s** (kéo tiếp thì hủy hẹn cũ, chỉ gửi bản mới nhất); không có 2 request song song.
+  - Gửi lỗi → giữ bản chờ, thử lại 5s → 15s → 60s (dừng ở 60s); `fetchDevices` thành công khi đang thử lại → gửi ngay.
+  - App vào nền / rời tab Home / màn bị hủy → `flush()` gửi ngay. App bị kill trước khi gửi → lần mở sau `restore()` nạp lại và gửi; **bản chờ thắng thứ tự server** (ý định mới nhất của người dùng).
+  - Chuyển tiếp: tài khoản chưa có thứ tự mà máy còn `device_order_v1` cũ → đẩy lên 1 lần rồi xóa key cũ.
+  - Bản build chưa bật đăng nhập (`AppConfig.authEnabled` false) → giữ chế độ CỤC BỘ `device_order_v1` như cũ (mọi máy là cùng chủ nhà giả).
+  - Hai máy cùng tài khoản sắp gần như đồng thời → bản lưu sau thắng.
 - **Key logic:**
   - Kéo bằng **tay cầm riêng** (`dragHandle` = `ReorderableDragStartListener` bọc icon `drag_indicator` ở cuối header thẻ), KHÔNG bọc cả thẻ. ⚠️ Bọc cả thẻ bằng `ReorderableDelayedDragStartListener` gây **xung đột cử chỉ** với nút/switch bên trong → nhấn giữ trúng nút hiện message lỗi; tay cầm riêng loại bỏ xung đột này.
-  - `_onReorder` dùng `onReorderItem` (newIndex ĐÃ điều chỉnh cho item bị gỡ) → `removeAt`/`insert` rồi `DeviceOrder.save([ids])`. `proxyDecorator` bọc thẻ đang kéo trong `Material` (bo góc + đổ bóng).
+  - `_onReorder` dùng `onReorderItem` (newIndex ĐÃ điều chỉnh cho item bị gỡ) → `removeAt`/`insert` rồi `DeviceOrderSync.schedule([ids])` (chế độ cục bộ: `DeviceOrder.save`). `proxyDecorator` bọc thẻ đang kéo trong `Material` (bo góc + đổ bóng).
   - `fetchDevices` gọi `DeviceOrder.apply(devices, order)`: sắp theo thứ tự đã lưu; thiết bị CHƯA có trong thứ tự (mới thêm) giữ thứ tự backend và đẩy xuống cuối.
-  - Lưu CỤC BỘ (`SharedPreferences` key `device_order_v1`) → thứ tự riêng từng máy, không đồng bộ cloud. Card bỏ animation entrance để tránh nhấp nháy khi kéo; key `ValueKey(id)` giữ state card (poll không restart) khi đổi chỗ. Gợi ý "Kéo biểu tượng ⋮⋮ bên phải thẻ để sắp xếp" hiện khi có >1 thiết bị.
+  - Card bỏ animation entrance để tránh nhấp nháy khi kéo; key `ValueKey(id)` giữ state card (poll không restart) khi đổi chỗ. Gợi ý "Kéo biểu tượng ⋮⋮ bên phải thẻ để sắp xếp" hiện khi có >1 thiết bị.
 
 ### Home-screen Shortcut (icon xử lý nhanh)
 - **Status:** ✅ done

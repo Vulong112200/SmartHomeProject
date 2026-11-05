@@ -33,10 +33,12 @@ create table if not exists public.members (
     display_name text not null default '',
     role         text not null default 'guest',
     status       text not null default 'pending',
-    avatar_color text                         -- "#RRGGBB" chọn ở màn Hồ sơ; NULL = màu tự động
+    avatar_color text,                        -- "#RRGGBB" chọn ở màn Hồ sơ; NULL = màu tự động
+    sort_order   jsonb                        -- ["device-id", ...] thứ tự Dashboard của người này; NULL = mặc định
 );
 
 alter table public.members add column if not exists avatar_color text;
+alter table public.members add column if not exists sort_order jsonb;
 
 -- ---------------------------------------------------------------------
 -- member_zone_access — grant: thành viên được dùng khu nào

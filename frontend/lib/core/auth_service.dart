@@ -221,6 +221,9 @@ class HouseholdProfile {
   final bool canSchedule;
   final List<int> zoneIds;
   final List<Map<String, dynamic>> zones;
+  /// Thứ tự thiết bị trên Dashboard đã lưu ở server (list id). Rỗng = mặc định.
+  /// Backend đã lọc theo quyền hiện tại.
+  final List<String> sortOrder;
 
   const HouseholdProfile({
     required this.userId,
@@ -233,6 +236,7 @@ class HouseholdProfile {
     required this.canSchedule,
     required this.zoneIds,
     required this.zones,
+    this.sortOrder = const [],
   });
 
   /// Bản sao với tên/màu mới (sau khi sửa ở màn Hồ sơ). [clearAvatarColor] = về màu tự động.
@@ -248,6 +252,7 @@ class HouseholdProfile {
         canSchedule: canSchedule,
         zoneIds: zoneIds,
         zones: zones,
+        sortOrder: sortOrder,
       );
 
   /// Tên để chào/hiển thị: tên hiển thị > phần trước @ của email > null.
@@ -285,6 +290,10 @@ class HouseholdProfile {
         zones: ((j['zones'] as List?) ?? [])
             .map((e) => Map<String, dynamic>.from(e as Map))
             .toList(),
+        // Backend cũ không có trường này / giá trị sai kiểu -> [] = thứ tự mặc định.
+        sortOrder: j['sort_order'] is List
+            ? (j['sort_order'] as List).whereType<String>().toList()
+            : const [],
       );
 
   /// Hồ sơ giả khi backend đang chạy với xác thực TẮT (chưa cấu hình Supabase).

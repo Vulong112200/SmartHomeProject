@@ -181,19 +181,30 @@ dashboard_tab.dart _bootstrap() (initState)
   → isWaking=false → fetchDevices()
 ```
 
-## 4c. Sắp xếp thứ tự thiết bị (kéo-thả, cục bộ)
+## 4c. Sắp xếp thứ tự thiết bị (kéo-thả, đồng bộ theo tài khoản)
 
 ```
 Tải danh sách:
-  fetchDevices → DeviceOrder.load() (SharedPreferences 'device_order_v1')
-    → DeviceOrder.apply(devices, order): sắp theo id đã lưu; thiết bị mới → cuối
+  AuthGate GET /api/me → profile.sortOrder        # backend: device_order_of = members.sort_order ∩ device_query
+  fetchDevices → _resolveOrder()
+       lần đầu: DeviceOrderSync.restore()   (bản chờ 'device_order_pending_v2:<uid>' từ phiên trước → flush)
+                tài khoản chưa có thứ tự + còn 'device_order_v1' → schedule(v1) 1 lần; xóa v1
+       → sync.pending ?? _accountOrder
+       (authEnabled=false → DeviceOrder.load() cục bộ như cũ)
+    → DeviceOrder.apply(devices, order): sắp theo id; thiết bị mới → cuối; id đã xóa/mất quyền bị bỏ
     → render SliverReorderableList (item key=ValueKey(id); proxyDecorator = Material bo góc + bóng)
+  Kéo xuống làm mới → _pullToRefresh: fetchMe() (khi không có bản chờ) → _accountOrder mới → fetchDevices
 
-Kéo đổi chỗ:
+Kéo đổi chỗ (chỉ ở chip "Tất cả"):
   kéo TAY CẦM riêng (dragHandle = ReorderableDragStartListener, tránh xung đột cử chỉ với nút/switch)
     → onReorderItem(oldIndex, newIndex)  [newIndex đã điều chỉnh]
-    → _onReorder: devices.removeAt/insert (setState)
-    → DeviceOrder.save([ids theo thứ tự mới])   # chỉ lưu cục bộ, không gọi backend
+    → _onReorder: devices.removeAt/insert (setState — lạc quan)
+    → DeviceOrderSync.schedule(ids): lưu bản chờ xuống SharedPreferences, hẹn 2s (kéo tiếp → hủy hẹn cũ)
+    → hết 2s / app vào nền / rời tab / dispose → flush()
+         → HouseholdApi.saveDeviceOrder → PATCH /api/me {"sort_order": ids}
+              backend: >500 / id >128 ký tự → 400; sanitize_device_order (khử trùng, bỏ id lạ/ngoài quyền)
+         → ok: xóa bản chờ (chỉ khi không có bản mới hơn)
+         → lỗi: giữ bản chờ, thử lại 5s → 15s → 60s; fetchDevices thành công → gửi ngay
 ```
 
 ## 6. Khởi động backend (lifespan → init_db)

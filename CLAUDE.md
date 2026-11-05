@@ -10,6 +10,27 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 - Backend: `backend/app/` — chạy `uvicorn app.main:app` (deploy Render). DB SQLite `backend/smarthome.db`.
 - Frontend: `frontend/lib/` — Flutter + Riverpod-less (dùng `StatefulWidget`/`http` trực tiếp). Android native shortcut qua MethodChannel.
 
+## ⚠️ Quy trình bắt buộc khi sửa code (hệ thống đang chạy production)
+
+Nâng cấp cái đang có — KHÔNG dựng lại, KHÔNG tạo hệ thống song song. Không mở rộng phạm vi ngoài yêu cầu.
+
+**Trước khi sửa:** đọc CLAUDE.md + `.claude/docs/` liên quan → lần theo luồng thật của chức năng (model, endpoint, service/connector, màn hình, Widget/Shortcut) → liệt kê thứ phụ thuộc có thể vỡ. Không đoán tên file/bảng/API. Tài liệu lệch code ⇒ tin code đang chạy và BÁO lại chỗ lệch.
+
+**Bất biến không được phá** (chi tiết ở các mục bên dưới):
+- API đang được app / Home Widget / Shortcut gọi: không xóa, đổi tên, đổi shape. ID thiết bị không đổi.
+- Quyền chỉ quyết định ở `core/household.py`; mọi lệnh tới thiết bị đi qua kiểm quyền + connector; đường không qua UI phải qua `normalize_action()`.
+- Cửa cuốn chỉ `open|close|stop`, không bao giờ on/off. Không tin `device_id`/`brand` từ AI/client khi chưa đối chiếu DB + quyền.
+- Lệnh lỗi không được báo/ghi thành công; tác vụ có thể chạy lặp phải chống trùng; lỗi ghi log không được làm hỏng lệnh đã thành công.
+- Một connector lỗi không ảnh hưởng connector khác. Không hardcode tài khoản/key/mật khẩu/chuỗi kết nối.
+- Chạy được cả SQLite (dev) lẫn Postgres Supabase (prod); migration qua `run_startup_migrations`, an toàn trên dữ liệu đang có.
+- Không đổi cơ chế xác thực / phân quyền / chuẩn hóa hành động / ghi lịch sử nếu nhiệm vụ không đòi hỏi.
+
+**Thứ tự làm:** (1) phân tích + phạm vi → (2) phương án ngắn → (3) danh sách file thêm/sửa/migration → (4) triển khai theo kiến trúc hiện có → (5) test cho chức năng mới + ca lỗi → (6) chạy `pytest` / `dart analyze` / `flutter test` theo phạm vi → (7) kiểm lại chức năng cũ có nguy cơ ảnh hưởng → (8) cập nhật tài liệu nếu đổi API/DB/kiến trúc (`/sync-docs`).
+
+**Chỉ báo xong khi:** code đã sửa thật; migration an toàn; API vẫn tương thích app/Widget/Shortcut; có xử lý loading/lỗi/timeout/mất mạng; test ĐÃ CHẠY và báo kết quả thật (fail thì nói fail); không có lỗi nghiêm trọng mới.
+
+**Dừng ở bước phân tích và nêu rủi ro** nếu yêu cầu có thể mất dữ liệu, phá tương thích hoặc làm hỏng chức năng đang chạy.
+
 ## Key Features Registry
 
 | Feature | Status | Vị trí chính |
@@ -20,7 +41,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | Trợ lý giọng nói (AI + local parse) | ✅ | `main.py` `/api/ai/parse`, `services/ai_parser.py`, `services/local_parser.py`, `screens/ai_assistant_tab.dart` |
 | Giọng nói TẠO lịch hẹn (NL → schedule) | ✅ | `services/vn_time_parser.py` (parse giờ tiếng Việt), `local_parser.py` (intent schedule), `main.py` `_create_schedule_from_intent` |
 | Dashboard điều khiển | ✅ | `screens/dashboard_tab.dart` |
-| Sắp xếp thứ tự thiết bị (kéo-thả) | ✅ | `screens/dashboard_tab.dart` (`SliverReorderableList`), `core/device_order.dart` (lưu SharedPreferences) |
+| Sắp xếp thứ tự thiết bị (kéo-thả, **đồng bộ theo tài khoản**) | ✅ | `screens/dashboard_tab.dart` (`SliverReorderableList`), `core/device_order.dart` (`DeviceOrderSync` debounce 2s → `PATCH /api/me`), `members.sort_order`, `household.device_order_of/sanitize_device_order` |
 | Home-screen Shortcut (icon xử lý nhanh) | ✅ | `core/shortcut_service.dart`, `core/shortcut_handler.dart`, `MainActivity.kt`, `res/drawable/ic_*` |
 | Home Screen Widget (trạng thái sống + điều khiển nền) | ✅ | `core/widget_service.dart`, `SmartHomeWidgetProvider.kt`, `res/layout/smart_home_widget.xml`, package `home_widget` |
 | Hẹn giờ thiết bị (đơn + KHOẢNG start→end, qua đêm, one-shot) | ✅ | `services/scheduler.py`, `models/schedule.py`, `main.py` `/api/schedules`, `screens/schedule_tab.dart`, `core/schedule_api.dart` |
@@ -42,10 +63,10 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | Method | Path | Mô tả |
 |---|---|---|
 | POST | `/api/auth/app-token` | Cấp **token dài hạn** cho app lưu SharedPreferences — đường sống của Home Widget/shortcut ở isolate nền. Thu hồi = đổi `APP_TOKEN_SECRET`. Token cấp lúc xác thực TẮT (`sub`=`DEV_USER_ID`) bị từ chối khi đã bật |
-| PATCH | `/api/me` | Sửa hồ sơ của CHÍNH MÌNH (`{display_name?, avatar_color?}` — tên 1-40 ký tự, màu `#RRGGBB`/null). Không có vai/trạng thái. Pending sửa được, blocked thì không |
+| PATCH | `/api/me` | Sửa hồ sơ của CHÍNH MÌNH (`{display_name?, avatar_color?, sort_order?}` — tên 1-40 ký tự, màu `#RRGGBB`/null; `sort_order` = list id thiết bị, null = về mặc định, >500 phần tử / id >128 ký tự → 400, phần tử không phải chuỗi → 422, id trùng/lạ/ngoài quyền bị **bỏ âm thầm**). Chỉ trường có gửi mới đổi. Không có vai/trạng thái. Pending sửa được, blocked thì không. Response kèm `sort_order` đã lọc |
 | GET/POST | `/api/scenes`, `/api/scenes/{id}` (PATCH/DELETE) | Kịch bản. Đọc: mọi thành viên active. Tạo/sửa/xóa: owner/adult. Hành động được CHUẨN HÓA theo loại lúc lưu (sai loại → 400) |
 | POST | `/api/scenes/{id}/run` | Chạy kịch bản TUẦN TỰ; hành động trên thiết bị ngoài khu của người chạy → bỏ qua (`skipped`) |
-| GET | `/api/me` | **Tôi là ai**: vai, trạng thái, khu được cấp. KHÔNG chặn `pending` — app cần đọc để biết hiện màn hình chờ duyệt hay màn hình chính |
+| GET | `/api/me` | **Tôi là ai**: vai, trạng thái, khu được cấp + `sort_order` (thứ tự Dashboard, đã lọc theo quyền HIỆN TẠI; lỗi đọc → `[]`, không bao giờ làm hỏng `/api/me`). KHÔNG chặn `pending` — app cần đọc để biết hiện màn hình chờ duyệt hay màn hình chính |
 | GET | `/api/devices` | Liệt kê thiết bị **đã lọc theo khu được cấp**; trả kèm `zone_id`/`zone_name`/`category` |
 | POST | `/api/devices` | Thêm thiết bị (query: id, name, brand, opt zone_id, opt category). **Chỉ chủ nhà.** Idempotent — id trùng = "đã có trong nhà", không phải lỗi |
 | PATCH | `/api/devices/{device_id}` | Đổi tên / **gán khu** / đặt loại (body `{name?, zone_id?, category?}`). Chỉ chủ nhà |
@@ -73,6 +94,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
   - `category` ∈ `DEVICE_CATEGORIES` (`purifier`\|`curtain`\|`feeder`\|`switch`, `models/device.py`) — PATCH ngoài tập này → 400; chủ nhà đặt ở màn quản trị (chạm vào dòng thiết bị). Client phân loại qua `core/device_type.dart` (nơi duy nhất): **category thắng**, NULL/lạ → suy từ TÊN như cũ. Backend có bản tương ứng `device_kind()` (cùng file `models/device.py`: category > tên > hãng) cho parser giọng nói. ⚠️ Từ khóa công tắc (`bơm`/`tăng áp`/`công tắc`) kiểm TRƯỚC máy cho ăn vì "t**ăn**g áp" chứa "ăn". Thêm loại mới phải sửa CẢ `DEVICE_CATEGORIES` lẫn `deviceCategories` (Dart). Seed + `supabase_schema.sql` điền sẵn category cho 3 thiết bị gốc (SQL chỉ backfill hàng còn NULL).
 - **MemberModel** (`members`, `member.py`): `user_id` (PK, = `auth.users.id` của Supabase dạng text), `email`, `display_name`, `role` (`owner`\|`adult`\|`kid`\|`guest`), `status` (`pending`\|`active`\|`blocked`). Người lạ đăng nhập lần đầu → `guest`/`pending`.
 - **ZoneModel** (`zones`, `zone.py`): `id`, `name`, `sort_order`. **MemberZoneAccessModel** (`member_zone_access`): `(user_id, zone_id)` PK ghép — grant CHỈ cho `kid`/`guest`; `owner`/`adult` thấy mọi khu theo luật vai nên không có hàng nào ở đây.
+- **MemberModel.sort_order**: JSON (SQLite) / **JSONB** (Postgres), nullable — list id thiết bị theo thứ tự Dashboard của RIÊNG người đó; NULL = mặc định. Cột **`deferred`** (không nạp ở `get_member` mỗi request ⇒ giá trị hỏng chỉ ảnh hưởng chỗ đọc có try/except). Lọc theo quyền lúc ĐỌC, không ghi lại DB ⇒ thiết bị xóa/mất quyền tự biến mất, cấp lại quyền thì vị trí cũ quay về. Không lộ ra ở `/api/members`. (Khác `zones.sort_order`/`scenes.sort_order` là số nguyên.)
 - **MemberModel.avatar_color** (đợt 2): `#RRGGBB` tự chọn; NULL = app suy màu ổn định từ user_id. **ZoneModel.is_shared** (đợt 2, `server_default` false vì `seed_defaults` chèn bằng SQL thô): kid/guest thấy + điều khiển thiết bị khu dùng chung không cần grant.
 - **CommandLogModel** (`command_logs`, `command_log.py`): `at_ms` (epoch ms UTC), `device_id`, `device_name`/`user_name` (ẢNH CHỤP lúc ghi), `action_type`/`action_value`/`action_label`, `source` (`app`\|`widget`\|`shortcut`\|`voice`\|`scene`\|`schedule` = hệ thống gửi; `tuya_app`\|`device`\|`external` = quan sát từ ngoài), `user_id`, `success` (NULL = sự kiện quan sát), `detail`, `ext_id` (UNIQUE, chống trùng khi đồng bộ nhật ký Tuya). Giữ 90 ngày (`prune_old`).
 - **SceneModel** (`scenes`, `scene.py`): `id`, `name`, `icon` (tên icon phía app), `sort_order`, `actions` (JSON text `[{device_id, action_type, action_value}]` đã chuẩn hóa), `created_by` (audit). Không gắn khu — kịch bản của cả nhà.

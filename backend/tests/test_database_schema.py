@@ -148,6 +148,38 @@ def test_bang_schedules_cu_duoc_them_cot_lich_khoang(tmp_path):
         assert conn.execute(text("SELECT time FROM schedules WHERE id = 1")).scalar() == "17:45"
 
 
+def test_bang_members_cu_duoc_them_sort_order_khong_mat_ho_so(tmp_path):
+    """members có từ trước (chưa có avatar_color/sort_order) -> thêm cột, hồ sơ/vai giữ nguyên."""
+    path = tmp_path / "old_members.db"
+    raw = sqlite3.connect(path)
+    raw.execute(
+        "CREATE TABLE members (user_id TEXT PRIMARY KEY, email TEXT NOT NULL DEFAULT '', "
+        "display_name TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT 'guest', "
+        "status TEXT NOT NULL DEFAULT 'pending')"
+    )
+    raw.execute(
+        "INSERT INTO members VALUES ('u1', 'me@x.test', 'Bố', 'owner', 'active')"
+    )
+    raw.commit()
+    raw.close()
+
+    engine = _engine_over(path)
+    db.init_db(engine)
+
+    cols = {c["name"] for c in inspect(engine).get_columns("members")}
+    assert {"avatar_color", "sort_order"} <= cols
+    with engine.begin() as conn:
+        row = conn.execute(text(
+            "SELECT email, display_name, role, status, sort_order FROM members WHERE user_id = 'u1'"
+        )).one()
+    assert tuple(row) == ("me@x.test", "Bố", "owner", "active", None)
+
+
+def test_ddl_sort_order_theo_dialect():
+    ddl = db._WANTED_COLUMNS["members"]["sort_order"]
+    assert ddl == {"sqlite": "JSON", "postgresql": "JSONB"}
+
+
 def test_ddl_one_shot_khac_nhau_theo_dialect():
     """Boolean của SQLite là INTEGER, của Postgres là BOOLEAN — chung DDL sẽ lỗi."""
     ddl = db._WANTED_COLUMNS["schedules"]["one_shot"]

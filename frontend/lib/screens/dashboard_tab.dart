@@ -10,6 +10,7 @@ import '../core/config.dart';
 import '../core/device_api.dart';
 import '../core/device_order.dart';
 import '../core/device_type.dart';
+import '../core/household_api.dart';
 import '../core/scene_api.dart';
 import '../core/zone_groups.dart';
 import 'scene_editor_screen.dart';
@@ -60,10 +61,24 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
   // Thứ tự khu theo backend (zones.sort_order), lấy TRƯỚC khi áp thứ tự kéo-thả.
   List<String> _zoneOrder = [];
 
+  // Thứ tự kéo-thả đồng bộ theo tài khoản. null = chế độ cục bộ (bản build
+  // chưa bật đăng nhập: mọi máy là cùng một "chủ nhà giả", không có gì để đồng bộ).
+  DeviceOrderSync? _orderSync;
+  // Thứ tự của tài khoản theo hiểu biết hiện tại: lúc đầu = server (/api/me),
+  // sau mỗi lần kéo-thả = bản vừa kéo (đã/đang được gửi lên).
+  late List<String> _accountOrder = widget.profile.sortOrder;
+  bool _orderRestored = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (AppConfig.authEnabled && widget.profile.userId.isNotEmpty) {
+      _orderSync = DeviceOrderSync(
+        userId: widget.profile.userId,
+        send: (ids) async => await HouseholdApi.saveDeviceOrder(ids) == null,
+      );
+    }
     _bootstrap();
   }
 
@@ -71,9 +86,58 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Vào nền -> dừng poll (tiết kiệm pin/mạng); trở lại -> poll tiếp ngay.
     final active = state == AppLifecycleState.resumed;
+    // Rời app -> gửi ngay thứ tự đang chờ debounce, không đợi hết 2s.
+    if (!active) _orderSync?.flush();
     if (mounted && active != _appActive) {
       setState(() => _appActive = active);
     }
+  }
+
+  @override
+  void didUpdateWidget(covariant DashboardTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Chuyển sang tab khác -> gửi ngay thứ tự đang chờ.
+    if (oldWidget.isVisible && !widget.isVisible) _orderSync?.flush();
+  }
+
+  /// Thứ tự dùng để sắp danh sách vừa tải.
+  /// Ưu tiên: bản kéo-thả CHƯA gửi được (ý định mới nhất của người dùng) >
+  /// thứ tự tài khoản > thứ tự cục bộ cũ (chỉ seed 1 lần khi tài khoản chưa có).
+  Future<List<String>> _resolveOrder() async {
+    final sync = _orderSync;
+    if (sync == null) return DeviceOrder.load(); // chế độ cục bộ như trước
+    if (!_orderRestored) {
+      _orderRestored = true;
+      try {
+        await sync.restore();
+        if (sync.hasPending) {
+          sync.flush(); // bản sót từ phiên trước (app bị tắt trước khi gửi)
+        } else if (_accountOrder.isEmpty) {
+          final legacy = await DeviceOrder.load();
+          if (legacy.isNotEmpty) {
+            _accountOrder = legacy;
+            sync.schedule(legacy); // đẩy thứ tự đang có trên máy này lên tài khoản
+          }
+        }
+        await DeviceOrder.clearLegacy();
+      } catch (_) {
+        // SharedPreferences lỗi: vẫn dùng thứ tự tài khoản.
+      }
+    }
+    return sync.pending ?? _accountOrder;
+  }
+
+  /// Kéo xuống để tải lại: lấy thêm thứ tự mới nhất của tài khoản (có thể vừa
+  /// được sắp xếp trên điện thoại khác). Đang có bản chờ gửi thì giữ bản đó.
+  Future<void> _pullToRefresh() async {
+    final sync = _orderSync;
+    if (sync != null && !sync.hasPending) {
+      final me = await fetchMe();
+      if (me.result == MeResult.ok && me.profile != null && !sync.hasPending) {
+        _accountOrder = me.profile!.sortOrder;
+      }
+    }
+    await fetchDevices();
   }
 
   // Đánh thức server trước (Render free-tier ngủ sau ~15 phút, cold start 30-50s),
@@ -220,6 +284,10 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _retryTimer?.cancel(); // Tắt timer khi thoát màn hình
+    // Gửi nốt thứ tự đang chờ; gửi không được thì bản chờ vẫn nằm trong
+    // SharedPreferences, lần mở app sau gửi tiếp.
+    _orderSync?.flush();
+    _orderSync?.dispose();
     super.dispose();
   }
 
@@ -242,8 +310,9 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
         _handleOffline();
         return;
       }
-      // Sắp theo thứ tự người dùng đã kéo-thả (lưu cục bộ); thiết bị mới xuống cuối.
-      final order = await DeviceOrder.load();
+      // Sắp theo thứ tự người dùng đã kéo-thả (theo tài khoản); thiết bị mới
+      // xuống cuối, thiết bị đã xóa / mất quyền tự rơi khỏi danh sách.
+      final order = await _resolveOrder();
       // Kịch bản tải kèm; lỗi thì giữ danh sách cũ (không làm hỏng màn hình chính).
       final scenes = await SceneApi.fetchScenes();
       if (!mounted) return;
@@ -259,6 +328,8 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
         isOffline = false; // Đã có mạng
       });
       _retryTimer?.cancel(); // Tắt bộ thử lại
+      // Mạng vừa có lại mà thứ tự đang chờ thử lại -> gửi luôn, khỏi đợi backoff.
+      if (_orderSync?.isRetrying == true) _orderSync!.flush();
       WidgetService.refreshAll(); // Đồng bộ trạng thái lên Home Screen Widget
     } catch (e) {
       _handleOffline();
@@ -444,7 +515,15 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
       final item = devices.removeAt(oldIndex);
       devices.insert(newIndex, item);
     });
-    DeviceOrder.save([for (final d in devices) '${d['id']}']);
+    final ids = [for (final d in devices) '${d['id']}'];
+    final sync = _orderSync;
+    if (sync == null) {
+      DeviceOrder.save(ids); // chế độ cục bộ như trước
+    } else {
+      // Giao diện đã đổi ngay (lạc quan); lưu lên tài khoản sau debounce 2s.
+      _accountOrder = ids;
+      sync.schedule(ids);
+    }
   }
 
   @override
@@ -493,7 +572,7 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
               )
             // 4. KÉO ĐỂ REFRESH (Pull to Refresh)
             : RefreshIndicator(
-              onRefresh: fetchDevices,
+              onRefresh: _pullToRefresh,
               color: context.palette.primary,
               backgroundColor: context.palette.surface,
               child: CustomScrollView(

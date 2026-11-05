@@ -102,6 +102,9 @@ _WANTED_COLUMNS = {
     "members": {
         # Đợt 2 — màu avatar ở màn Hồ sơ.
         "avatar_color": {"sqlite": "TEXT", "postgresql": "TEXT"},
+        # Thứ tự thiết bị trên Dashboard, đồng bộ theo tài khoản. Nullable,
+        # không default: hàng cũ = NULL = thứ tự mặc định.
+        "sort_order": {"sqlite": "JSON", "postgresql": "JSONB"},
     },
     "zones": {
         # Đợt 2 — khu dùng chung cả nhà.
@@ -121,7 +124,7 @@ _REQUIRED_SCHEMA = {
         "end_action_type", "end_action_value", "last_end_fired_date", "one_shot",
         "created_by",
     },
-    "members": {"user_id", "email", "display_name", "role", "status", "avatar_color"},
+    "members": {"user_id", "email", "display_name", "role", "status", "avatar_color", "sort_order"},
     "zones": {"id", "name", "sort_order", "is_shared"},
     "member_zone_access": {"user_id", "zone_id"},
     "scenes": {"id", "name", "icon", "sort_order", "actions", "created_by"},

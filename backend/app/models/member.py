@@ -1,5 +1,7 @@
 # backend/app/models/member.py
-from sqlalchemy import Column, String
+from sqlalchemy import JSON, Column, String
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import deferred
 
 from app.core.database import Base
 
@@ -36,6 +38,16 @@ class MemberModel(Base):
     # Màu avatar (#RRGGBB) do chính người dùng chọn ở màn Hồ sơ. NULL = app tự
     # suy màu từ user_id (ổn định, không cần lưu).
     avatar_color = Column(String, nullable=True)
+
+    # Thứ tự thiết bị trên Dashboard của RIÊNG người này: list id thiết bị theo
+    # thứ tự kéo-thả. NULL = chưa sắp xếp (dùng thứ tự mặc định). Đọc/ghi qua
+    # household.device_order_of / sanitize_device_order — luôn lọc theo quyền
+    # hiện tại, nên id thiết bị đã xóa/mất quyền nằm lại đây cũng vô hại.
+    # (Khác hẳn zones.sort_order / scenes.sort_order là số nguyên.)
+    # deferred: KHÔNG nạp cùng hàng member ở mỗi request (get_member chạy ở mọi
+    # endpoint) — chỉ đọc khi /api/me cần, trong try/except. Nhờ vậy một giá
+    # trị hỏng (SQLite cho phép lưu text không phải JSON) không làm hỏng mọi API.
+    sort_order = deferred(Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True))
 
 
 ROLES = ("owner", "adult", "kid", "guest")

@@ -45,7 +45,10 @@ from app.services.device_actions import normalize_action
 from app.core.auth import app_token_secret, auth_status, issue_app_token
 from app.core.database import SessionLocal, get_db, init_db, IS_SQLITE
 from app.core.household import (
+    DEVICE_ORDER_MAX_ID_LEN,
+    DEVICE_ORDER_MAX_ITEMS,
     accessible_zones,
+    device_order_of,
     device_query,
     get_current_member,
     get_member,
@@ -55,6 +58,7 @@ from app.core.household import (
     require_owner,
     require_scene_write,
     require_schedule_write,
+    sanitize_device_order,
     schedule_query,
     zone_ids_of,
 )
@@ -223,6 +227,8 @@ class MeUpdate(BaseModel):
     """PATCH /api/me — chỉ thông tin hiển thị của CHÍNH MÌNH, không có vai/trạng thái."""
     display_name: str | None = None
     avatar_color: str | None = None  # "#RRGGBB"; null tường minh = về màu tự động
+    # Thứ tự thiết bị trên Dashboard (list id). null tường minh = về thứ tự mặc định.
+    sort_order: list[str] | None = None
 
 
 class MemberUpdate(BaseModel):
@@ -1178,8 +1184,20 @@ async def whoami(
         "data": {
             **member_to_dict(member, zone_ids_of(db, member.user_id)),
             "zones": zones,
+            "sort_order": _safe_device_order(db, member),
         },
     }
+
+
+def _safe_device_order(db: Session, member: MemberModel) -> list[str]:
+    """Thứ tự thiết bị cho /api/me — lỗi ở đây KHÔNG được làm hỏng /api/me
+    (AuthGate dựa vào nó để quyết định cho vào app hay không)."""
+    try:
+        return device_order_of(db, member)
+    except Exception as e:
+        logger.warning(f"Không đọc được sort_order của {member.user_id}: {e}")
+        db.rollback()
+        return []
 
 
 @app.patch("/api/me")
@@ -1206,9 +1224,24 @@ async def update_me(
         if color is not None and not _re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Màu phải có dạng #RRGGBB.")
         member.avatar_color = color
+    if "sort_order" in fields:
+        ids = fields["sort_order"]
+        if ids is None:
+            member.sort_order = None
+        else:
+            if len(ids) > DEVICE_ORDER_MAX_ITEMS or any(len(i) > DEVICE_ORDER_MAX_ID_LEN for i in ids):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Danh sách thứ tự thiết bị không hợp lệ.")
+            # Gán list MỚI (không sửa tại chỗ) để SQLAlchemy nhận ra thay đổi cột JSON.
+            member.sort_order = sanitize_device_order(db, member, ids)
     db.commit()
     db.refresh(member)
-    return {"status": "success", "data": member_to_dict(member, zone_ids_of(db, member.user_id))}
+    return {
+        "status": "success",
+        "data": {
+            **member_to_dict(member, zone_ids_of(db, member.user_id)),
+            "sort_order": _safe_device_order(db, member),
+        },
+    }
 
 
 @app.post("/api/auth/app-token")
