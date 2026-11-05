@@ -40,7 +40,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 
 | Method | Path | Mô tả |
 |---|---|---|
-| POST | `/api/auth/app-token` | Cấp **token dài hạn** cho app lưu SharedPreferences — đường sống của Home Widget/shortcut ở isolate nền. Thu hồi = đổi `APP_TOKEN_SECRET` |
+| POST | `/api/auth/app-token` | Cấp **token dài hạn** cho app lưu SharedPreferences — đường sống của Home Widget/shortcut ở isolate nền. Thu hồi = đổi `APP_TOKEN_SECRET`. Token cấp lúc xác thực TẮT (`sub`=`DEV_USER_ID`) bị từ chối khi đã bật |
 | PATCH | `/api/me` | Sửa hồ sơ của CHÍNH MÌNH (`{display_name?, avatar_color?}` — tên 1-40 ký tự, màu `#RRGGBB`/null). Không có vai/trạng thái. Pending sửa được, blocked thì không |
 | GET/POST | `/api/scenes`, `/api/scenes/{id}` (PATCH/DELETE) | Kịch bản. Đọc: mọi thành viên active. Tạo/sửa/xóa: owner/adult. Hành động được CHUẨN HÓA theo loại lúc lưu (sai loại → 400) |
 | POST | `/api/scenes/{id}/run` | Chạy kịch bản TUẦN TỰ; hành động trên thiết bị ngoài khu của người chạy → bỏ qua (`skipped`) |
@@ -146,6 +146,6 @@ cd frontend && flutter pub get && flutter run
 cd frontend && dart analyze
 cd frontend && flutter test
 cd frontend && flutter build apk --debug
-# Build kèm khóa Supabase (khi đã tạo project):
-cd frontend && flutter build apk --release   --dart-define=SUPABASE_URL=https://xxx.supabase.co   --dart-define=SUPABASE_ANON_KEY=xxx
+# Build kèm khóa Supabase: khóa nằm ở frontend/supabase.json (gitignore, mẫu supabase.example.json)
+cd frontend && flutter build apk --release --dart-define-from-file=supabase.json
 ```

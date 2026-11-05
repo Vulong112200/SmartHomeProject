@@ -144,6 +144,12 @@ class AuthService {
             headers: {'Authorization': 'Bearer $token'},
           )
           .timeout(AppConfig.apiTimeout);
+      if (res.statusCode == 401 || res.statusCode == 403) {
+        // Chưa được duyệt / bị chặn: không giữ token cũ (có thể cấp lúc
+        // xác thực còn tắt) cho widget dùng tiếp.
+        await clearAppToken();
+        return false;
+      }
       if (res.statusCode != 200) return false;
       final body = json.decode(utf8.decode(res.bodyBytes));
       final appToken = body['data']?['app_token'] as String?;

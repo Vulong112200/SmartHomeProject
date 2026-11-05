@@ -208,6 +208,17 @@ def get_current_user(
     # Supabase, và đây là đường đi của Home Widget / shortcut.
     payload = _decode_app_token(creds.credentials)
 
+    # App-token cấp lúc xác thực còn TẮT mang danh tính chủ nhà giả (DEV_USER_ID +
+    # email admin) và sống 10 năm. Không chặn thì sau khi bật xác thực, widget/
+    # shortcut của mọi máy (kể cả người pending/bị chặn — họ không xin được token
+    # mới để ghi đè) vẫn có toàn quyền chủ nhà. Từ chối => app mở lần kế tự xin
+    # token đúng người.
+    if payload is not None and payload.get("sub") == DEV_USER_ID:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "App-token cũ (cấp lúc xác thực tắt) — mở app để xin token mới.",
+        )
+
     if payload is None:
         payload = _decode_supabase_token(creds.credentials)
 

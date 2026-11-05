@@ -239,6 +239,7 @@ Request có Bearer token
       auth_disabled()?  (AUTH_DISABLED tường minh > bật khi có SUPABASE_URL hoặc SUPABASE_JWT_SECRET)
         TẮT  → CurrentUser giả, is_admin=True     # giai đoạn chưa gắn đăng nhập
         BẬT  → app-token (iss=smarthome-app, APP_TOKEN_SECRET)?  -> dùng luôn (Widget/shortcut)
+                 sub == DEV_USER_ID (cấp lúc xác thực TẮT, mang quyền chủ nhà giả) → 401
                không phải → _decode_supabase_token theo `alg` trong header:
                  ES256/RS256 → khóa công khai JWKS {SUPABASE_URL}/auth/v1/.well-known/jwks.json
                                (PyJWKClient cache), kiểm aud=authenticated + iss  # project của nhà
@@ -308,7 +309,8 @@ LoginScreen.signIn()
   Supabase signInWithPassword
     → AuthService.refreshAppToken():
         POST /api/auth/app-token  (Bearer = access token Supabase)
-        → lưu SharedPreferences['app_token_v1']
+        → 200: lưu SharedPreferences['app_token_v1']
+        → 401/403 (pending/blocked/token cũ): XÓA app-token cũ — widget không dùng tiếp token chủ nhà giả
   → onSignedIn → _bootstrap() lại
 ```
 

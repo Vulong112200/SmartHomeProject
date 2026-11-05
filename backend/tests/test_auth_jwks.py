@@ -97,3 +97,25 @@ def test_thuat_toan_none_bi_tu_choi(env):
     with pytest.raises(HTTPException) as e:
         _user(token)
     assert e.value.status_code == 401
+
+
+# =========================================================
+# App-token cấp lúc xác thực TẮT (danh tính chủ nhà giả) không được sống sót
+# sau khi bật xác thực
+# =========================================================
+def test_app_token_from_disabled_period_rejected_after_enable(env):
+    env.monkeypatch.setenv("AUTH_DISABLED", "1")
+    stale = auth.issue_app_token(auth.DEV_USER_ID, "chu@x.test")
+    env.monkeypatch.delenv("AUTH_DISABLED")
+
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=stale)
+    with pytest.raises(HTTPException) as e:
+        auth.get_current_user(creds)
+    assert e.value.status_code == 401
+
+
+def test_real_user_app_token_still_accepted(env):
+    token = auth.issue_app_token("user-123", "chu@x.test")
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    user = auth.get_current_user(creds)
+    assert user.user_id == "user-123" and user.is_admin

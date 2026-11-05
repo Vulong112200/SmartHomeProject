@@ -52,7 +52,7 @@ backend/
 │   ├── test_switch_device.py       # pytest máy bơm (công tắc Tuya) + cửa cuốn: parser chọn theo LOẠI, bẫy 'tăng áp'/'ăn', switch_1, cửa theo thời gian
 │   ├── conftest.py                 # fixture `api`: đăng nhập theo vai, MỌI lệnh tới thiết bị bị ghi lại (không gửi thật)
 │   ├── test_security_fixes.py      # vượt quyền AI/lịch/PATCH, action lạ → 400, Tuya không rõ loại không gửi, 'tắt hết'
-│   ├── test_auth_jwks.py           # verify ES256 qua JWKS (khóa EC tự sinh, không gọi mạng), HS256 cũ, app-token, alg none -> 401
+│   ├── test_auth_jwks.py           # verify ES256 qua JWKS (khóa EC tự sinh, không gọi mạng), HS256 cũ, app-token (+ token DEV cấp lúc auth tắt -> 401), alg none -> 401
 │   ├── test_profile.py             # PATCH /api/me chỉ sửa chính mình, validate tên/màu
 │   ├── test_shared_zones_scenes.py # khu dùng chung, kịch bản (quyền tạo/chạy, bỏ qua ngoài khu), kịch bản bằng giọng nói
 │   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)
@@ -77,6 +77,7 @@ backend/
 
 ```
 frontend/
+├── supabase.example.json       # mẫu khóa Supabase cho build (--dart-define-from-file); bản thật supabase.json gitignore
 ├── lib/
 │   ├── main.dart                   # Entry: khởi động app, đăng ký ShortcutHandler, MaterialApp + appNavigatorKey, 3 tab (Home/AI/Hẹn giờ) + isVisible cho Dashboard
 │   ├── core/

@@ -40,7 +40,7 @@ from app.services.device_actions import normalize_action
 # from app.services.automation_engine import automation_engine, AutomationRule
 
 # Import Database
-from app.core.auth import auth_status, issue_app_token
+from app.core.auth import app_token_secret, auth_status, issue_app_token
 from app.core.database import SessionLocal, get_db, init_db, IS_SQLITE
 from app.core.household import (
     accessible_zones,
@@ -127,10 +127,15 @@ async def lifespan(app: FastAPI):
     auth_on, why = auth_status()
     if auth_on:
         logger.info("🔒 Xác thực BẬT (%s).", why)
+        if not app_token_secret():
+            logger.error(
+                "❌ Xác thực BẬT nhưng THIẾU APP_TOKEN_SECRET — Home Widget và shortcut "
+                "sẽ hỏng âm thầm (không cấp được app-token). Đặt APP_TOKEN_SECRET trên Render."
+            )
     else:
         logger.warning(
             "🔓 Xác thực TẮT (%s) — mọi request được coi là chủ nhà. "
-            "Đúng cho giai đoạn chưa gắn đăng nhập; đặt SUPABASE_JWT_SECRET để bật.",
+            "Đúng cho giai đoạn chưa gắn đăng nhập; đặt SUPABASE_URL để bật.",
             why,
         )
 
