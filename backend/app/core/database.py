@@ -125,6 +125,10 @@ _REQUIRED_SCHEMA = {
     "zones": {"id", "name", "sort_order", "is_shared"},
     "member_zone_access": {"user_id", "zone_id"},
     "scenes": {"id", "name", "icon", "sort_order", "actions", "created_by"},
+    "command_logs": {
+        "id", "at_ms", "device_id", "device_name", "action_type", "action_value",
+        "action_label", "source", "user_id", "user_name", "success", "detail", "ext_id",
+    },
 }
 
 
@@ -262,7 +266,7 @@ def init_db(bind=None) -> None:
     bind = bind if bind is not None else engine
 
     # import để models đăng ký vào Base.metadata trước khi create_all
-    from app.models import device, member, scene, schedule, zone  # noqa: F401
+    from app.models import command_log, device, member, scene, schedule, zone  # noqa: F401
 
     Base.metadata.create_all(bind=bind)
     run_startup_migrations(bind)

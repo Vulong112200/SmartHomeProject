@@ -18,7 +18,9 @@ from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from app.core.database import SessionLocal
+from app.models.device import DeviceModel
 from app.models.schedule import ScheduleModel
+from . import command_log
 from .connector_manager import device_manager
 
 logger = logging.getLogger("SmartHome.Scheduler")
@@ -97,6 +99,25 @@ def _end_days(sch: ScheduleModel) -> str:
     return ",".join(str((int(d) + 1) % 7) for d in sch.days.split(",") if d.strip().isdigit())
 
 
+async def _fire(db, sch: ScheduleModel, action_type: str, action_value: Optional[str],
+                detail: str, invalidate_cache: Optional[Callable]) -> None:
+    """Gửi 1 hành động của lịch + ghi lịch sử (nguồn `schedule`, không có người bấm)."""
+    ok, error = False, None
+    try:
+        ok = await execute_schedule_action(
+            sch.brand, sch.device_id, action_type, action_value, invalidate_cache,
+        )
+        if not ok:
+            logger.warning(f"⏰ Lịch #{sch.id}: thiết bị KHÔNG nhận lệnh ({detail}).")
+    except Exception as e:
+        error = str(e)
+        logger.error(f"⏰ Lịch #{sch.id} lỗi thực thi ({detail}): {e}")
+    device = db.query(DeviceModel).filter(DeviceModel.id == sch.device_id).first()
+    command_log.record(db, device=device, device_id=sch.device_id, action_type=action_type,
+                       action_value=action_value, source="schedule", success=ok,
+                       detail=f"{detail}: {error}" if error else detail)
+
+
 async def scheduler_loop(invalidate_cache: Optional[Callable] = None):
     """Vòng lặp nền: quét & kích hoạt các lịch đến giờ. Lỗi 1 lịch không dừng vòng lặp."""
     logger.info(f"⏰ Scheduler Hẹn giờ bắt đầu chạy (tick {TICK_SECONDS}s, grace {GRACE_SECONDS}s)...")
@@ -137,15 +158,8 @@ async def scheduler_loop(invalidate_cache: Optional[Callable] = None):
                             sch.enabled = False  # lịch đơn 1 lần: xong hành động duy nhất
                         db.commit()
                         logger.info(f"⏰ Kích hoạt lịch #{sch.id} '{label}': {sch.action_type} {sch.action_value or ''} lúc {sch.time}")
-                        try:
-                            ok = await execute_schedule_action(
-                                sch.brand, sch.device_id, sch.action_type, sch.action_value,
-                                invalidate_cache,
-                            )
-                            if not ok:
-                                logger.warning(f"⏰ Lịch #{sch.id}: thiết bị KHÔNG nhận lệnh.")
-                        except Exception as e:
-                            logger.error(f"⏰ Lịch #{sch.id} lỗi thực thi: {e}")
+                        await _fire(db, sch, sch.action_type, sch.action_value,
+                                    f"Lịch “{label}” lúc {sch.time}", invalidate_cache)
 
                     if end_due:
                         sch.last_end_fired_date = today
@@ -153,15 +167,8 @@ async def scheduler_loop(invalidate_cache: Optional[Callable] = None):
                             sch.enabled = False  # hành động CUỐI của lịch khoảng 1 lần
                         db.commit()
                         logger.info(f"⏰ Kích hoạt lịch #{sch.id} '{label}' (kết thúc): {sch.end_action_type} {sch.end_action_value or ''} lúc {sch.end_time}")
-                        try:
-                            ok = await execute_schedule_action(
-                                sch.brand, sch.device_id, sch.end_action_type, sch.end_action_value,
-                                invalidate_cache,
-                            )
-                            if not ok:
-                                logger.warning(f"⏰ Lịch #{sch.id} (kết thúc): thiết bị KHÔNG nhận lệnh.")
-                        except Exception as e:
-                            logger.error(f"⏰ Lịch #{sch.id} (kết thúc) lỗi thực thi: {e}")
+                        await _fire(db, sch, sch.end_action_type, sch.end_action_value,
+                                    f"Lịch “{label}” kết thúc lúc {sch.end_time}", invalidate_cache)
             finally:
                 db.close()
         except asyncio.CancelledError:

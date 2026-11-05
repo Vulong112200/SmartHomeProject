@@ -332,3 +332,33 @@ Người dùng bấm nút trên Home Widget khi app ĐÃ TẮT
 Thiếu app-token thì nhánh này trả `{}` không có header ⇒ 401 ⇒ widget hiện
 "Không rõ" và nút bấm **không làm gì, không báo lỗi**. Đó là lý do
 `test/auth_service_test.dart` chạy đúng trong điều kiện Supabase CHƯA init.
+
+## 9. Lịch sử điều khiển
+
+### Ghi (mọi lệnh hệ thống gửi)
+```
+App/Widget/Shortcut → DeviceApi.sendAction/sendMode(..., via)
+  → GET /api/test-control/...?via=app|widget|shortcut
+      → connector.turn_on/off/set_mode → _cache_invalidate
+      → _log_control → command_log.record(source=via, member, success)
+Giọng nói / Kịch bản → _execute_device_action(..., db, member, source=voice|scene, detail)
+      → execute_schedule_action → command_log.record
+Lịch hẹn tự chạy → scheduler._fire → execute_schedule_action → record(source=schedule, member=None)
+Chạy thử lịch   → /api/schedules/{id}/run → record(source=schedule, member=người bấm)
+record() cũng mark_sent(device_id) → để VeSync không coi hậu quả lệnh mình là "ngoài app"
+```
+
+### Đọc + kéo sự kiện ngoài app
+```
+Menu tài khoản → "Lịch sử điều khiển" → HistoryScreen
+  → HistoryApi.fetch() → GET /api/history?limit=50   (timeout app 20s)
+      devices = device_query(member)          # chỉ thiết bị mình thấy
+      sync_external_events(devices)           # wait_for 10s; mỗi thiết bị ≤ 1 lần/60s
+        tuya/rojeco: fetch_event_logs(type 5) + (type 7), 7 ngày   (CHỈ ĐỌC)
+          → classify_tuya_logs → _insert_events (bỏ ext_id đã có)
+      → command_logs WHERE device_id IN devices ORDER BY at_ms DESC
+  → "Tải thêm": ?before_ms=<dòng cuối>&sync=false
+
+Dashboard poll /status (máy lọc VeSync, đọc thật không cache)
+  → device_history.observe_state → đổi so với lần trước & không có lệnh 60s → record source=external
+```

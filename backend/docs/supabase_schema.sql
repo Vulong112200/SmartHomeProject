@@ -116,6 +116,29 @@ create table if not exists public.scenes (
 );
 
 -- ---------------------------------------------------------------------
+-- command_logs — lịch sử lệnh điều khiển + sự kiện ngoài app (nút vật lý...)
+-- Backend TỰ TẠO bảng này lúc boot (create_all); khối này chỉ để tham khảo.
+-- at_ms = epoch mili-giây UTC. ext_id chống trùng khi đồng bộ nhật ký Tuya.
+-- ---------------------------------------------------------------------
+create table if not exists public.command_logs (
+    id           serial primary key,
+    at_ms        bigint  not null,
+    device_id    text    not null,
+    device_name  text,
+    action_type  text,
+    action_value text,
+    action_label text    not null,
+    source       text    not null,
+    user_id      text,
+    user_name    text,
+    success      boolean,
+    detail       text,
+    ext_id       text unique
+);
+create index if not exists ix_command_logs_at_ms     on public.command_logs (at_ms);
+create index if not exists ix_command_logs_device_id on public.command_logs (device_id);
+
+-- ---------------------------------------------------------------------
 -- Seed 3 thiết bị đang chạy thật
 --
 -- ⚠️ GIỮ NGUYÊN id. Shortcut đã pin ra màn hình chính và các slot Home Widget
@@ -167,6 +190,7 @@ alter table public.zones              enable row level security;
 alter table public.members            enable row level security;
 alter table public.member_zone_access enable row level security;
 alter table public.scenes             enable row level security;
+alter table public.command_logs       enable row level security;
 
 -- ---------------------------------------------------------------------
 -- Kiểm tra nhanh sau khi chạy (nên thấy 3 dòng, rowsecurity = true)

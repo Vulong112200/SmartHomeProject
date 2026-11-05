@@ -49,6 +49,13 @@ const List<HelpTopic> helpTopics = [
     'Widget tự làm mới khoảng 15 phút/lần khi app đóng; bấm ↻ để làm mới ngay.',
     'Trên thẻ thiết bị, bấm "Tạo icon xử lý nhanh" để có nút điều khiển ngay ngoài màn hình chính.',
   ]),
+  HelpTopic(Icons.history, 'Lịch sử điều khiển', [
+    'Bấm vào tên/ảnh của bạn ở góc trên → "Lịch sử điều khiển".',
+    'Mỗi dòng cho biết thiết bị, lệnh, giờ, ai bấm và bấm từ đâu (app, widget, icon nhanh, giọng nói, kịch bản, lịch hẹn).',
+    'Thao tác ngoài app cũng được ghi: "Tại thiết bị" = nút vật lý / công tắc tường / lịch cài trong máy; "App Smart Life" = bấm trong app của hãng.',
+    'Máy lọc không khí chỉ phát hiện thay đổi ngoài app khi có người đang mở app, và giờ ghi là lúc phát hiện. Remote cửa cuốn không được ghi.',
+    'Dòng có dấu ⚠ đỏ = thiết bị không nhận lệnh. Bật "Chỉ ngoài app" để xem riêng thao tác ngoài app.',
+  ]),
   HelpTopic(Icons.person_outline, 'Hồ sơ, giao diện, mật khẩu', [
     'Bấm nút tài khoản góc trên → Hồ sơ & giao diện.',
     'Đổi tên hiển thị, màu avatar, giao diện Sáng / Tối / Theo hệ thống.',

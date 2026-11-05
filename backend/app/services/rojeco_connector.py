@@ -2,7 +2,9 @@ import asyncio
 import os
 from tuya_connector import TuyaOpenAPI
 from .base_connector import DeviceConnector
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+from .tuya_connector import fetch_tuya_logs
 
 # Giá trị DP `feed_state` theo spec thiết bị (GET .../specification).
 _FEED_STATES = ("standby", "feeding", "done")
@@ -37,6 +39,20 @@ class RojecoConnector(DeviceConnector):
         except Exception as e:
             print(f"[Rojeco] ❌ Lỗi kết nối mây: {e}")
             return False
+
+    async def fetch_event_logs(self, device_id: str, log_type: int, start_ms: int, end_ms: int,
+                               size: int = 100) -> Optional[list]:
+        """Nhật ký Tuya Cloud (CHỈ ĐỌC) — xem tuya_connector.fetch_tuya_logs."""
+        async def call(fn, *args):
+            return await asyncio.wait_for(asyncio.to_thread(fn, *args), 15)
+
+        async def ensure():
+            if not self.is_connected:
+                await call(self.openapi.connect)
+                self.is_connected = True
+
+        return await fetch_tuya_logs(call, self.openapi, device_id, log_type, start_ms, end_ms, size,
+                                     ensure=ensure)
 
     async def get_device_state(self, device_id: str) -> Dict[str, Any]:
         """

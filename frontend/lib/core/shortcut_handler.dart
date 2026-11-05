@@ -24,7 +24,7 @@ class ShortcutHandler {
           action,
           title: 'Cho ăn 1 lần?',
           message: 'Nhả 1 phần thức ăn cho ${action.deviceName}.',
-          onYes: () => DeviceApi.sendMode(action.brand, action.deviceId, '1'),
+          onYes: () => DeviceApi.sendMode(action.brand, action.deviceId, '1', via: 'shortcut'),
           successMsg: 'Đã cho ăn 1 lần 🐾',
         );
         break;
@@ -33,7 +33,7 @@ class ShortcutHandler {
           action,
           title: 'Mở cửa?',
           message: 'Xác nhận MỞ ${action.deviceName}.',
-          onYes: () => DeviceApi.sendMode(action.brand, action.deviceId, 'open'),
+          onYes: () => DeviceApi.sendMode(action.brand, action.deviceId, 'open', via: 'shortcut'),
           successMsg: 'Đang mở cửa...',
         );
         break;
@@ -42,7 +42,7 @@ class ShortcutHandler {
           action,
           title: 'Đóng cửa?',
           message: 'Xác nhận ĐÓNG ${action.deviceName}.',
-          onYes: () => DeviceApi.sendMode(action.brand, action.deviceId, 'close'),
+          onYes: () => DeviceApi.sendMode(action.brand, action.deviceId, 'close', via: 'shortcut'),
           successMsg: 'Đang đóng cửa...',
         );
         break;
@@ -66,7 +66,7 @@ class ShortcutHandler {
       title: willOpen ? 'Mở cửa?' : 'Đóng cửa?',
       message: 'Xác nhận ${willOpen ? "MỞ" : "ĐÓNG"} ${action.deviceName}.',
       onYes: () async {
-        final ok = await DeviceApi.sendMode(action.brand, action.deviceId, targetMode);
+        final ok = await DeviceApi.sendMode(action.brand, action.deviceId, targetMode, via: 'shortcut');
         if (ok) {
           // Phản hồi tức thì theo mục tiêu (lạc quan), rồi hòa giải về trạng
           // thái THẬT sau 1 nhịp để icon phản ánh đúng kết quả lệnh thật sự.
@@ -104,7 +104,7 @@ class ShortcutHandler {
     final currentIndex = PurifierCycle.indexFromStatus(status);
     final step = PurifierCycle.next(currentIndex);
 
-    final ok = await PurifierCycle.apply(action.brand, action.deviceId, step);
+    final ok = await PurifierCycle.apply(action.brand, action.deviceId, step, via: 'shortcut');
 
     if (ok) {
       // Cập nhật icon shortcut cho khớp trạng thái mới (chống hiển thị sai).

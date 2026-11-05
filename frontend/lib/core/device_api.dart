@@ -87,10 +87,11 @@ class DeviceApi {
   }
 
   /// Gửi lệnh bật/tắt (action = 'on' | 'off').
-  static Future<bool> sendAction(String brand, String deviceId, String action) async {
+  /// `via` = nơi bấm ('app' | 'widget' | 'shortcut') — backend ghi vào Lịch sử.
+  static Future<bool> sendAction(String brand, String deviceId, String action, {String via = 'app'}) async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId?action=$action'),
+          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId?action=$action&via=$via'),
               headers: await _headers())
           .timeout(_timeout);
       _check401(res);
@@ -102,10 +103,10 @@ class DeviceApi {
 
   /// Gửi lệnh đổi chế độ (mode = '1'|'2'|'3'|'auto'|'sleep' cho lọc; 'open'|'close'|'stop'
   /// cho cửa; số phần cho máy cho ăn).
-  static Future<bool> sendMode(String brand, String deviceId, String mode) async {
+  static Future<bool> sendMode(String brand, String deviceId, String mode, {String via = 'app'}) async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$mode'),
+          .get(Uri.parse('$baseUrl/api/test-control/$brand/$deviceId/mode?mode=$mode&via=$via'),
               headers: await _headers())
           .timeout(_timeout);
       _check401(res);
@@ -160,14 +161,14 @@ class PurifierCycle {
   }
 
   /// Thực thi 1 bước lên backend.
-  static Future<bool> apply(String brand, String deviceId, PurifierStep step) {
+  static Future<bool> apply(String brand, String deviceId, PurifierStep step, {String via = 'app'}) {
     switch (step.kind) {
       case 'off':
-        return DeviceApi.sendAction(brand, deviceId, 'off');
+        return DeviceApi.sendAction(brand, deviceId, 'off', via: via);
       case 'on':
-        return DeviceApi.sendAction(brand, deviceId, 'on');
+        return DeviceApi.sendAction(brand, deviceId, 'on', via: via);
       case 'mode':
-        return DeviceApi.sendMode(brand, deviceId, step.mode!);
+        return DeviceApi.sendMode(brand, deviceId, step.mode!, via: via);
       default:
         return Future.value(false);
     }

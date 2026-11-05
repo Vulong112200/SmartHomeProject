@@ -24,6 +24,7 @@ backend/
 │   │   │                           # display_name, role owner|adult|kid|guest, status pending|active|blocked)
 │   │   ├── zone.py                 # ZoneModel (zones: id, name, sort_order) + MemberZoneAccessModel
 │   │   │                           # (member_zone_access: grant theo khu, CHỈ cho kid/guest)
+│   │   ├── command_log.py          # CommandLogModel (command_logs: at_ms, device/user ẢNH CHỤP, action_label, source, success NULL = quan sát, ext_id UNIQUE)
 │   │   ├── scene.py                # SceneModel (scenes: name, icon, actions JSON đã chuẩn hóa, created_by) — kịch bản của cả nhà
 │   │   └── schedule.py             # ScheduleModel (bảng schedules: time HH:MM, days CSV, action, last_fired_date + lịch KHOẢNG end_time/end_action_*/last_end_fired_date, one_shot, created_by)
 │   └── services/
@@ -36,6 +37,8 @@ backend/
 │       ├── local_parser.py         # parse_command_locally: lệnh đơn giản không cần AI; câu CÓ GIỜ → intent schedule (không thi hành ngay)
 │       ├── vn_time_parser.py       # extract_schedule_times: parse giờ tiếng Việt (16h30, 4 giờ chiều, từ X đến Y, mai, mỗi ngày) + resolve_target_days
 │       ├── ai_parser.py            # parse_command_with_ai: gọi LLM (OpenRouter) cho câu phức (có few-shot intent schedule); client lazy (thiếu key vẫn boot)
+│       ├── command_log.py          # record(): ghi lệnh hệ thống gửi (lỗi DB không làm hỏng lệnh); action_label theo loại; prune_old 90 ngày
+│       ├── device_history.py       # Sự kiện NGOÀI app: nhật ký Tuya (type 5/7, classify_tuya_logs) + VeSync observe_state
 │       ├── scheduler.py            # scheduler_loop: vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh); bắn start+end độc lập, qua đêm _end_days +1, one-shot tự tắt
 │       └── automation_engine.py    # Automation rules (đang đóng băng, không import trong main.py)
 ├── docs/
@@ -55,6 +58,7 @@ backend/
 │   ├── test_auth_jwks.py           # verify ES256 qua JWKS (khóa EC tự sinh, không gọi mạng), HS256 cũ, app-token (+ token DEV cấp lúc auth tắt -> 401), alg none -> 401
 │   ├── test_profile.py             # PATCH /api/me chỉ sửa chính mình, validate tên/màu
 │   ├── test_shared_zones_scenes.py # khu dùng chung, kịch bản (quyền tạo/chạy, bỏ qua ngoài khu), kịch bản bằng giọng nói
+│   ├── test_command_history.py    # lịch sử: người/nguồn/kết quả, via không giả được, giọng nói/kịch bản/lịch, lọc theo khu, phân loại nhật ký Tuya, VeSync
 │   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)
 ├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL,
 │                                   # SUPABASE_JWT_SECRET, ADMIN_EMAILS, AUTH_DISABLED) — gitignored
@@ -86,8 +90,9 @@ frontend/
 │   │   ├── household_api.dart      # Zone/Member model + CRUD khu vực, duyệt/đổi vai/cấp khu, gán thiết bị vào khu
 │   │   ├── auth_service.dart       # accessToken() Supabase → fallback app-token (isolate nền), headers() ném
 │   │   │                           # NotAuthenticatedException, handleUnauthorized(); HouseholdProfile + fetchMe()
-│   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus / sendMode / sendAction + PurifierCycle
+│   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus / sendMode / sendAction (+ via) + PurifierCycle
 │   │   ├── device_type.dart        # deviceTypeOf(name, category:): category backend thắng, fallback suy từ tên; deviceCategoryLabels (nơi duy nhất)
+│   │   ├── history_api.dart        # HistoryEntry + HistorySource (nơi duy nhất map nguồn → nhãn/icon) + HistoryApi.fetch (timeout 20s)
 │   │   ├── scene_api.dart          # Scene/SceneAction model + SceneApi: fetch/save/delete/run (SceneRunResult.summary)
 │   │   ├── zone_groups.dart        # zoneGroupsOf/devicesInZone: gom thiết bị theo khu cho chip lọc dashboard (thuần dữ liệu)
 │   │   ├── theme_controller.dart   # ThemeMode Hệ thống/Sáng/Tối, lưu SharedPreferences, mặc định Tối
@@ -111,6 +116,7 @@ frontend/
 │   │   ├── schedule_tab.dart       # Tab Hẹn giờ: danh sách lịch + form thêm/sửa (bottom sheet)
 │   │   ├── forgot_password_screen.dart # Quên mật khẩu: email -> mã OTP (verifyOTP recovery) -> mật khẩu mới
 │   │   ├── password_field.dart     # PasswordField (nút con mắt) + validateNewPassword + friendlyAuthError (dịch lỗi Supabase)
+│   │   ├── history_screen.dart     # Lịch sử điều khiển: nhóm theo ngày, lọc thiết bị, 'Chỉ ngoài app', tải thêm
 │   │   ├── help_screen.dart        # Hướng dẫn sử dụng: helpTopics (mục Quản trị chỉ chủ nhà thấy)
 │   │   ├── onboarding_screen.dart  # Giới thiệu 4 trang ở lần đầu vào app (cờ onboarding_done_v1)
 │   │   ├── profile_screen.dart     # Hồ sơ & giao diện: tên, màu avatar, vai/khu, sáng/tối, đọc phản hồi, đăng xuất

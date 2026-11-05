@@ -33,6 +33,8 @@ from app.services.ai_parser import parse_command_with_ai
 
 # Vòng lặp Hẹn giờ chạy nền
 from app.services.scheduler import scheduler_loop, execute_schedule_action, TZ
+from app.services import command_log, device_history
+from app.models.command_log import CommandLogModel
 from app.services.vn_time_parser import resolve_target_days
 from app.services.device_actions import normalize_action
 
@@ -383,6 +385,14 @@ def _cache_set(brand: str, device_id: str, data):
 def _cache_invalidate(brand: str, device_id: str):
     _status_cache.pop((brand, device_id), None)
 
+def _log_control(db: Session, device: DeviceModel, action_type: str, action_value: str | None,
+                 via: str, member: MemberModel, ok: bool, error: str | None = None) -> None:
+    """Ghi lịch sử cho endpoint control. `via` do app tự khai — chỉ nhận giá trị
+    trong CLIENT_SOURCES, lạ thì coi là "app" (client không giả được nguồn khác)."""
+    source = via if via in command_log.CLIENT_SOURCES else "app"
+    command_log.record(db, device=device, action_type=action_type, action_value=action_value,
+                       source=source, success=ok, member=member, detail=error)
+
 # =========================================================
 # API - Test Control Device (Action & Mode)
 # =========================================================
@@ -391,11 +401,13 @@ async def test_control(
     brand: str,
     device_id: str,
     action: str = "on",
+    via: str = "app",
     db: Session = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     # Hãng lấy từ DB, không tin URL: sai hãng = gửi id tới nhầm connector + lệch key cache.
-    brand = require_device_access(db, member, device_id).brand
+    device = require_device_access(db, member, device_id)
+    brand = device.brand
     # Trước đây mọi giá trị khác "on" (gõ sai, "open", "toggle"...) đều thành
     # turn_off — với cửa cuốn là ĐÓNG CỬA.
     if action not in ("on", "off"):
@@ -407,6 +419,7 @@ async def test_control(
         else:
             ok = await connector.turn_off(device_id)
         _cache_invalidate(brand, device_id)
+        _log_control(db, device, action, None, via, member, ok)
         if not ok:
             logger.warning(f"Lệnh {action} cho {device_id} qua {brand} không thành công")
             return {"status": "error", "message": f"Thiết bị {device_id} không nhận lệnh {action}"}
@@ -414,6 +427,7 @@ async def test_control(
         return {"status": "success", "message": f"Đã {action} thiết bị {device_id} ({brand})"}
     except Exception as e:
         logger.error(f"Lỗi điều khiển {brand}: {e}")
+        _log_control(db, device, action, None, via, member, False, str(e))
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/test-control/{brand}/{device_id}/mode")
@@ -421,16 +435,19 @@ async def test_control_mode(
     brand: str,
     device_id: str,
     mode: str,
+    via: str = "app",
     db: Session = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     # Hãng lấy từ DB, không tin URL: sai hãng = gửi id tới nhầm connector + lệch key cache.
-    brand = require_device_access(db, member, device_id).brand
+    device = require_device_access(db, member, device_id)
+    brand = device.brand
     try:
         connector = device_manager.get_connector(brand)
         if hasattr(connector, 'set_mode'):
             ok = await connector.set_mode(device_id, mode)
             _cache_invalidate(brand, device_id)
+            _log_control(db, device, "mode", mode, via, member, ok)
             if not ok:
                 logger.warning(f"Đổi chế độ {mode} cho {device_id} qua {brand} không thành công")
                 return {"status": "error", "message": f"Thiết bị không nhận chế độ {mode}"}
@@ -440,6 +457,7 @@ async def test_control_mode(
             return {"status": "error", "message": "Thiết bị không hỗ trợ đổi chế độ"}
     except Exception as e:
         logger.error(f"Lỗi đổi chế độ {brand}: {e}")
+        _log_control(db, device, "mode", mode, via, member, False, str(e))
         return {"status": "error", "message": str(e)}
 
 # =========================================================
@@ -454,7 +472,8 @@ async def get_device_status(
     member: MemberModel = Depends(get_current_member),
 ):
     # Hãng lấy từ DB, không tin URL: sai hãng = gửi id tới nhầm connector + lệch key cache.
-    brand = require_device_access(db, member, device_id).brand
+    device = require_device_access(db, member, device_id)
+    brand = device.brand
     try:
         # fresh=1: bỏ qua cache (client gọi ngay sau lệnh điều khiển để lấy
         # trạng thái mới nhất). Poll định kỳ vẫn dùng cache bình thường.
@@ -465,6 +484,8 @@ async def get_device_status(
         connector = device_manager.get_connector(brand)
         state = await connector.get_device_state(device_id)
         _cache_set(brand, device_id, state)
+        if isinstance(state, dict):
+            device_history.observe_state(db, device, state)
         return {"status": "success", "data": state}
     except Exception as e:
         logger.error(f"Lỗi lấy trạng thái {brand}/{device_id}: {e}")
@@ -488,7 +509,9 @@ def _action_label_vn(action_type: str, action_value: str | None) -> str:
     return f"Chế độ {action_value}"
 
 async def _execute_device_action(device: DeviceModel | None, verb: str | None, mode: str | None,
-                                 requested_id: str | None = None) -> dict:
+                                 requested_id: str | None = None, *, db: Session | None = None,
+                                 member: MemberModel | None = None, source: str = "voice",
+                                 detail: str | None = None) -> dict:
     """
     Thi hành 1 hành động "không qua UI" (trợ lý AI, kịch bản) trên `device`.
     `device` PHẢI lấy từ danh sách đã lọc theo quyền (device_query) — None nghĩa
@@ -510,6 +533,9 @@ async def _execute_device_action(device: DeviceModel | None, verb: str | None, m
         )
     except Exception as e:
         logger.error(f"[Action Error] {device.brand}/{device.id}: {e}")
+    if db is not None:
+        command_log.record(db, device=device, action_type=action_type, action_value=action_value,
+                           source=source, success=success, member=member, detail=detail)
     return {"device_name": device.name, "action": _action_label_vn(action_type, action_value),
             "success": success}
 
@@ -656,6 +682,7 @@ async def parse_voice_command(
         return await _execute_device_action(
             devices_by_id.get(action.get("id")), action.get("action"), action.get("mode"),
             requested_id=action.get("id"),
+            db=db, member=member, source="voice", detail=f"“{command.text}”",
         )
 
     # Bắn TẤT CẢ các lệnh IoT cùng một lúc (Tốc độ x2, x3)
@@ -905,16 +932,24 @@ async def run_schedule_now(
         return {"status": "error", "message": "Lịch này không có hành động kết thúc."}
     action_type = sch.end_action_type if part == "end" else sch.action_type
     action_value = sch.end_action_value if part == "end" else sch.action_value
+    device = db.query(DeviceModel).filter(DeviceModel.id == sch.device_id).first()
+    label = f"Chạy thử lịch “{sch.name or sch.time}”" + (" (kết thúc)" if part == "end" else "")
     try:
         ok = await execute_schedule_action(
             sch.brand, sch.device_id, action_type, action_value,
             invalidate_cache=_cache_invalidate,
         )
+        command_log.record(db, device=device, device_id=sch.device_id, action_type=action_type,
+                           action_value=action_value, source="schedule", success=ok,
+                           member=member, detail=label)
         if not ok:
             return {"status": "error", "message": "Thiết bị không nhận lệnh."}
         return {"status": "success", "message": f"Đã chạy lịch #{schedule_id}"}
     except Exception as e:
         logger.error(f"Lỗi chạy lịch #{schedule_id}: {e}")
+        command_log.record(db, device=device, device_id=sch.device_id, action_type=action_type,
+                           action_value=action_value, source="schedule", success=False,
+                           member=member, detail=f"{label}: {e}")
         return {"status": "error", "message": str(e)}
 
 # =========================================================
@@ -1057,7 +1092,10 @@ async def _run_scene(db: Session, member: MemberModel, scene: SceneModel) -> dic
         if device is None:
             skipped += 1
             continue
-        results.append(await _execute_device_action(device, a.get("action_type"), a.get("action_value")))
+        results.append(await _execute_device_action(
+            device, a.get("action_type"), a.get("action_value"),
+            db=db, member=member, source="scene", detail=f"Kịch bản “{scene.name}”",
+        ))
     return {"scene": scene.name, "results": results, "skipped": skipped}
 
 
@@ -1071,6 +1109,55 @@ async def run_scene(
     logger.info(f"🎬 {member.user_id} chạy kịch bản #{scene_id}: "
                 f"{sum(r['success'] for r in data['results'])}/{len(data['results'])} ok, bỏ qua {data['skipped']}")
     return {"status": "success", "data": data}
+
+
+# =========================================================
+# API - Lịch sử lệnh điều khiển (ai / từ đâu / lúc nào)
+# =========================================================
+_HISTORY_SYNC_TIMEOUT = 10.0  # đọc nhật ký Tuya chậm thì trả dữ liệu đang có, lần sau bù
+
+
+def _log_to_dict(r: CommandLogModel) -> dict:
+    return {
+        "id": r.id, "at_ms": r.at_ms, "device_id": r.device_id, "device_name": r.device_name,
+        "action_label": r.action_label, "source": r.source, "user_name": r.user_name,
+        "success": r.success, "detail": r.detail,
+    }
+
+
+@app.get("/api/history")
+async def list_history(
+    limit: int = 50,
+    before_ms: int | None = None,
+    device_id: str | None = None,
+    sync: bool = True,
+    db: Session = Depends(get_db),
+    member: MemberModel = Depends(get_current_member),
+):
+    """
+    Lịch sử mới nhất trước, phân trang bằng `before_ms`. Chỉ thiết bị người gọi
+    THẤY được (cùng luật device_query với /api/devices) — lịch sử là của cả nhà,
+    không lọc theo người bấm. `sync=1` (mặc định) kéo nhật ký Tuya mới (nút vật
+    lý, app Smart Life) trước khi trả; mỗi thiết bị tối đa 1 lần/60s.
+    """
+    devices = device_query(db, member).all()
+    if device_id is not None:
+        devices = [require_device_access(db, member, device_id)]
+    if sync:
+        try:
+            await asyncio.wait_for(device_history.sync_external_events(db, devices), _HISTORY_SYNC_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning("Đồng bộ nhật ký thiết bị quá lâu — trả lịch sử đang có.")
+        except Exception as e:
+            logger.warning(f"Đồng bộ nhật ký thiết bị lỗi: {e}")
+            db.rollback()
+
+    limit = max(1, min(limit, 200))
+    q = db.query(CommandLogModel).filter(CommandLogModel.device_id.in_([d.id for d in devices]))
+    if before_ms is not None:
+        q = q.filter(CommandLogModel.at_ms < before_ms)
+    rows = q.order_by(CommandLogModel.at_ms.desc(), CommandLogModel.id.desc()).limit(limit).all()
+    return {"status": "success", "data": [_log_to_dict(r) for r in rows], "has_more": len(rows) == limit}
 
 
 # =========================================================

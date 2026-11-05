@@ -33,6 +33,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | Hồ sơ cá nhân (tên, màu avatar, giao diện, đọc phản hồi) | ✅ | `PATCH /api/me`, `screens/profile_screen.dart`, `core/avatar.dart` |
 | Trợ lý đọc phản hồi (TTS vi-VN) | ✅ | `core/voice_feedback.dart` (flutter_tts) |
 | Quên mật khẩu (mã OTP qua email) + đổi mật khẩu | ✅ | `screens/forgot_password_screen.dart`, `screens/password_field.dart`, `AuthService.sendPasswordResetCode/resetPasswordWithCode/changePassword`, Hồ sơ → Tài khoản |
+| Lịch sử điều khiển (ai / từ đâu / lúc nào, gồm nút vật lý & app Smart Life) | ✅ | `models/command_log.py`, `services/command_log.py` (ghi), `services/device_history.py` (nhật ký Tuya + VeSync đổi trạng thái), `main.py` `/api/history`, `core/history_api.dart`, `screens/history_screen.dart` |
 | Hướng dẫn sử dụng trong app + giới thiệu lần đầu | ✅ | `screens/help_screen.dart` (`helpTopics` — nơi DUY NHẤT chứa nội dung), `screens/onboarding_screen.dart` |
 | Automation engine | 📋 (đóng băng) | `services/automation_engine.py` (comment trong `main.py`) |
 
@@ -52,7 +53,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | GET/POST | `/api/zones`, `/api/zones/{id}` (PATCH/DELETE) | Khu vực (kèm `is_shared` = dùng chung cả nhà). Đọc: ai cũng được (chỉ thấy khu của mình). Sửa: chỉ chủ nhà. Xóa khu → thiết bị về "hộp thư đến", KHÔNG bị xóa theo |
 | GET | `/api/members` | Danh sách thành viên + khu được cấp. Chỉ chủ nhà |
 | PATCH | `/api/members/{user_id}` | Duyệt / đổi vai / cấp khu (`{role?, status?, display_name?, zone_ids?}` — `zone_ids` thay CẢ BỘ). Chặn tự hạ vai, tự chặn mình, hạ vai owner cuối cùng |
-| GET | `/api/test-control/{brand}/{device_id}?action=on\|off` | Bật/tắt. `action` khác on/off → **400** (trước đây = tắt = đóng cửa). Hãng lấy từ DB, không tin URL |
+| GET | `/api/test-control/{brand}/{device_id}?action=on\|off` (opt `via=app\|widget\|shortcut`) | Bật/tắt. `via` = nơi bấm, ghi vào lịch sử (giá trị lạ → `app`). `action` khác on/off → **400** (trước đây = tắt = đóng cửa). Hãng lấy từ DB, không tin URL |
 | GET | `/api/test-control/{brand}/{device_id}/mode?mode=...` | Đổi chế độ (open/close/stop/low/high...) |
 | GET | `/api/devices/{brand}/{device_id}/status` (opt `?fresh=1`) | **Trạng thái sống** → `{data:{status:ON\|OFF\|offline, door_state, position,...}}`. Có cache ~3s; `fresh=1` bỏ qua cache (dùng sau lệnh điều khiển). |
 | POST | `/api/ai/parse` | Parse + thực thi lệnh NL (body `{text}`). Câu CÓ GIỜ ("hẹn 16h30...") → TẠO LỊCH thay vì thi hành ngay. Parser chỉ nhìn thấy thiết bị trong khu được cấp ⇒ scoping tự động |
@@ -61,6 +62,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 | PATCH | `/api/schedules/{id}` | Sửa lịch / bật-tắt `enabled` (đổi giờ/bật lại → reset `last_fired_date`/`last_end_fired_date`; `end_time: null` tường minh → xóa khoảng) |
 | DELETE | `/api/schedules/{id}` | Xóa lịch |
 | POST | `/api/schedules/{id}/run` (opt `?part=end`) | Chạy NGAY hành động của lịch (test), không đổi fired-date; `part=end` chạy hành động kết thúc |
+| GET | `/api/history` (opt `limit`, `before_ms`, `device_id`, `sync`) | Lịch sử lệnh mới nhất trước, CHỈ thiết bị người gọi thấy được (`device_query`). `sync=1` (mặc định) kéo nhật ký Tuya mới trước khi trả (mỗi thiết bị ≤1 lần/60s, chờ tối đa 10s) |
 | WS | `/ws` | WebSocket (hiện chỉ echo) |
 | GET/HEAD | `/`, `/health` | Health check (UptimeRobot ping giữ server thức). `/health` trả `{status:"online", db:true\|false}` — **luôn 200**; `db:false` = app sống nhưng DB chưa khởi tạo được (boot degraded) |
 
@@ -72,6 +74,7 @@ Hệ thống điều khiển nhà thông minh đa hãng: **backend FastAPI (Pyth
 - **MemberModel** (`members`, `member.py`): `user_id` (PK, = `auth.users.id` của Supabase dạng text), `email`, `display_name`, `role` (`owner`\|`adult`\|`kid`\|`guest`), `status` (`pending`\|`active`\|`blocked`). Người lạ đăng nhập lần đầu → `guest`/`pending`.
 - **ZoneModel** (`zones`, `zone.py`): `id`, `name`, `sort_order`. **MemberZoneAccessModel** (`member_zone_access`): `(user_id, zone_id)` PK ghép — grant CHỈ cho `kid`/`guest`; `owner`/`adult` thấy mọi khu theo luật vai nên không có hàng nào ở đây.
 - **MemberModel.avatar_color** (đợt 2): `#RRGGBB` tự chọn; NULL = app suy màu ổn định từ user_id. **ZoneModel.is_shared** (đợt 2, `server_default` false vì `seed_defaults` chèn bằng SQL thô): kid/guest thấy + điều khiển thiết bị khu dùng chung không cần grant.
+- **CommandLogModel** (`command_logs`, `command_log.py`): `at_ms` (epoch ms UTC), `device_id`, `device_name`/`user_name` (ẢNH CHỤP lúc ghi), `action_type`/`action_value`/`action_label`, `source` (`app`\|`widget`\|`shortcut`\|`voice`\|`scene`\|`schedule` = hệ thống gửi; `tuya_app`\|`device`\|`external` = quan sát từ ngoài), `user_id`, `success` (NULL = sự kiện quan sát), `detail`, `ext_id` (UNIQUE, chống trùng khi đồng bộ nhật ký Tuya). Giữ 90 ngày (`prune_old`).
 - **SceneModel** (`scenes`, `scene.py`): `id`, `name`, `icon` (tên icon phía app), `sort_order`, `actions` (JSON text `[{device_id, action_type, action_value}]` đã chuẩn hóa), `created_by` (audit). Không gắn khu — kịch bản của cả nhà.
 - **ScheduleModel** (`schedules`, `schedule.py`): `id` (PK int), `name`, `brand`, `device_id`, `action_type` (`on`\|`off`\|`mode`), `action_value` (mode value, null với on/off), `time` (`"HH:MM"` giờ **Asia/Ho_Chi_Minh**), `days` (CSV weekday Python `0`=Thứ2…`6`=CN, rỗng = mỗi ngày), `enabled`, `last_fired_date` (`"YYYY-MM-DD"` chống kích hoạt trùng trong ngày). **Lịch KHOẢNG**: `end_time` (NULL = lịch đơn; `end_time < time` = QUA ĐÊM, end kích hoạt hôm sau), `end_action_type`, `end_action_value`, `last_end_fired_date`, `one_shot` (chạy 1 lần → tự `enabled=False` sau hành động cuối), `created_by` (CHỈ để audit + chặn kid sửa lịch người khác — lịch là của **cả nhà**, không lọc theo cột này). Cột mới thêm qua `run_startup_migrations` (`core/database.py`, ALTER TABLE idempotent — create_all không alter bảng cũ; chạy cho cả SQLite lẫn Postgres, DDL tách riêng vì Boolean SQLite là `INTEGER` còn Postgres là `BOOLEAN`).
 
@@ -93,6 +96,8 @@ Tất cả kế thừa `base_connector.py`; đăng ký qua `connector_manager.py
 - `backend/app/core/household.py` — **NƠI DUY NHẤT quyết định quyền**: `device_query`/`schedule_query` (lọc theo khu), `require_device_access`/`require_schedule_write`/`require_owner`, `provision_member`. Quyền KHÔNG xuất hiện trong thân endpoint nào.
 - `backend/app/core/auth.py` — verify JWT Supabase; cố tình **sạch model + sạch DB**. `auth_disabled()` tự suy từ `SUPABASE_JWT_SECRET`.
 - `backend/app/services/device_actions.py` — `normalize_action(device, verb, mode)`: whitelist hành động theo LOẠI (cửa chỉ open/close/stop — KHÔNG on/off; máy cho ăn 1-10 phần; công tắc on/off). **Mọi đường không qua UI** (AI, lịch bằng giọng nói, kịch bản) đi qua đây trước connector.
+- `backend/app/services/command_log.py` — `record()`: MỌI đường gửi lệnh (control endpoint, `_execute_device_action` cho giọng nói/kịch bản, chạy thử lịch, `scheduler._fire`) gọi SAU khi connector trả kết quả. Lỗi DB ở đây chỉ log — không bao giờ làm hỏng lệnh.
+- `backend/app/services/device_history.py` — sự kiện NGOÀI app. Tuya: `GET /v1.0/devices/{id}/logs` type 5 (lệnh: `event_from` `cloud2cloud` = backend này → bỏ, `2` = app Smart Life) + type 7 (thiết bị báo; không có lệnh type 5 ngay trước = nút vật lý/công tắc/lịch trong máy). VeSync không có nhật ký → `observe_state` so trạng thái mỗi lần đọc thật. ⚠️ Remote RF cửa cuốn không lên cloud ⇒ không ghi được.
 - `backend/app/services/scheduler.py` — vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh; bắn start + end độc lập, qua đêm dịch ngày +1, one-shot tự tắt).
 - `backend/app/services/vn_time_parser.py` — parse giờ tiếng Việt ("16 giờ 30", "4 giờ chiều", "từ X đến Y", "mai", "mỗi ngày") cho lệnh hẹn giờ bằng giọng nói; `resolve_target_days` quy đổi sang days/one_shot.
 - `frontend/lib/core/config.dart` — nơi DUY NHẤT khai báo baseUrl/wsUrl/timeout + khóa Supabase (`--dart-define`); `authEnabled` false khi chưa có khóa ⇒ app bỏ qua đăng nhập.

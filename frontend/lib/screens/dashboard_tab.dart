@@ -17,6 +17,7 @@ import '../core/shortcut_service.dart';
 import '../core/shortcut_handler.dart';
 import '../core/widget_service.dart';
 import 'admin_screen.dart';
+import 'history_screen.dart';
 
 class DashboardTab extends StatefulWidget {
   /// Tab Home có đang hiển thị không (IndexedStack giữ tab sống kể cả khi ẩn).
@@ -116,6 +117,9 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
       onSelected: (v) {
         if (v == 'signout') widget.onSignOut?.call();
         if (v == 'profile') _openProfile();
+        if (v == 'history') {
+          Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HistoryScreen()));
+        }
         if (v == 'admin') {
           Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => AdminScreen(profile: p),
@@ -146,6 +150,17 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
               Icon(Icons.person_outline, size: 18, color: context.palette.textSub),
               const SizedBox(width: 10),
               Text('Hồ sơ & giao diện', style: TextStyle(color: context.palette.textMain)),
+            ],
+          ),
+        ),
+        // Lịch sử: ai cũng xem được (chỉ thiết bị trong khu của mình — backend lọc).
+        PopupMenuItem<String>(
+          value: 'history',
+          child: Row(
+            children: [
+              Icon(Icons.history, size: 18, color: context.palette.textSub),
+              const SizedBox(width: 10),
+              Text('Lịch sử điều khiển', style: TextStyle(color: context.palette.textMain)),
             ],
           ),
         ),

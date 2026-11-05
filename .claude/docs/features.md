@@ -7,6 +7,17 @@
 ```
 
 
+### Lịch sử điều khiển (ai / từ đâu / lúc nào)
+- **Status:** ✅
+- **Backend:** `models/command_log.py` (bảng `command_logs`) · `services/command_log.py` (`record`, `action_label`, `mark_sent`/`recently_sent`, `prune_old` 90 ngày) · `services/device_history.py` (`classify_tuya_logs` thuần, `sync_external_events`, `observe_state`) · `fetch_event_logs` trong `tuya_connector.py`/`rojeco_connector.py` (helper chung `fetch_tuya_logs`, CHỈ ĐỌC) · `GET /api/history` · `?via=` trên 2 endpoint control · `scheduler._fire`
+- **Frontend:** `core/history_api.dart` (`HistoryEntry`, `HistorySource` — nơi duy nhất map nguồn → nhãn/icon) · `screens/history_screen.dart` (nhóm theo ngày, chip lọc thiết bị, "Chỉ ngoài app", tải thêm theo `before_ms`) · menu tài khoản → "Lịch sử điều khiển" · `via: 'widget'|'shortcut'` trong `widget_service.dart`/`shortcut_handler.dart` · mục hướng dẫn trong `helpTopics`
+- **Key logic:**
+  - Nguồn hệ thống: `app`/`widget`/`shortcut` (client tự khai qua `via`, chỉ nhận 3 giá trị này — không giả được `schedule`...), `voice` (detail = câu nói), `scene` (tên kịch bản), `schedule` (tên lịch; không có người khi tự chạy, có người khi "chạy thử").
+  - Tên người = `display_name` > phần trước @ email. ⚠️ **Khi xác thực TẮT, mọi lệnh là của chủ nhà giả** ⇒ phải bật xác thực mới ghi đúng từng người.
+  - **Tuya (đã kiểm với nhật ký thật 2026-11-05):** type 5 `event_from` = `cloud2cloud` (backend này, đã tự ghi kèm tên → bỏ), `2` (app Smart Life → `tuya_app`), khác → `external`. Type 7 luôn `event_from=1`; không có lệnh type 5 trong cửa sổ trước đó (20s; máy cho ăn 180s vì nhả hạt xong mới báo `feed_report`) ⇒ `device`. Chỉ xét DP `control`/`switch_1`/`manual_feed`/`feed_report` (máy bơm báo `remote_list` mỗi sáng — nhiễu). `stop` không có lệnh có thể là cửa tự dừng cuối hành trình. Máy cho ăn tự chạy 07:00/18:30 theo lịch cài trong máy → hiện là `device`.
+  - Đồng bộ Tuya lúc mở màn lịch sử (không chạy nền — tiết kiệm quota): mỗi thiết bị ≤1 lần/60s, nhìn lại 7 ngày, `ext_id` chống trùng; lỗi/hết quota → bỏ qua, lần sau thử lại.
+  - **VeSync:** không có nhật ký → so (status, mode, speed) với lần đọc thật trước; đổi mà hệ thống không gửi lệnh trong 60s ⇒ `external`. Chỉ thấy khi có người mở app; giờ = lúc PHÁT HIỆN. Mốc lưu trong RAM (restart mất mốc → lần đọc đầu không ghi).
+
 ### Thành viên: đăng ký tự do, chủ nhà thêm vào nhà · Mật khẩu · Hướng dẫn
 - **Status:** ✅
 - **Frontend:** `screens/admin_screen.dart` (ô tìm kiếm `foldVietnamese`, nhóm Chưa thuộc nhà / Trong nhà / Đã chặn, nút "Thêm vào nhà" = vai + khu + active trong 1 bước) · `screens/pending_screen.dart` ("Chưa thuộc nhà nào") · `screens/forgot_password_screen.dart` · đổi mật khẩu ở `profile_screen.dart` · `screens/help_screen.dart` + `screens/onboarding_screen.dart`

@@ -75,16 +75,16 @@ class WidgetService {
       case ShortcutType.purifierCycle:
         final s = await DeviceApi.fetchStatus(brand, id);
         final step = PurifierCycle.next(PurifierCycle.indexFromStatus(s));
-        await PurifierCycle.apply(brand, id, step);
+        await PurifierCycle.apply(brand, id, step, via: 'widget');
         break;
       case ShortcutType.doorToggle:
         final s = await DeviceApi.fetchStatus(brand, id);
         final ds = '${s?['door_state']}'.toLowerCase();
         final closed = ds == 'closed' || ds == 'closing';
-        await DeviceApi.sendMode(brand, id, closed ? 'open' : 'close');
+        await DeviceApi.sendMode(brand, id, closed ? 'open' : 'close', via: 'widget');
         break;
       case ShortcutType.feederFeed:
-        await DeviceApi.sendMode(brand, id, '1');
+        await DeviceApi.sendMode(brand, id, '1', via: 'widget');
         break;
     }
   }

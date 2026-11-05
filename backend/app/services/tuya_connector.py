@@ -36,6 +36,24 @@ _CALL_TIMEOUT_SECONDS = 15
 # Thiết bị thuộc các loại này điều khiển bằng DP 'switch_1' thay vì 'control'.
 _SWITCH_CATEGORIES = ("kg", "tdq", "cz", "pc", "dlq")
 
+async def fetch_tuya_logs(call, openapi, device_id: str, log_type: int, start_ms: int, end_ms: int,
+                          size: int = 100, ensure=None) -> Optional[list]:
+    """GET /v1.0/devices/{id}/logs — dùng chung cho TuyaConnector và RojecoConnector."""
+    try:
+        if ensure is not None:
+            await ensure()
+        res = await call(openapi.get, f'/v1.0/devices/{device_id}/logs', {
+            "type": str(log_type), "start_time": start_ms, "end_time": end_ms, "size": size,
+        })
+        if not isinstance(res, dict) or not res.get("success"):
+            print(f"[Tuya] Không đọc được nhật ký {device_id}: {res}")
+            return None
+        return (res.get("result") or {}).get("logs") or []
+    except Exception as e:
+        print(f"[Tuya] Lỗi đọc nhật ký {device_id}: {e}")
+        return None
+
+
 class TuyaConnector(DeviceConnector):
     def __init__(self):
         self.is_connected = False
@@ -60,6 +78,14 @@ class TuyaConnector(DeviceConnector):
         if not self.is_connected:
             result = await self._call(self.openapi.connect)
             self.is_connected = bool(result.get("success")) if isinstance(result, dict) else True
+
+    async def fetch_event_logs(self, device_id: str, log_type: int, start_ms: int, end_ms: int,
+                               size: int = 100) -> Optional[list]:
+        """Nhật ký Tuya Cloud (CHỈ ĐỌC): type 5 = lệnh gửi tới, 7 = thiết bị báo. Lỗi -> None."""
+        return await fetch_tuya_logs(
+            self._call, self.openapi, device_id, log_type, start_ms, end_ms, size,
+            ensure=self._ensure_connected,
+        )
 
     async def _is_switch(self, device_id: str) -> Optional[bool]:
         """
