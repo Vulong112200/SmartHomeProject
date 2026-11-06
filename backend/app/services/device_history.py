@@ -22,7 +22,8 @@ import logging
 import time
 from typing import Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.command_log import CommandLogModel
 from app.models.device import device_kind
@@ -105,11 +106,13 @@ def classify_tuya_logs(device, commands: list[dict], reports: list[dict]) -> lis
     return events
 
 
-def _insert_events(db: Session, device, events: list[dict]) -> int:
+async def _insert_events(db: AsyncSession, device, events: list[dict]) -> int:
     if not events:
         return 0
     ids = [e["ext_id"] for e in events]
-    known = {row[0] for row in db.query(CommandLogModel.ext_id).filter(CommandLogModel.ext_id.in_(ids))}
+    known = set((await db.execute(
+        select(CommandLogModel.ext_id).where(CommandLogModel.ext_id.in_(ids))
+    )).scalars().all())
     added = 0
     for e in events:
         if e["ext_id"] in known:
@@ -117,48 +120,64 @@ def _insert_events(db: Session, device, events: list[dict]) -> int:
         db.add(CommandLogModel(device_id=device.id, device_name=device.name, success=None, **e))
         known.add(e["ext_id"])
         added += 1
-    db.commit()
+    await db.commit()
     return added
 
 
-async def _sync_tuya_device(db: Session, device) -> int:
+async def _fetch_tuya_events(device) -> list[dict] | None:
+    """Gọi mạng (KHÔNG đụng DB) — chạy song song cho nhiều thiết bị được."""
     connector = device_manager.get_connector(device.brand)
     fetch = getattr(connector, "fetch_event_logs", None)
     if fetch is None:
-        return 0
+        return None
     end = now_ms()
     start = end - _LOOKBACK_MS
     commands, reports = await asyncio.gather(
         fetch(device.id, 5, start, end), fetch(device.id, 7, start, end),
     )
     if commands is None or reports is None:
-        return 0  # lỗi mạng / hết quota: lần sau thử lại, không ghi nửa vời
-    return _insert_events(db, device, classify_tuya_logs(device, commands, reports))
+        return None  # lỗi mạng / hết quota: lần sau thử lại, không ghi nửa vời
+    return classify_tuya_logs(device, commands, reports)
 
 
-async def sync_external_events(db: Session, devices: list) -> int:
-    """Đồng bộ nhật ký Tuya cho các thiết bị (mỗi thiết bị tối đa 1 lần/60s)."""
+async def sync_external_events(db: AsyncSession, devices: list) -> int:
+    """
+    Đồng bộ nhật ký Tuya cho các thiết bị (mỗi thiết bị tối đa 1 lần/60s).
+    Gọi cloud SONG SONG, ghi DB TUẦN TỰ: một AsyncSession không được dùng đồng
+    thời từ nhiều task; và không giữ transaction trong lúc chờ cloud.
+    """
     now = time.monotonic()
     due = [d for d in devices
            if d.brand in _TUYA_BRANDS and now - _last_sync.get(d.id, -1e9) >= _SYNC_EVERY_SECONDS]
     for d in due:
         _last_sync[d.id] = now
-    results = await asyncio.gather(*(_sync_tuya_device(db, d) for d in due), return_exceptions=True)
+    results = await asyncio.gather(*(_fetch_tuya_events(d) for d in due), return_exceptions=True)
     added = 0
     for d, r in zip(due, results):
-        if isinstance(r, Exception):
-            logger.warning(f"Đồng bộ nhật ký {d.brand}/{d.id} lỗi: {r}")
+        try:
+            if isinstance(r, BaseException):
+                raise r
+            if r:
+                added += await _insert_events(db, d, r)
+        except Exception as e:
+            logger.warning(f"Đồng bộ nhật ký {d.brand}/{d.id} lỗi: {e}")
             _last_sync.pop(d.id, None)
-        else:
-            added += r
+            await _safe_rollback(db)
     if now - _last_prune[0] > 86_400:
         _last_prune[0] = now
         try:
-            prune_old(db)
+            await prune_old(db)
         except Exception as e:
             logger.warning(f"Dọn lịch sử cũ lỗi: {e}")
-            db.rollback()
+            await _safe_rollback(db)
     return added
+
+
+async def _safe_rollback(db: AsyncSession) -> None:
+    try:
+        await db.rollback()
+    except Exception:
+        pass
 
 
 def _vesync_key(state: dict) -> Optional[tuple]:
@@ -183,7 +202,7 @@ def _vesync_label(key: tuple) -> str:
     return "Bật"
 
 
-def _recent_system_command(db: Session, device_id: str, within_seconds: float) -> bool:
+async def _recent_system_command(db: AsyncSession, device_id: str, within_seconds: float) -> bool:
     """
     Có lệnh do HỆ THỐNG gửi (success khác NULL) tới thiết bị này gần đây không —
     đọc từ DB, nên thấy cả lệnh của TIẾN TRÌNH KHÁC (worker hẹn giờ tại nhà),
@@ -192,21 +211,20 @@ def _recent_system_command(db: Session, device_id: str, within_seconds: float) -
     """
     try:
         cut = now_ms() - int(within_seconds * 1000)
-        return db.query(CommandLogModel.id).filter(
-            CommandLogModel.device_id == device_id,
-            CommandLogModel.success.isnot(None),
-            CommandLogModel.at_ms >= cut,
-        ).first() is not None
+        return (await db.execute(
+            select(CommandLogModel.id).where(
+                CommandLogModel.device_id == device_id,
+                CommandLogModel.success.isnot(None),
+                CommandLogModel.at_ms >= cut,
+            ).limit(1)
+        )).first() is not None
     except Exception as e:
         logger.warning(f"Không kiểm được lệnh gần đây của {device_id}: {e}")
-        try:
-            db.rollback()
-        except Exception:
-            pass
+        await _safe_rollback(db)
         return False
 
 
-def observe_state(db: Session, device, state: dict) -> bool:
+async def observe_state(db: AsyncSession, device, state: dict) -> bool:
     """
     Gọi mỗi lần backend đọc trạng thái THẬT (không phải cache) của máy lọc
     VeSync. Đổi so với lần đọc trước mà hệ thống không vừa gửi lệnh => ghi
@@ -221,7 +239,7 @@ def observe_state(db: Session, device, state: dict) -> bool:
     _vesync_seen[device.id] = key
     if prev is None or prev == key or recently_sent(device.id, _VESYNC_ECHO_SECONDS):
         return False
-    if _recent_system_command(db, device.id, _VESYNC_ECHO_SECONDS):
+    if await _recent_system_command(db, device.id, _VESYNC_ECHO_SECONDS):
         return False
     try:
         db.add(CommandLogModel(
@@ -230,9 +248,9 @@ def observe_state(db: Session, device, state: dict) -> bool:
             source="external", success=None,
             detail="Ngoài app: nút trên máy hoặc app VeSync (thời điểm = lúc phát hiện)",
         ))
-        db.commit()
+        await db.commit()
         return True
     except Exception as e:
         logger.warning(f"Không ghi được thay đổi ngoài app {device.id}: {e}")
-        db.rollback()
+        await _safe_rollback(db)
         return False

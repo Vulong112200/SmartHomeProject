@@ -24,6 +24,7 @@ from app.models.schedule_run import (
 )
 from app.services import scheduler
 from app.services.scheduler import TZ, ScheduleEngine, _Snap, _to_ms
+from conftest import async_factory_for
 
 
 def at(day, h, m, s=0):
@@ -37,6 +38,8 @@ def env(tmp_path, monkeypatch):
     engine = create_engine(url, connect_args={"timeout": 30})
     init_db(engine)
     Session = sessionmaker(bind=engine)
+    # Bộ máy chạy AsyncSession (như production); test chuẩn bị/kiểm bằng Session đồng bộ.
+    ASession = async_factory_for(tmp_path / 'sched.db')
     with Session() as s:
         s.add_all([
             DeviceModel(id="pur", name="Lọc không khí", brand="vesync", category="purifier"),
@@ -70,7 +73,13 @@ def env(tmp_path, monkeypatch):
             return row.id
 
     def make(role="worker", wid=None, **kw):
-        return ScheduleEngine(Session, worker_id=wid or f"{role}-test", role=role, **kw)
+        return ScheduleEngine(ASession, worker_id=wid or f"{role}-test", role=role, **kw)
+
+    def aclaim(eng, snap, part, now):
+        async def go():
+            async with ASession() as s:
+                return await eng.claim(s, snap, part, now)
+        return asyncio.run(go())
 
     def sch(sid):
         with Session() as s:
@@ -90,7 +99,8 @@ def env(tmp_path, monkeypatch):
     def tick(eng, now):
         return asyncio.run(eng.tick(now))
 
-    yield D(url=url, engine=engine, Session=Session, sent=sent, behavior=behavior, add=add,
+    yield D(url=url, path=tmp_path / 'sched.db', engine=engine, Session=Session, ASession=ASession,
+            sent=sent, behavior=behavior, add=add, aclaim=aclaim,
             make=make, sch=sch, runs=runs, history=history, tick=tick)
     engine.dispose()
 
@@ -198,10 +208,9 @@ def test_claim_compare_and_set_anh_chup_cu_bi_tu_choi(env):
     with env.Session() as s:
         snap = _Snap.of(s.get(ScheduleModel, sid))
     a, b = env.make(wid="A"), env.make(wid="B")
-    with env.Session() as s1, env.Session() as s2:
-        assert a.claim(s1, snap, "start", at(0, 16, 30, 5)) is not None
-        # B đọc trước khi A ghi (ảnh chụp cũ) — vẫn phải thua.
-        assert b.claim(s2, snap, "start", at(0, 16, 30, 6)) is None
+    assert env.aclaim(a, snap, "start", at(0, 16, 30, 5)) is not None
+    # B đọc trước khi A ghi (ảnh chụp cũ) — vẫn phải thua.
+    assert env.aclaim(b, snap, "start", at(0, 16, 30, 6)) is None
 
 
 def test_claim_tu_choi_khi_lich_vua_bi_sua(env):
@@ -211,8 +220,7 @@ def test_claim_tu_choi_khi_lich_vua_bi_sua(env):
     with env.Session() as s:
         s.get(ScheduleModel, sid).action_type = "off"
         s.commit()
-    with env.Session() as s:
-        assert env.make().claim(s, snap, "start", at(0, 16, 30, 5)) is None
+    assert env.aclaim(env.make(), snap, "start", at(0, 16, 30, 5)) is None
     assert env.runs() == []
 
 
@@ -224,19 +232,19 @@ def test_tam_tien_trinh_tranh_cung_mot_lich_chi_mot_thang(env):
     wins, errors = [], []
 
     def contender(i):
-        eng = create_engine(env.url, connect_args={"timeout": 30})
-        Session = sessionmaker(bind=eng)
-        try:
-            with Session() as s:
+        # Mỗi "tiến trình" = 1 thread với event loop + engine async riêng.
+        factory = async_factory_for(env.path)
+
+        async def go():
+            async with factory() as s:
                 barrier.wait()
-                rid = ScheduleEngine(Session, worker_id=f"T{i}", role="worker").claim(
+                return await ScheduleEngine(factory, worker_id=f"T{i}", role="worker").claim(
                     s, snap, "start", at(0, 16, 30, 5))
-                if rid is not None:
-                    wins.append(i)
+        try:
+            if asyncio.run(go()) is not None:
+                wins.append(i)
         except Exception as e:  # pragma: no cover — báo rõ nếu có
             errors.append(e)
-        finally:
-            eng.dispose()
 
     threads = [threading.Thread(target=contender, args=(i,)) for i in range(8)]
     for t in threads:
@@ -274,7 +282,7 @@ def _claim_only(env, sid, wid="dead", now=None):
     """Tiến trình giành quyền rồi chết TRƯỚC khi gửi."""
     with env.Session() as s:
         snap = _Snap.of(s.get(ScheduleModel, sid))
-        return env.make(wid=wid).claim(s, snap, "start", now or at(0, 16, 30, 5))
+    return env.aclaim(env.make(wid=wid), snap, "start", now or at(0, 16, 30, 5))
 
 
 def _set_run(env, rid, **values):
@@ -428,7 +436,7 @@ def test_loi_mot_lich_khong_chan_lich_khac(env, monkeypatch):
     real = ScheduleEngine._execute
 
     async def boom(self, db, run_id, now):
-        if db.get(ScheduleRunModel, run_id).schedule_id == bad:
+        if (await db.get(ScheduleRunModel, run_id)).schedule_id == bad:
             raise ValueError("lỗi dữ liệu")
         return await real(self, db, run_id, now)
 
@@ -447,7 +455,7 @@ def test_mat_db_tick_loi_roi_tu_phuc_hoi(env):
     def flaky_session():
         if state["down"]:
             raise OperationalError("SELECT 1", {}, Exception("could not connect to server"))
-        return env.Session()
+        return env.ASession()
 
     eng = ScheduleEngine(flaky_session, worker_id="w", role="worker")
     with pytest.raises(OperationalError):
@@ -487,7 +495,7 @@ def test_auto_api_dung_cho_khi_worker_song_va_tiep_quan_khi_worker_dung(env):
     env.tick(worker, at(0, 16, 30, 20))            # worker bắn
     assert len(env.sent) == 1
 
-    worker.mark_stopped()                          # tắt sạch → API tiếp quản NGAY
+    asyncio.run(worker.mark_stopped())             # tắt sạch → API tiếp quản NGAY
     assert env.Session().get(SchedulerHeartbeatModel, "w#1").state == "stopped"
     stats = env.tick(api, at(0, 16, 31))
     assert stats["standby"] is False

@@ -304,22 +304,22 @@ def test_audience_theo_khu_va_trang_thai_thanh_vien(api):
     db.commit()
     users = {"mom", "kid1", "bad", "new", "ghost"}
 
-    allowed, revoked = realtime_audience(db, users, "lamp-b")  # khu B: kid1 không được cấp
+    allowed, revoked = api.call(lambda s: realtime_audience(s, users, "lamp-b"))  # khu B: kid1 không được cấp
     assert allowed == {"mom"}
     assert revoked == {"bad", "new", "ghost"}
 
-    allowed, _ = realtime_audience(db, users, "lamp-a")
+    allowed, _ = api.call(lambda s: realtime_audience(s, users, "lamp-a"))
     assert allowed == {"mom", "kid1"}
 
     # Khu dùng chung: kid thấy mà không cần grant.
     zone_b = db.query(ZoneModel).filter(ZoneModel.name == "Phòng ngủ").one()
     zone_b.is_shared = True
     db.commit()
-    allowed, _ = realtime_audience(db, users, "lamp-b")
+    allowed, _ = api.call(lambda s: realtime_audience(s, users, "lamp-b"))
     assert allowed == {"mom", "kid1"}
 
     # device_id None: chỉ kiểm trạng thái thành viên.
-    allowed, revoked = realtime_audience(db, users, None)
+    allowed, revoked = api.call(lambda s: realtime_audience(s, users, None))
     assert allowed == {"mom", "kid1"} and revoked == {"bad", "new", "ghost"}
 
 

@@ -12,7 +12,8 @@ import logging
 import time
 from typing import Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.command_log import CommandLogModel
 from app.models.device import device_kind
@@ -72,8 +73,8 @@ def recently_sent(device_id: str, within_seconds: float) -> bool:
     return ts is not None and (time.monotonic() - ts) < within_seconds
 
 
-def record(
-    db: Session,
+async def record(
+    db: AsyncSession,
     *,
     device,
     device_id: Optional[str] = None,
@@ -103,18 +104,21 @@ def record(
             success=success,
             detail=(detail or None) and str(detail)[:300],
         ))
-        db.commit()
+        await db.commit()
     except Exception as e:  # lịch sử hỏng không được kéo lệnh hỏng theo
         logger.warning(f"Không ghi được lịch sử lệnh {dev_id}: {e}")
         try:
-            db.rollback()
+            await db.rollback()
         except Exception:
             pass
 
 
-def prune_old(db: Session, days: int = RETENTION_DAYS) -> int:
+async def prune_old(db: AsyncSession, days: int = RETENTION_DAYS) -> int:
     """Xóa lịch sử cũ hơn `days` ngày (bảng không phình mãi trên Supabase free)."""
     cutoff = now_ms() - days * 86_400_000
-    n = db.query(CommandLogModel).filter(CommandLogModel.at_ms < cutoff).delete(synchronize_session=False)
-    db.commit()
+    n = (await db.execute(
+        delete(CommandLogModel).where(CommandLogModel.at_ms < cutoff)
+        .execution_options(synchronize_session=False)
+    )).rowcount
+    await db.commit()
     return n

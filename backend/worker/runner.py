@@ -7,8 +7,7 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from sqlalchemy.orm import sessionmaker
-
+from app.core.database import make_session_factory
 from app.services.connector_manager import device_manager, register_default_connectors
 from app.services.scheduler import ScheduleEngine, make_worker_id, run_forever
 
@@ -73,7 +72,7 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
 async def run_worker(cfg: WorkerConfig, once: bool = False) -> int:
     version = code_version()
     engine = make_worker_engine(cfg.database_url)
-    Session = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Session = make_session_factory(engine)
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
@@ -99,8 +98,8 @@ async def run_worker(cfg: WorkerConfig, once: bool = False) -> int:
             else:
                 await run_forever(sched, stop, cfg.tick_seconds)
         finally:
-            await asyncio.to_thread(sched.mark_stopped)
+            await sched.mark_stopped()
         logger.info("👋 Worker đã dừng sạch.")
         return 0
     finally:
-        engine.dispose()
+        await engine.dispose()

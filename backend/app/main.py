@@ -22,7 +22,10 @@ from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials
 
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import InterfaceError, OperationalError, TimeoutError as PoolTimeoutError
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.responses import JSONResponse
 
 # Import các Connector và Manager
 from app.services.local_parser import match_scene, parse_command_locally
@@ -45,7 +48,7 @@ from typing import Any
 
 # Import Database
 from app.core.auth import app_token_secret, auth_status, get_current_user, issue_app_token
-from app.core.database import SessionLocal, get_db, init_db_async, IS_SQLITE
+from app.core.database import AsyncSessionLocal, get_db, init_db_async, IS_SQLITE
 from app.core.household import (
     DEVICE_ORDER_MAX_ID_LEN,
     DEVICE_ORDER_MAX_ITEMS,
@@ -64,6 +67,8 @@ from app.core.household import (
     require_schedule_write,
     sanitize_device_order,
     schedule_query,
+    visible_device_ids,
+    visible_devices,
     zone_ids_of,
 )
 from app.models.member import ROLES, STATUSES, MemberModel
@@ -200,6 +205,52 @@ app.add_middleware(
 )
 
 # =========================================================
+# DB tạm không dùng được -> 503 (thay vì 500 trần)
+# =========================================================
+_DB_UNAVAILABLE = "Máy chủ tạm thời không kết nối được cơ sở dữ liệu — thử lại sau ít giây."
+
+
+async def _db_unavailable(request: Request, exc: Exception):
+    """
+    Mất kết nối Postgres (mạng/Supabase bảo trì), hết kết nối trong pool sau
+    pool_timeout, hay connect/command timeout của asyncpg: lỗi TẠM THỜI của hạ
+    tầng, không phải bug. Session của request đã được get_db đóng (rollback,
+    trả/hủy kết nối) trước khi tới đây; pool_pre_ping lo nối lại ở request sau.
+    App coi mọi mã khác 200/401/403 là lỗi chung nên 503 tương thích app cũ.
+    """
+    logger.warning(f"DB không dùng được ({request.url.path}): {type(exc).__name__}: "
+                   f"{str(exc).splitlines()[0][:200] if str(exc) else ''}")
+    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        content={"status": "error", "message": _DB_UNAVAILABLE})
+
+
+for _exc in (OperationalError, InterfaceError, PoolTimeoutError, TimeoutError, ConnectionError):
+    app.add_exception_handler(_exc, _db_unavailable)
+
+
+# =========================================================
+# Tiện ích DB (AsyncSession)
+# =========================================================
+async def _get(db: AsyncSession, model, *where):
+    """Hàng đầu tiên khớp điều kiện, hoặc None (thay cho query(...).filter(...).first())."""
+    return (await db.execute(select(model).where(*where).limit(1))).scalars().first()
+
+
+async def _count(db: AsyncSession, model, *where) -> int:
+    return (await db.execute(select(func.count()).select_from(model).where(*where))).scalar_one()
+
+
+async def _release(db: AsyncSession) -> None:
+    """
+    Kết thúc transaction đọc TRƯỚC khi chờ cloud (Tuya/VeSync — có khi vài giây):
+    trả kết nối về pool thay vì giữ "idle in transaction" suốt lúc chờ. Object đã
+    nạp vẫn dùng được (expire_on_commit=False). Lần dùng `db` kế tiếp tự mở
+    transaction mới.
+    """
+    await db.commit()
+
+
+# =========================================================
 # API - Get Devices
 # =========================================================
 class DeviceUpdate(BaseModel):
@@ -256,18 +307,17 @@ def _device_to_dict(d: DeviceModel, zone: ZoneModel | None = None) -> dict:
 
 @app.get("/api/devices")
 async def get_all_devices(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     # device_query đã lọc theo khu được cấp — kid/guest không thấy khu khác,
     # và thiết bị chưa phân khu (zone_id NULL) tự rơi ra ngoài INNER JOIN.
-    rows = (
-        device_query(db, member)
+    rows = (await db.execute(
+        device_query(member)
         .outerjoin(ZoneModel, ZoneModel.id == DeviceModel.zone_id)
-        .with_entities(DeviceModel, ZoneModel)
+        .add_columns(ZoneModel)
         .order_by(ZoneModel.sort_order, DeviceModel.name)
-        .all()
-    )
+    )).all()
     return {"status": "success", "data": [_device_to_dict(d, z) for d, z in rows]}
 
 # =========================================================
@@ -280,7 +330,7 @@ async def add_device(
     brand: str,
     zone_id: int | None = None,
     category: str | None = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
     # Thiết bị mới thiếu category sẽ bị suy loại theo tên/hãng — một công tắc
@@ -290,20 +340,20 @@ async def add_device(
     try:
         # Idempotent: thêm lại id đã có = "đã có trong nhà", không phải lỗi.
         # Client retry (mạng chập chờn) không nên báo đỏ.
-        existing = db.query(DeviceModel).filter(DeviceModel.id == id).first()
+        existing = await _get(db, DeviceModel, DeviceModel.id == id)
         if existing:
             return {"status": "success", "message": f"Thiết bị đã có trong nhà: {existing.name}"}
 
-        if zone_id is not None and not db.query(ZoneModel).filter(ZoneModel.id == zone_id).first():
+        if zone_id is not None and not await _get(db, ZoneModel, ZoneModel.id == zone_id):
             return {"status": "error", "message": "Khu vực không tồn tại."}
 
         db.add(DeviceModel(id=id, name=name, brand=brand, is_active=True, zone_id=zone_id,
                            category=category))
-        db.commit()
+        await db.commit()
         logger.info(f"Đã thêm thiết bị mới: {name} ({brand})")
         return {"status": "success", "message": f"Đã thêm: {name}"}
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error(f"Lỗi thêm thiết bị: {e}")
         return {"status": "error", "message": f"Lỗi: {str(e)}"}
 
@@ -312,17 +362,17 @@ async def add_device(
 async def update_device(
     device_id: str,
     body: DeviceUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
     """Đổi tên / gán khu vực / đặt loại. Đây là cách thiết bị được gán phòng."""
-    device = db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
+    device = await _get(db, DeviceModel, DeviceModel.id == device_id)
     if device is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy thiết bị.")
 
     fields = body.model_dump(exclude_unset=True)
     if "zone_id" in fields and fields["zone_id"] is not None:
-        if not db.query(ZoneModel).filter(ZoneModel.id == fields["zone_id"]).first():
+        if not await _get(db, ZoneModel, ZoneModel.id == fields["zone_id"]):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Khu vực không tồn tại.")
     # null tường minh = bỏ loại, client quay về suy từ tên.
     if fields.get("category") is not None and fields["category"] not in DEVICE_CATEGORIES:
@@ -332,35 +382,35 @@ async def update_device(
 
     for key, value in fields.items():
         setattr(device, key, value)
-    db.commit()
-    db.refresh(device)
+    await db.commit()
+    await db.refresh(device)
 
     zone = None
     if device.zone_id is not None:
-        zone = db.query(ZoneModel).filter(ZoneModel.id == device.zone_id).first()
+        zone = await _get(db, ZoneModel, ZoneModel.id == device.zone_id)
     return {"status": "success", "data": _device_to_dict(device, zone)}
 
 
 @app.delete("/api/devices/{device_id}")
 async def delete_device(
     device_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
     # Dùng Depends(get_db) để session luôn được đóng (kể cả khi lỗi) — tránh leak.
     try:
-        device = db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
+        device = await _get(db, DeviceModel, DeviceModel.id == device_id)
         if not device:
             return {"status": "error", "message": "Không tìm thấy thiết bị để xóa."}
 
         # Xóa luôn lịch của thiết bị. Không làm thì lịch mồ côi vẫn được
         # scheduler bắn vào một thiết bị không còn tồn tại, mỗi ngày, mãi mãi.
-        orphans = db.query(ScheduleModel).filter(ScheduleModel.device_id == device_id).count()
+        orphans = await _count(db, ScheduleModel, ScheduleModel.device_id == device_id)
         if orphans:
-            db.query(ScheduleModel).filter(ScheduleModel.device_id == device_id).delete()
+            await db.execute(delete(ScheduleModel).where(ScheduleModel.device_id == device_id))
 
-        db.delete(device)
-        db.commit()
+        await db.delete(device)
+        await db.commit()
         logger.info(f"Đã xóa thiết bị {device_id} (kèm {orphans} lịch hẹn)")
         return {
             "status": "success",
@@ -368,7 +418,7 @@ async def delete_device(
             + (f" và {orphans} lịch hẹn của nó" if orphans else ""),
         }
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error(f"Lỗi xóa thiết bị: {e}")
         return {"status": "error", "message": str(e)}
 
@@ -398,30 +448,29 @@ def _cache_set(brand: str, device_id: str, data, read_at_ms: int | None = None):
 def _cache_invalidate(brand: str, device_id: str):
     _status_cache.pop((brand, device_id), None)
 
-# Session cho việc chạy NGOÀI request (/ws, đọc nền). Test thay bằng DB tạm.
-_realtime_session = SessionLocal
+# Session cho việc chạy NGOÀI session của request: /ws, đọc nền, và mọi lần ghi
+# DB xảy ra SAU khi chờ cloud (lịch sử lệnh, thay đổi ngoài app). Session ngắn,
+# riêng cho từng việc: AsyncSession KHÔNG được dùng đồng thời từ nhiều task
+# (trợ lý giọng nói gửi nhiều lệnh song song; điều kiện kịch bản đọc song song).
+# Test thay bằng DB tạm.
+_realtime_session = AsyncSessionLocal
 
-def _with_session(fn):
-    db = _realtime_session()
-    try:
-        return fn(db)
-    finally:
-        db.close()
+async def _with_session(fn):
+    """`await fn(db)` trên một AsyncSession mới; luôn đóng (rollback phần dở)."""
+    async with _realtime_session() as db:
+        return await fn(db)
 
-def _observe_external(db: Session | None, device, state: dict) -> None:
+async def _observe_external(device, state: dict) -> None:
     """Ghi thay đổi ngoài app (chỉ máy lọc VeSync — Tuya có nhật ký riêng).
     Lỗi ghi lịch sử không được làm hỏng kết quả đọc."""
     if getattr(device, "brand", None) != "vesync":
         return
     try:
-        if db is not None:
-            device_history.observe_state(db, device, state)
-        else:
-            _with_session(lambda s: device_history.observe_state(s, device, state))
+        await _with_session(lambda s: device_history.observe_state(s, device, state))
     except Exception as e:
         logger.warning(f"observe_state lỗi {device.id}: {e}")
 
-async def _read_and_publish(device, db: Session | None = None) -> tuple[Any, int]:
+async def _read_and_publish(device) -> tuple[Any, int]:
     """
     MỌI lần đọc trạng thái THẬT (không phải cache) đi qua đây: connector → cache
     → ghi nhận đổi ngoài app → phát /ws nếu trạng thái đổi. Nhờ vậy một máy
@@ -434,41 +483,45 @@ async def _read_and_publish(device, db: Session | None = None) -> tuple[Any, int
     state = await connector.get_device_state(device.id)
     _cache_set(device.brand, device.id, state, read_at)
     if isinstance(state, dict):
-        _observe_external(db, device, state)
+        await _observe_external(device, state)
     realtime.manager.notify_state(device.id, device.brand, state, read_at)
     return state, read_at
 
-async def _read_state_fresh(db: Session, device: DeviceModel) -> dict:
+async def _read_state_fresh(device: DeviceModel) -> dict:
     """
     Đọc trạng thái THẬT, bỏ qua cache — cho điều kiện kịch bản: cache 3s có thể
     là trạng thái từ trước một lệnh vừa gửi, quyết định chạy/bỏ qua dựa vào nó
     là sai. Lỗi connector ném ra ngoài (engine coi là unknown).
     """
-    state, _ = await _read_and_publish(device, db)
+    state, _ = await _read_and_publish(device)
     return state
 
-def _record_command(db: Session | None, device, *, action_type: str | None, action_value: str | None,
-                    source: str, success: bool, member: MemberModel | None = None,
-                    detail: str | None = None, device_id: str | None = None) -> None:
+async def _record_command(device, *, action_type: str | None, action_value: str | None,
+                          source: str, success: bool, member: MemberModel | None = None,
+                          detail: str | None = None, device_id: str | None = None) -> None:
     """
     Sau khi connector trả kết quả: ghi lịch sử TRƯỚC, rồi phát /ws. Cả hai không
     bao giờ ném — lỗi ghi/phát không được làm hỏng lệnh đã chạy. Lệnh lỗi KHÔNG
     phát sự kiện (notify_command tự bỏ khi success khác True).
+    Ghi trên session RIÊNG (xem `_realtime_session`).
     """
-    if db is not None:
-        command_log.record(db, device=device, device_id=device_id, action_type=action_type,
-                           action_value=action_value, source=source, success=success,
-                           member=member, detail=detail)
+    try:
+        await _with_session(lambda s: command_log.record(
+            s, device=device, device_id=device_id, action_type=action_type,
+            action_value=action_value, source=source, success=success,
+            member=member, detail=detail))
+    except Exception as e:  # mở session lỗi (DB rớt/pool cạn) — lệnh đã chạy rồi
+        logger.warning(f"Không ghi được lịch sử lệnh {device_id or getattr(device, 'id', '?')}: {e}")
     realtime.manager.notify_command(device, action_type=action_type, action_value=action_value,
                                     source=source, success=success, member=member)
 
-def _log_control(db: Session, device: DeviceModel, action_type: str, action_value: str | None,
-                 via: str, member: MemberModel, ok: bool, error: str | None = None) -> None:
+async def _log_control(device: DeviceModel, action_type: str, action_value: str | None,
+                       via: str, member: MemberModel, ok: bool, error: str | None = None) -> None:
     """Ghi lịch sử cho endpoint control. `via` do app tự khai — chỉ nhận giá trị
     trong CLIENT_SOURCES, lạ thì coi là "app" (client không giả được nguồn khác)."""
     source = via if via in command_log.CLIENT_SOURCES else "app"
-    _record_command(db, device, action_type=action_type, action_value=action_value,
-                    source=source, success=ok, member=member, detail=error)
+    await _record_command(device, action_type=action_type, action_value=action_value,
+                          source=source, success=ok, member=member, detail=error)
 
 # =========================================================
 # API - Test Control Device (Action & Mode)
@@ -479,16 +532,17 @@ async def test_control(
     device_id: str,
     action: str = "on",
     via: str = "app",
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     # Hãng lấy từ DB, không tin URL: sai hãng = gửi id tới nhầm connector + lệch key cache.
-    device = require_device_access(db, member, device_id)
+    device = await require_device_access(db, member, device_id)
     brand = device.brand
     # Trước đây mọi giá trị khác "on" (gõ sai, "open", "toggle"...) đều thành
     # turn_off — với cửa cuốn là ĐÓNG CỬA.
     if action not in ("on", "off"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "action phải là on hoặc off")
+    await _release(db)  # không giữ kết nối DB trong lúc chờ cloud
     try:
         connector = device_manager.get_connector(brand)
         if action == "on":
@@ -496,7 +550,7 @@ async def test_control(
         else:
             ok = await connector.turn_off(device_id)
         _cache_invalidate(brand, device_id)
-        _log_control(db, device, action, None, via, member, ok)
+        await _log_control(device, action, None, via, member, ok)
         if not ok:
             logger.warning(f"Lệnh {action} cho {device_id} qua {brand} không thành công")
             return {"status": "error", "message": f"Thiết bị {device_id} không nhận lệnh {action}"}
@@ -504,7 +558,7 @@ async def test_control(
         return {"status": "success", "message": f"Đã {action} thiết bị {device_id} ({brand})"}
     except Exception as e:
         logger.error(f"Lỗi điều khiển {brand}: {e}")
-        _log_control(db, device, action, None, via, member, False, str(e))
+        await _log_control(device, action, None, via, member, False, str(e))
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/test-control/{brand}/{device_id}/mode")
@@ -513,18 +567,19 @@ async def test_control_mode(
     device_id: str,
     mode: str,
     via: str = "app",
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     # Hãng lấy từ DB, không tin URL: sai hãng = gửi id tới nhầm connector + lệch key cache.
-    device = require_device_access(db, member, device_id)
+    device = await require_device_access(db, member, device_id)
     brand = device.brand
+    await _release(db)  # không giữ kết nối DB trong lúc chờ cloud
     try:
         connector = device_manager.get_connector(brand)
         if hasattr(connector, 'set_mode'):
             ok = await connector.set_mode(device_id, mode)
             _cache_invalidate(brand, device_id)
-            _log_control(db, device, "mode", mode, via, member, ok)
+            await _log_control(device, "mode", mode, via, member, ok)
             if not ok:
                 logger.warning(f"Đổi chế độ {mode} cho {device_id} qua {brand} không thành công")
                 return {"status": "error", "message": f"Thiết bị không nhận chế độ {mode}"}
@@ -534,7 +589,7 @@ async def test_control_mode(
             return {"status": "error", "message": "Thiết bị không hỗ trợ đổi chế độ"}
     except Exception as e:
         logger.error(f"Lỗi đổi chế độ {brand}: {e}")
-        _log_control(db, device, "mode", mode, via, member, False, str(e))
+        await _log_control(device, "mode", mode, via, member, False, str(e))
         return {"status": "error", "message": str(e)}
 
 # =========================================================
@@ -545,12 +600,13 @@ async def get_device_status(
     brand: str,
     device_id: str,
     fresh: bool = False,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     # Hãng lấy từ DB, không tin URL: sai hãng = gửi id tới nhầm connector + lệch key cache.
-    device = require_device_access(db, member, device_id)
+    device = await require_device_access(db, member, device_id)
     brand = device.brand
+    await _release(db)  # không giữ kết nối DB trong lúc chờ cloud
     try:
         # fresh=1: bỏ qua cache (client gọi ngay sau lệnh điều khiển để lấy
         # trạng thái mới nhất). Poll định kỳ vẫn dùng cache bình thường.
@@ -561,7 +617,7 @@ async def get_device_status(
             entry = _cache_entry(brand, device_id)
             if entry is not None:
                 return {"status": "success", "data": entry[1], "cached": True, "read_at_ms": entry[2]}
-        state, read_at = await _read_and_publish(device, db)
+        state, read_at = await _read_and_publish(device)
         return {"status": "success", "data": state, "read_at_ms": read_at}
     except Exception as e:
         logger.error(f"Lỗi lấy trạng thái {brand}/{device_id}: {e}")
@@ -585,7 +641,7 @@ def _action_label_vn(action_type: str, action_value: str | None) -> str:
     return f"Chế độ {action_value}"
 
 async def _execute_device_action(device: DeviceModel | None, verb: str | None, mode: str | None,
-                                 requested_id: str | None = None, *, db: Session | None = None,
+                                 requested_id: str | None = None, *,
                                  member: MemberModel | None = None, source: str = "voice",
                                  detail: str | None = None) -> dict:
     """
@@ -593,6 +649,7 @@ async def _execute_device_action(device: DeviceModel | None, verb: str | None, m
     `device` PHẢI lấy từ danh sách đã lọc theo quyền (device_query) — None nghĩa
     là thiết bị không tồn tại hoặc ngoài khu của người gọi. Hãng lấy từ hàng DB,
     không bao giờ từ dữ liệu AI trả về. Trả bubble {"device_name","action","success"}.
+    Không nhận session của request: chạy song song được (trợ lý giọng nói).
     """
     if device is None:
         return {"device_name": requested_id or "?", "action": "Không có quyền hoặc không tìm thấy thiết bị",
@@ -609,13 +666,13 @@ async def _execute_device_action(device: DeviceModel | None, verb: str | None, m
         )
     except Exception as e:
         logger.error(f"[Action Error] {device.brand}/{device.id}: {e}")
-    _record_command(db, device, action_type=action_type, action_value=action_value,
-                    source=source, success=success, member=member, detail=detail)
+    await _record_command(device, action_type=action_type, action_value=action_value,
+                          source=source, success=success, member=member, detail=detail)
     return {"device_name": device.name, "action": _action_label_vn(action_type, action_value),
             "success": success}
 
-def _create_schedule_from_intent(action: dict, devices_by_id: dict, db: Session,
-                                 member: MemberModel) -> dict:
+async def _create_schedule_from_intent(action: dict, devices_by_id: dict,
+                                       member: MemberModel) -> dict:
     """
     Tạo lịch hẹn từ intent 'schedule' của local parser / AI.
     Trả về bubble chat {"device_name","action","success"} — KHÔNG chạm connector.
@@ -647,14 +704,17 @@ def _create_schedule_from_intent(action: dict, devices_by_id: dict, db: Session,
             action.get("time", ""), int(action.get("day_offset", 0) or 0),
             bool(action.get("recurring_daily", False)), datetime.now(TZ),
         )
-        sch = _create_schedule_row(
-            db, name="Tạo bởi trợ lý", brand=device_obj.brand, device_id=device_obj.id,
+        # Session RIÊNG: lỗi ghi -> rollback chỉ ở session này. Rollback trên session
+        # của request sẽ expire các thiết bị mà lệnh chạy sau trong cùng câu còn dùng.
+        fields = dict(
+            name="Tạo bởi trợ lý", brand=device_obj.brand, device_id=device_obj.id,
             action_type=action_type, action_value=action_value,
             time=action.get("time", ""), days=days,
             end_time=end_time, end_action_type=end_action_type,
             end_action_value=end_action_value, one_shot=one_shot,
             created_by=member.user_id,
         )
+        sch = await _with_session(lambda s: _create_schedule_row(s, **fields))
         prefix = "ngày mai " if (rolled or int(action.get("day_offset", 0) or 0) > 0) else ""
         label = _action_label_vn(action_type, action_value)
         if sch.end_time:
@@ -668,7 +728,6 @@ def _create_schedule_from_intent(action: dict, devices_by_id: dict, db: Session,
     except ValueError as e:
         return {"device_name": dev_name, "action": f"Lỗi hẹn giờ: {e}", "success": False}
     except Exception as e:
-        db.rollback()
         logger.error(f"[AI Schedule Error] {e}")
         return {"device_name": dev_name, "action": "Lỗi hẹn giờ: không tạo được lịch", "success": False}
 
@@ -678,14 +737,14 @@ class VoiceCommand(BaseModel):
 @app.post("/api/ai/parse")
 async def parse_voice_command(
     command: VoiceCommand,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     # Depends(get_db): session tự đóng kể cả khi query lỗi — tránh leak.
     # device_query: scoping theo khu là TỰ ĐỘNG — parser chỉ nhìn thấy thiết bị
     # member được phép dùng, nên "bật đèn" của kid không chạm được khu khác.
     # Thứ tự cố định: parser chọn "thiết bị đầu tiên của loại X" phải tất định.
-    devices = device_query(db, member).order_by(DeviceModel.id).all()
+    devices = await visible_devices(db, member, DeviceModel.id)
 
     text_lower = command.text.lower()
     logger.info(f"Nhận lệnh giọng nói: '{command.text}'")
@@ -695,7 +754,7 @@ async def parse_voice_command(
     # KỊCH BẢN: "ra khỏi nhà", "chạy kịch bản đi ngủ"... — xét TRƯỚC tường lửa
     # từ khóa thiết bị (tên kịch bản thường không chứa tên thiết bị nào).
     # ---------------------------------------------------------
-    scene = match_scene(text_lower, db.query(SceneModel).all())
+    scene = match_scene(text_lower, list((await db.execute(select(SceneModel))).scalars().all()))
     if scene is not None:
         devices_by_id = {d.id: d for d in devices}
         opens_door = any(
@@ -743,11 +802,12 @@ async def parse_voice_command(
 
     if not is_complex_sentence:
         actions = parse_command_locally(text_lower, devices)
-    
+
     if actions:
         logger.info(f"⚡ Local Parser đã hiểu lệnh: {actions}")
     else:
         logger.info("🤖 Chuyển cho AI phân tích câu nói...")
+        await _release(db)  # gọi AI mất vài giây — không giữ kết nối DB
         actions = await parse_command_with_ai(command.text, devices)
 
     # 3. Thực thi lệnh
@@ -755,23 +815,33 @@ async def parse_voice_command(
     # về KHÔNG được tin: kid có thể ép câu sang nhánh AI rồi đọc id khu khác.
     devices_by_id = {d.id: d for d in devices}
 
-    async def execute_single_action(action):
-        # Ý ĐỊNH HẸN GIỜ: tạo lịch trong DB, TUYỆT ĐỐI không gọi connector.
-        if action.get("intent") == "schedule":
-            return _create_schedule_from_intent(action, devices_by_id, db, member)
-
-        return await _execute_device_action(
-            devices_by_id.get(action.get("id")), action.get("action"), action.get("mode"),
-            requested_id=action.get("id"),
-            db=db, member=member, source="voice", detail=f"“{command.text}”",
-        )
-
-    # Bắn TẤT CẢ các lệnh IoT cùng một lúc (Tốc độ x2, x3)
-    # Nếu câu nói có 3 thiết bị, nó sẽ chạy song song cả 3.
     # AI có thể trả object/null thay vì list -> bỏ qua thay vì 500.
     actions = [a for a in actions if isinstance(a, dict)] if isinstance(actions, list) else []
-    tasks = [execute_single_action(action) for action in actions]
-    results = await asyncio.gather(*tasks)
+    results: list = [None] * len(actions)
+
+    # Ý ĐỊNH HẸN GIỜ: tạo lịch trong DB, TUYỆT ĐỐI không gọi connector. Chạy
+    # TUẦN TỰ, mỗi lịch một session ngắn riêng.
+    device_jobs = []
+    for i, action in enumerate(actions):
+        if action.get("intent") == "schedule":
+            results[i] = await _create_schedule_from_intent(action, devices_by_id, member)
+        else:
+            device_jobs.append((i, action))
+    await _release(db)
+
+    # Bắn TẤT CẢ các lệnh IoT cùng một lúc (Tốc độ x2, x3)
+    # Nếu câu nói có 3 thiết bị, nó sẽ chạy song song cả 3 (mỗi lệnh ghi lịch
+    # sử bằng session riêng).
+    outcomes = await asyncio.gather(*(
+        _execute_device_action(
+            devices_by_id.get(action.get("id")), action.get("action"), action.get("mode"),
+            requested_id=action.get("id"),
+            member=member, source="voice", detail=f"“{command.text}”",
+        )
+        for _, action in device_jobs
+    ))
+    for (i, _), outcome in zip(device_jobs, outcomes):
+        results[i] = outcome
 
     return {"status": "success", "ai_understood": actions, "execution_results": results}
 
@@ -848,7 +918,7 @@ def _validate_schedule_fields(action_type: str | None, action_value: str | None,
         return "Lịch khoảng cần đủ giờ kết thúc và hành động kết thúc"
     return None
 
-def _create_schedule_row(db: Session, *, name: str, brand: str, device_id: str,
+async def _create_schedule_row(db: AsyncSession, *, name: str, brand: str, device_id: str,
                          action_type: str, action_value: str | None, time: str,
                          days: str = "", enabled: bool = True,
                          end_time: str | None = None, end_action_type: str | None = None,
@@ -870,8 +940,8 @@ def _create_schedule_row(db: Session, *, name: str, brand: str, device_id: str,
         created_by=created_by,
     )
     db.add(sch)
-    db.commit()
-    db.refresh(sch)
+    await db.commit()
+    await db.refresh(sch)
     logger.info(f"⏰ Đã tạo lịch #{sch.id}: {sch.brand}/{sch.device_id} {sch.action_type} lúc {sch.time}"
                 + (f" → {sch.end_action_type} lúc {sch.end_time}" if sch.end_time else ""))
     return sch
@@ -891,24 +961,24 @@ def _schedule_to_dict(s: ScheduleModel) -> dict:
 
 @app.get("/api/schedules")
 async def list_schedules(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     # Lọc theo THIẾT BỊ, không theo người tạo: lịch là của cả nhà, ai thấy
     # thiết bị thì thấy lịch của nó.
-    schedules = schedule_query(db, member).order_by(ScheduleModel.time).all()
+    schedules = (await db.execute(schedule_query(member).order_by(ScheduleModel.time))).scalars().all()
     return {"status": "success", "data": [_schedule_to_dict(s) for s in schedules]}
 
 @app.post("/api/schedules")
 async def create_schedule(
     body: ScheduleCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     require_can_schedule(member)
-    require_device_access(db, member, body.device_id)
+    await require_device_access(db, member, body.device_id)
     try:
-        sch = _create_schedule_row(
+        sch = await _create_schedule_row(
             db, name=body.name, brand=body.brand, device_id=body.device_id,
             action_type=body.action_type, action_value=body.action_value,
             time=body.time, days=body.days, enabled=body.enabled,
@@ -920,7 +990,7 @@ async def create_schedule(
     except ValueError as e:
         return {"status": "error", "message": str(e)}
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error(f"Lỗi tạo lịch: {e}")
         return {"status": "error", "message": str(e)}
 
@@ -928,15 +998,15 @@ async def create_schedule(
 async def update_schedule(
     schedule_id: int,
     body: ScheduleUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
-    sch = require_schedule_write(db, member, schedule_id)
+    sch = await require_schedule_write(db, member, schedule_id)
     fields = body.model_dump(exclude_unset=True)
     # Chuyển lịch sang thiết bị khác: phải có quyền với thiết bị MỚI (không thì
     # kid trỏ lịch của mình sang khu khác), và hãng lấy từ DB chứ không từ body.
     if fields.get("device_id") and fields["device_id"] != sch.device_id:
-        fields["brand"] = require_device_access(db, member, fields["device_id"]).brand
+        fields["brand"] = (await require_device_access(db, member, fields["device_id"])).brand
     else:
         fields.pop("device_id", None)
         fields.pop("brand", None)
@@ -970,28 +1040,28 @@ async def update_schedule(
             sch.end_action_type = None
             sch.end_action_value = None
             sch.last_end_fired_date = None
-        db.commit()
-        db.refresh(sch)
+        await db.commit()
+        await db.refresh(sch)
         return {"status": "success", "data": _schedule_to_dict(sch)}
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error(f"Lỗi sửa lịch #{schedule_id}: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.delete("/api/schedules/{schedule_id}")
 async def delete_schedule(
     schedule_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
-    sch = require_schedule_write(db, member, schedule_id)
+    sch = await require_schedule_write(db, member, schedule_id)
     try:
-        db.delete(sch)
-        db.commit()
+        await db.delete(sch)
+        await db.commit()
         logger.info(f"⏰ Đã xóa lịch #{schedule_id}")
         return {"status": "success", "message": f"Đã xóa lịch #{schedule_id}"}
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         logger.error(f"Lỗi xóa lịch #{schedule_id}: {e}")
         return {"status": "error", "message": str(e)}
 
@@ -999,38 +1069,41 @@ async def delete_schedule(
 async def run_schedule_now(
     schedule_id: int,
     part: str = "start",
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     """Chạy NGAY hành động của lịch (để test), không ảnh hưởng last_fired_date.
     part=end: chạy hành động KẾT THÚC của lịch khoảng."""
     # Chạy tay = điều khiển thiết bị, nên chỉ cần quyền dùng thiết bị đó,
     # không cần quyền sửa lịch (kid bấm chạy thử lịch bố mẹ đặt là hợp lý).
-    sch = schedule_query(db, member).filter(ScheduleModel.id == schedule_id).first()
+    sch = (await db.execute(
+        schedule_query(member).where(ScheduleModel.id == schedule_id)
+    )).scalar_one_or_none()
     if not sch:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy lịch.")
     if part == "end" and not sch.end_time:
         return {"status": "error", "message": "Lịch này không có hành động kết thúc."}
     action_type = sch.end_action_type if part == "end" else sch.action_type
     action_value = sch.end_action_value if part == "end" else sch.action_value
-    device = db.query(DeviceModel).filter(DeviceModel.id == sch.device_id).first()
+    device = await _get(db, DeviceModel, DeviceModel.id == sch.device_id)
     label = f"Chạy thử lịch “{sch.name or sch.time}”" + (" (kết thúc)" if part == "end" else "")
+    await _release(db)  # không giữ kết nối DB trong lúc chờ cloud
     try:
         ok = await execute_schedule_action(
             sch.brand, sch.device_id, action_type, action_value,
             invalidate_cache=_cache_invalidate,
         )
-        _record_command(db, device, device_id=sch.device_id, action_type=action_type,
-                        action_value=action_value, source="schedule", success=ok,
-                        member=member, detail=label)
+        await _record_command(device, device_id=sch.device_id, action_type=action_type,
+                              action_value=action_value, source="schedule", success=ok,
+                              member=member, detail=label)
         if not ok:
             return {"status": "error", "message": "Thiết bị không nhận lệnh."}
         return {"status": "success", "message": f"Đã chạy lịch #{schedule_id}"}
     except Exception as e:
         logger.error(f"Lỗi chạy lịch #{schedule_id}: {e}")
-        _record_command(db, device, device_id=sch.device_id, action_type=action_type,
-                        action_value=action_value, source="schedule", success=False,
-                        member=member, detail=f"{label}: {e}")
+        await _record_command(device, device_id=sch.device_id, action_type=action_type,
+                              action_value=action_value, source="schedule", success=False,
+                              member=member, detail=f"{label}: {e}")
         return {"status": "error", "message": str(e)}
 
 # =========================================================
@@ -1072,16 +1145,44 @@ def _scene_to_dict(s: SceneModel) -> dict:
     }
 
 
-def _normalize_scene_conditions(db: Session, member: MemberModel, raw) -> str | None:
+def _condition_device_ids(raw) -> list[str]:
+    """id thiết bị mà normalize_conditions SẼ hỏi tới (đọc phòng thủ — raw chưa kiểm)."""
+    items = raw if isinstance(raw, list) else (raw.get("items") if isinstance(raw, dict) else None)
+    if not isinstance(items, list) or len(items) > scene_conditions.MAX_CONDITIONS:
+        return []  # engine từ chối trước khi hỏi thiết bị nào — khỏi tra
+    return [str(i.get("device_id") or "").strip() for i in items
+            if isinstance(i, dict) and i.get("type") == "device_state" and str(i.get("device_id") or "").strip()]
+
+
+async def _normalize_scene_conditions(db: AsyncSession, member: MemberModel, raw) -> str | None:
     """Kiểm điều kiện (thiết bị tồn tại + NGƯỜI LƯU dùng được + trạng thái hợp lệ với loại) -> JSON hoặc NULL."""
+    # normalize_conditions (thuần, không DB) gọi get_device ĐỒNG BỘ. Tra quyền
+    # trước bằng AsyncSession, lưu cả kết quả lẫn lỗi 404/403; lookup ném đúng
+    # lỗi đó ĐÚNG lúc engine hỏi tới — thứ tự báo lỗi y như trước (điều kiện
+    # giờ sai đứng trước vẫn báo 400 trước 404 của thiết bị đứng sau).
+    resolved: dict = {}
+    for did in dict.fromkeys(_condition_device_ids(raw)):
+        try:
+            resolved[did] = await require_device_access(db, member, did)
+        except HTTPException as e:
+            resolved[did] = e
+
+    def lookup(did: str):
+        found = resolved.get(did)
+        if isinstance(found, HTTPException):
+            raise found
+        if found is None:  # không thể xảy ra nếu _condition_device_ids khớp engine
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy thiết bị.")
+        return found
+
     try:
-        norm = scene_conditions.normalize_conditions(raw, lambda did: require_device_access(db, member, did))
+        norm = scene_conditions.normalize_conditions(raw, lookup)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Điều kiện: {e}")
     return json.dumps(norm, ensure_ascii=False) if norm else None
 
 
-def _normalize_scene_actions(db: Session, member: MemberModel, actions: list[SceneAction]) -> str:
+async def _normalize_scene_actions(db: AsyncSession, member: MemberModel, actions: list[SceneAction]) -> str:
     """Kiểm từng hành động (thiết bị tồn tại + mình dùng được + hợp lệ với loại) -> JSON đã chuẩn hóa."""
     if not actions:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Kịch bản cần ít nhất 1 hành động.")
@@ -1089,7 +1190,7 @@ def _normalize_scene_actions(db: Session, member: MemberModel, actions: list[Sce
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Tối đa {_MAX_SCENE_ACTIONS} hành động.")
     out = []
     for a in actions:
-        device = require_device_access(db, member, a.device_id)
+        device = await require_device_access(db, member, a.device_id)
         try:
             action_type, action_value = normalize_action(device, a.action_type, a.action_value)
         except ValueError as e:
@@ -1107,35 +1208,39 @@ def _clean_scene_name(name: str | None) -> str:
 
 @app.get("/api/scenes")
 async def list_scenes(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     # Kịch bản là của cả nhà: ai cũng thấy; chạy thì chỉ phần mình dùng được.
-    scenes = db.query(SceneModel).order_by(SceneModel.sort_order, SceneModel.id).all()
+    scenes = (await db.execute(
+        select(SceneModel).order_by(SceneModel.sort_order, SceneModel.id)
+    )).scalars().all()
     return {"status": "success", "data": [_scene_to_dict(s) for s in scenes]}
 
 
 @app.post("/api/scenes")
 async def create_scene(
     body: SceneBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     require_scene_write(member)
+    name = _clean_scene_name(body.name)
+    actions = await _normalize_scene_actions(db, member, body.actions)
+    conditions = await _normalize_scene_conditions(db, member, body.conditions)
     scene = SceneModel(
-        name=_clean_scene_name(body.name), icon=body.icon, sort_order=body.sort_order,
-        actions=_normalize_scene_actions(db, member, body.actions), created_by=member.user_id,
-        conditions=_normalize_scene_conditions(db, member, body.conditions),
+        name=name, icon=body.icon, sort_order=body.sort_order,
+        actions=actions, created_by=member.user_id, conditions=conditions,
     )
     db.add(scene)
-    db.commit()
-    db.refresh(scene)
+    await db.commit()
+    await db.refresh(scene)
     logger.info(f"🎬 Đã tạo kịch bản #{scene.id}: {scene.name}")
     return {"status": "success", "data": _scene_to_dict(scene)}
 
 
-def _get_scene(db: Session, scene_id: int) -> SceneModel:
-    scene = db.query(SceneModel).filter(SceneModel.id == scene_id).first()
+async def _get_scene(db: AsyncSession, scene_id: int) -> SceneModel:
+    scene = await _get(db, SceneModel, SceneModel.id == scene_id)
     if scene is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy kịch bản.")
     return scene
@@ -1145,11 +1250,11 @@ def _get_scene(db: Session, scene_id: int) -> SceneModel:
 async def update_scene(
     scene_id: int,
     body: SceneUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     require_scene_write(member)
-    scene = _get_scene(db, scene_id)
+    scene = await _get_scene(db, scene_id)
     fields = body.model_dump(exclude_unset=True)
     if "name" in fields:
         scene.name = _clean_scene_name(fields["name"])
@@ -1158,27 +1263,27 @@ async def update_scene(
     if fields.get("sort_order") is not None:
         scene.sort_order = fields["sort_order"]
     if body.actions is not None:
-        scene.actions = _normalize_scene_actions(db, member, body.actions)
+        scene.actions = await _normalize_scene_actions(db, member, body.actions)
     if "conditions" in fields:
-        scene.conditions = _normalize_scene_conditions(db, member, body.conditions)
-    db.commit()
-    db.refresh(scene)
+        scene.conditions = await _normalize_scene_conditions(db, member, body.conditions)
+    await db.commit()
+    await db.refresh(scene)
     return {"status": "success", "data": _scene_to_dict(scene)}
 
 
 @app.delete("/api/scenes/{scene_id}")
 async def delete_scene(
     scene_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     require_scene_write(member)
-    db.delete(_get_scene(db, scene_id))
-    db.commit()
+    await db.delete(await _get_scene(db, scene_id))
+    await db.commit()
     return {"status": "success", "message": f"Đã xóa kịch bản #{scene_id}"}
 
 
-async def _run_scene(db: Session, member: MemberModel, scene: SceneModel) -> dict:
+async def _run_scene(db: AsyncSession, member: MemberModel, scene: SceneModel) -> dict:
     """
     Chạy kịch bản TUẦN TỰ (không song song: 2 lệnh cùng connector Tuya chen nhau
     thì interlock stop->open của cửa có thể lẫn với lệnh khác). Hành động trên
@@ -1187,18 +1292,22 @@ async def _run_scene(db: Session, member: MemberModel, scene: SceneModel) -> dic
     ĐIỀU KIỆN được đánh giá TRƯỚC lệnh đầu tiên; chỉ `passed` mới chạy tiếp —
     `failed`/`unknown` trả `executed: False` mà không chạm connector nào.
     """
-    devices_by_id = {d.id: d for d in device_query(db, member).all()}
+    devices_by_id = {d.id: d for d in await visible_devices(db, member)}
+    known_ids = None
+    conditions, broken = scene_conditions.load_stored(scene.conditions)
+    if conditions and not broken:
+        known_ids = set((await db.execute(select(DeviceModel.id))).scalars().all())
+    # Từ đây chỉ còn chờ cloud (đọc trạng thái + gửi lệnh) — trả kết nối DB.
+    await _release(db)
 
     check = None
-    conditions, broken = scene_conditions.load_stored(scene.conditions)
     if broken or conditions:
         if broken:
             check = scene_conditions.broken_result()
         else:
-            known_ids = {row[0] for row in db.query(DeviceModel.id).all()}
             check = await scene_conditions.evaluate_conditions(
                 conditions, visible_devices=devices_by_id, known_ids=known_ids,
-                read_state=lambda device: _read_state_fresh(db, device),
+                read_state=_read_state_fresh,
             )
         if check["result"] != scene_conditions.PASSED:
             logger.info(f"🎬 Kịch bản #{scene.id} “{scene.name}” bị bỏ qua "
@@ -1214,7 +1323,7 @@ async def _run_scene(db: Session, member: MemberModel, scene: SceneModel) -> dic
             continue
         results.append(await _execute_device_action(
             device, a.get("action_type"), a.get("action_value"),
-            db=db, member=member, source="scene", detail=f"Kịch bản “{scene.name}”",
+            member=member, source="scene", detail=f"Kịch bản “{scene.name}”",
         ))
     return {"scene": scene.name, "executed": True, "results": results, "skipped": skipped,
             "conditions": check}
@@ -1228,10 +1337,10 @@ def _scene_skip_message(data: dict) -> str:
 @app.post("/api/scenes/{scene_id}/run")
 async def run_scene(
     scene_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
-    data = await _run_scene(db, member, _get_scene(db, scene_id))
+    data = await _run_scene(db, member, await _get_scene(db, scene_id))
     if not data["executed"]:
         # HTTP 200 + status "skipped": không phải lỗi máy chủ. App cũ (chỉ biết
         # "success") sẽ hiện `message` như một lỗi — vẫn đúng ý: không có gì chạy.
@@ -1261,7 +1370,7 @@ async def list_history(
     before_ms: int | None = None,
     device_id: str | None = None,
     sync: bool = True,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     """
@@ -1270,23 +1379,29 @@ async def list_history(
     không lọc theo người bấm. `sync=1` (mặc định) kéo nhật ký Tuya mới (nút vật
     lý, app Smart Life) trước khi trả; mỗi thiết bị tối đa 1 lần/60s.
     """
-    devices = device_query(db, member).all()
+    devices = await visible_devices(db, member)
     if device_id is not None:
-        devices = [require_device_access(db, member, device_id)]
+        devices = [await require_device_access(db, member, device_id)]
     if sync:
+        await _release(db)  # chờ cloud tới 10s — không giữ kết nối của request
         try:
-            await asyncio.wait_for(device_history.sync_external_events(db, devices), _HISTORY_SYNC_TIMEOUT)
+            # Session RIÊNG: timeout hủy giữa chừng không làm hỏng session của request.
+            await asyncio.wait_for(
+                _with_session(lambda s: device_history.sync_external_events(s, devices)),
+                _HISTORY_SYNC_TIMEOUT,
+            )
         except asyncio.TimeoutError:
             logger.warning("Đồng bộ nhật ký thiết bị quá lâu — trả lịch sử đang có.")
         except Exception as e:
             logger.warning(f"Đồng bộ nhật ký thiết bị lỗi: {e}")
-            db.rollback()
 
     limit = max(1, min(limit, 200))
-    q = db.query(CommandLogModel).filter(CommandLogModel.device_id.in_([d.id for d in devices]))
+    stmt = select(CommandLogModel).where(CommandLogModel.device_id.in_([d.id for d in devices]))
     if before_ms is not None:
-        q = q.filter(CommandLogModel.at_ms < before_ms)
-    rows = q.order_by(CommandLogModel.at_ms.desc(), CommandLogModel.id.desc()).limit(limit).all()
+        stmt = stmt.where(CommandLogModel.at_ms < before_ms)
+    rows = (await db.execute(
+        stmt.order_by(CommandLogModel.at_ms.desc(), CommandLogModel.id.desc()).limit(limit)
+    )).scalars().all()
     return {"status": "success", "data": [_log_to_dict(r) for r in rows], "has_more": len(rows) == limit}
 
 
@@ -1295,39 +1410,40 @@ async def list_history(
 # =========================================================
 @app.get("/api/me")
 async def whoami(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_member),
 ):
     """
     Dùng get_member (KHÔNG chặn pending) — app phải đọc được trạng thái của
     chính mình để biết hiện màn hình chờ duyệt hay màn hình chính.
     """
-    zones = [_zone_to_dict(z) for z in accessible_zones(db, member)]
+    zones = [_zone_to_dict(z) for z in await accessible_zones(db, member)]
+    zone_ids = await zone_ids_of(db, member.user_id)
     return {
         "status": "success",
         "data": {
-            **member_to_dict(member, zone_ids_of(db, member.user_id)),
+            **member_to_dict(member, zone_ids),
             "zones": zones,
-            "sort_order": _safe_device_order(db, member),
+            "sort_order": await _safe_device_order(db, member),
         },
     }
 
 
-def _safe_device_order(db: Session, member: MemberModel) -> list[str]:
+async def _safe_device_order(db: AsyncSession, member: MemberModel) -> list[str]:
     """Thứ tự thiết bị cho /api/me — lỗi ở đây KHÔNG được làm hỏng /api/me
     (AuthGate dựa vào nó để quyết định cho vào app hay không)."""
     try:
-        return device_order_of(db, member)
+        return await device_order_of(db, member)
     except Exception as e:
         logger.warning(f"Không đọc được sort_order của {member.user_id}: {e}")
-        db.rollback()
+        await db.rollback()
         return []
 
 
 @app.patch("/api/me")
 async def update_me(
     body: MeUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_member),
 ):
     """
@@ -1356,14 +1472,15 @@ async def update_me(
             if len(ids) > DEVICE_ORDER_MAX_ITEMS or any(len(i) > DEVICE_ORDER_MAX_ID_LEN for i in ids):
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "Danh sách thứ tự thiết bị không hợp lệ.")
             # Gán list MỚI (không sửa tại chỗ) để SQLAlchemy nhận ra thay đổi cột JSON.
-            member.sort_order = sanitize_device_order(db, member, ids)
-    db.commit()
-    db.refresh(member)
+            member.sort_order = await sanitize_device_order(db, member, ids)
+    await db.commit()
+    await db.refresh(member)
+    zone_ids = await zone_ids_of(db, member.user_id)
     return {
         "status": "success",
         "data": {
-            **member_to_dict(member, zone_ids_of(db, member.user_id)),
-            "sort_order": _safe_device_order(db, member),
+            **member_to_dict(member, zone_ids),
+            "sort_order": await _safe_device_order(db, member),
         },
     }
 
@@ -1388,17 +1505,17 @@ async def create_app_token(
 # =========================================================
 @app.get("/api/zones")
 async def list_zones(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
-    zones = accessible_zones(db, member)
+    zones = await accessible_zones(db, member)
     return {"status": "success", "data": [_zone_to_dict(z) for z in zones]}
 
 
 @app.post("/api/zones")
 async def create_zone(
     body: ZoneCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
     name = body.name.strip()
@@ -1406,8 +1523,8 @@ async def create_zone(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Tên khu vực không được để trống.")
     zone = ZoneModel(name=name, sort_order=body.sort_order, is_shared=body.is_shared)
     db.add(zone)
-    db.commit()
-    db.refresh(zone)
+    await db.commit()
+    await db.refresh(zone)
     logger.info(f"Đã tạo khu vực #{zone.id}: {zone.name}")
     return {"status": "success", "data": _zone_to_dict(zone)}
 
@@ -1416,10 +1533,10 @@ async def create_zone(
 async def update_zone(
     zone_id: int,
     body: ZoneUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
-    zone = db.query(ZoneModel).filter(ZoneModel.id == zone_id).first()
+    zone = await _get(db, ZoneModel, ZoneModel.id == zone_id)
     if zone is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy khu vực.")
     fields = body.model_dump(exclude_unset=True)
@@ -1429,28 +1546,28 @@ async def update_zone(
         fields["name"] = fields["name"].strip()
     for key, value in fields.items():
         setattr(zone, key, value)
-    db.commit()
-    db.refresh(zone)
+    await db.commit()
+    await db.refresh(zone)
     return {"status": "success", "data": _zone_to_dict(zone)}
 
 
 @app.delete("/api/zones/{zone_id}")
 async def delete_zone(
     zone_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
-    zone = db.query(ZoneModel).filter(ZoneModel.id == zone_id).first()
+    zone = await _get(db, ZoneModel, ZoneModel.id == zone_id)
     if zone is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy khu vực.")
 
     # Thiết bị KHÔNG bị xóa theo — chúng về "hộp thư đến" (zone_id NULL) để chủ
     # nhà gán lại. Xóa thiết bị theo khu là mất luôn cả lịch hẹn của chúng.
-    moved = db.query(DeviceModel).filter(DeviceModel.zone_id == zone_id).count()
-    db.query(DeviceModel).filter(DeviceModel.zone_id == zone_id).update({"zone_id": None})
-    db.query(MemberZoneAccessModel).filter(MemberZoneAccessModel.zone_id == zone_id).delete()
-    db.delete(zone)
-    db.commit()
+    moved = await _count(db, DeviceModel, DeviceModel.zone_id == zone_id)
+    await db.execute(update(DeviceModel).where(DeviceModel.zone_id == zone_id).values(zone_id=None))
+    await db.execute(delete(MemberZoneAccessModel).where(MemberZoneAccessModel.zone_id == zone_id))
+    await db.delete(zone)
+    await db.commit()
     logger.info(f"Đã xóa khu vực #{zone_id}; {moved} thiết bị về hộp thư đến")
     message = "Đã xóa khu vực"
     if moved:
@@ -1461,15 +1578,12 @@ async def delete_zone(
 # =========================================================
 # API - Sơ đồ mặt bằng 2D (ai cũng xem; chỉ chủ nhà sửa)
 # =========================================================
-def _visible_ids(db: Session, member: MemberModel) -> set[str]:
-    return {row[0] for row in device_query(db, member).with_entities(DeviceModel.id).all()}
-
-
-def _floor_plan_response(row: FloorPlanModel | None, layout: dict, db: Session, member: MemberModel) -> dict:
+async def _floor_plan_response(row: FloorPlanModel | None, layout: dict, db: AsyncSession,
+                               member: MemberModel) -> dict:
     return {
         "status": "success",
         "data": {
-            **floor_plan.visible_layout(layout, _visible_ids(db, member)),
+            **floor_plan.visible_layout(layout, await visible_device_ids(db, member)),
             # false = chưa ai cấu hình: app hiện bố cục mặc định + nhắc chủ nhà.
             "configured": row is not None,
             "updated_at_ms": row.updated_at_ms if row is not None else None,
@@ -1479,42 +1593,42 @@ def _floor_plan_response(row: FloorPlanModel | None, layout: dict, db: Session, 
 
 @app.get("/api/floor-plan")
 async def get_floor_plan(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(get_current_member),
 ):
     """Phòng/cửa của cả nhà + vị trí CHỈ những thiết bị người gọi thấy được."""
-    row = db.query(FloorPlanModel).filter(FloorPlanModel.id == FLOOR_PLAN_ID).first()
+    row = await _get(db, FloorPlanModel, FloorPlanModel.id == FLOOR_PLAN_ID)
     layout = floor_plan.parse_stored(row.layout) if row is not None else None
     if row is not None and layout is None:
         logger.warning("floor_plans.layout hỏng — trả bố cục mặc định")
-    return _floor_plan_response(row, layout or floor_plan.default_layout(), db, member)
+    return await _floor_plan_response(row, layout or floor_plan.default_layout(), db, member)
 
 
 @app.put("/api/floor-plan")
 async def save_floor_plan(
     body: dict = Body(...),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
     """Ghi đè CẢ sơ đồ (1 lần Lưu ở chế độ Sửa sơ đồ). Chỉ chủ nhà."""
     try:
-        layout = floor_plan.sanitize_layout(body, _visible_ids(db, member))
+        layout = floor_plan.sanitize_layout(body, await visible_device_ids(db, member))
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-    row = db.query(FloorPlanModel).filter(FloorPlanModel.id == FLOOR_PLAN_ID).first()
+    row = await _get(db, FloorPlanModel, FloorPlanModel.id == FLOOR_PLAN_ID)
     if row is None:
         row = FloorPlanModel(id=FLOOR_PLAN_ID)
         db.add(row)
     row.layout = json.dumps(layout, ensure_ascii=False)
     row.updated_by = member.user_id
     row.updated_at_ms = int(time.time() * 1000)
-    db.commit()
-    db.refresh(row)
+    await db.commit()
+    await db.refresh(row)
     logger.info(
         f"🗺️ {member.user_id} lưu sơ đồ: {len(layout['rooms'])} phòng, "
         f"{len(layout['doors'])} cửa, {len(layout['devices'])} thiết bị"
     )
-    return _floor_plan_response(row, layout, db, member)
+    return await _floor_plan_response(row, layout, db, member)
 
 
 # =========================================================
@@ -1522,13 +1636,21 @@ async def save_floor_plan(
 # =========================================================
 @app.get("/api/members")
 async def list_members(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
-    rows = db.query(MemberModel).order_by(MemberModel.status, MemberModel.email).all()
+    rows = (await db.execute(
+        select(MemberModel).order_by(MemberModel.status, MemberModel.email)
+    )).scalars().all()
+    # 1 truy vấn cho mọi grant thay vì 1 truy vấn / thành viên.
+    grants: dict[str, list[int]] = {}
+    for uid, zid in (await db.execute(
+        select(MemberZoneAccessModel.user_id, MemberZoneAccessModel.zone_id)
+    )).all():
+        grants.setdefault(uid, []).append(zid)
     return {
         "status": "success",
-        "data": [member_to_dict(m, zone_ids_of(db, m.user_id)) for m in rows],
+        "data": [member_to_dict(m, sorted(grants.get(m.user_id, []))) for m in rows],
     }
 
 
@@ -1536,11 +1658,11 @@ async def list_members(
 async def update_member(
     user_id: str,
     body: MemberUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     member: MemberModel = Depends(require_owner),
 ):
     """Duyệt / đổi vai / cấp khu. `zone_ids` thay CẢ BỘ grant, không phải add-remove."""
-    target = db.query(MemberModel).filter(MemberModel.user_id == user_id).first()
+    target = await _get(db, MemberModel, MemberModel.user_id == user_id)
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy thành viên.")
 
@@ -1573,14 +1695,11 @@ async def update_member(
         fields.get("role", "owner") != "owner" or fields.get("status", "active") != "active"
     )
     if losing_owner:
-        remaining = (
-            db.query(MemberModel)
-            .filter(
-                MemberModel.role == "owner",
-                MemberModel.status == "active",
-                MemberModel.user_id != target.user_id,
-            )
-            .count()
+        remaining = await _count(
+            db, MemberModel,
+            MemberModel.role == "owner",
+            MemberModel.status == "active",
+            MemberModel.user_id != target.user_id,
         )
         if remaining == 0:
             raise HTTPException(
@@ -1593,27 +1712,25 @@ async def update_member(
         setattr(target, key, value)
 
     if zone_ids is not None:
-        valid = {z.id for z in db.query(ZoneModel).filter(ZoneModel.id.in_(zone_ids)).all()}
+        valid = set((await db.execute(select(ZoneModel.id).where(ZoneModel.id.in_(zone_ids)))).scalars().all())
         unknown = set(zone_ids) - valid
         if unknown:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, f"Khu vực không tồn tại: {sorted(unknown)}"
             )
-        db.query(MemberZoneAccessModel).filter(
-            MemberZoneAccessModel.user_id == user_id
-        ).delete()
+        await db.execute(delete(MemberZoneAccessModel).where(MemberZoneAccessModel.user_id == user_id))
         for zid in valid:
             db.add(MemberZoneAccessModel(user_id=user_id, zone_id=zid))
 
-    db.commit()
-    db.refresh(target)
+    await db.commit()
+    await db.refresh(target)
     # Bị chặn / về chờ duyệt -> ngắt /ws của họ NGAY (không đợi vòng kiểm 2 phút).
     # Đổi khu không cần gì thêm: quyền được tính lại mỗi lần phát sự kiện.
     realtime.manager.revalidate_soon(user_id)
     logger.info(
         f"Đã cập nhật thành viên {target.email}: vai={target.role} trạng thái={target.status}"
     )
-    return {"status": "success", "data": member_to_dict(target, zone_ids_of(db, user_id))}
+    return {"status": "success", "data": member_to_dict(target, await zone_ids_of(db, user_id))}
 
 
 # =========================================================
@@ -1626,8 +1743,8 @@ _WS_LEGACY_ECHO = "📡 Server đã nhận lệnh, đang xử lý qua AI..."
 
 
 async def _ws_audience(device_id: str | None, user_ids: set) -> tuple[set, set]:
-    # Quyền do household.py quyết; chạy ở thread vì SQLAlchemy đồng bộ.
-    return await asyncio.to_thread(_with_session, lambda db: realtime_audience(db, user_ids, device_id))
+    # Quyền do household.py quyết.
+    return await _with_session(lambda db: realtime_audience(db, user_ids, device_id))
 
 
 async def _ws_refresh(device_id: str, brand: str, name: str | None, max_age: float) -> None:
@@ -1639,10 +1756,10 @@ async def _ws_refresh(device_id: str, brand: str, name: str | None, max_age: flo
 
 
 async def _ws_watch_targets() -> list:
-    def load(db: Session) -> list:
-        return [(d.id, d.brand, d.name) for d in db.query(DeviceModel).all()
+    async def load(db: AsyncSession) -> list:
+        return [(d.id, d.brand, d.name) for d in (await db.execute(select(DeviceModel))).scalars().all()
                 if device_kind(d) in realtime.WATCHED_KINDS]
-    return await asyncio.to_thread(_with_session, load)
+    return await _with_session(load)
 
 
 realtime.manager.configure(audience=_ws_audience, refresh=_ws_refresh, targets=_ws_watch_targets)
@@ -1656,7 +1773,7 @@ def _ws_parse(text: str) -> dict | None:
     return msg if isinstance(msg, dict) else None
 
 
-def _ws_authenticate(token: str | None) -> str:
+async def _ws_authenticate(token: str | None) -> str:
     """
     user_id của thành viên ACTIVE sở hữu `token` — CÙNG đường với mọi endpoint
     HTTP (get_current_user → provision_member → get_current_member), nên token
@@ -1664,12 +1781,13 @@ def _ws_authenticate(token: str | None) -> str:
     Ném HTTPException 401/403. Không bao giờ tin user_id do client tự gửi.
     """
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token) if token else None
-    user = get_current_user(creds)
-    db = _realtime_session()
-    try:
-        return get_current_member(provision_member(db, user)).user_id
-    finally:
-        db.close()
+    # Verify JWT đồng bộ (có thể tải JWKS qua mạng) → chạy ở thread, như FastAPI
+    # làm với dependency `get_current_user` của mọi request HTTP.
+    user = await asyncio.to_thread(get_current_user, creds)
+
+    async def member_id(db: AsyncSession) -> str:
+        return get_current_member(await provision_member(db, user)).user_id
+    return await _with_session(member_id)
 
 
 async def _ws_legacy(websocket: WebSocket) -> None:
@@ -1712,7 +1830,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 return
             token = msg.get("token") or None  # xác thực TẮT: app chưa đăng nhập gửi rỗng
         try:
-            user_id = await asyncio.to_thread(_ws_authenticate, token)
+            user_id = await _ws_authenticate(token)
         except HTTPException as e:
             code = realtime.CLOSE_UNAUTHORIZED if e.status_code == 401 else realtime.CLOSE_FORBIDDEN
             await websocket.close(code=code)

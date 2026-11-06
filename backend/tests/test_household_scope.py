@@ -24,6 +24,16 @@ from app.models.device import DeviceModel
 from app.models.member import MemberModel
 from app.models.schedule import ScheduleModel
 from app.models.zone import MemberZoneAccessModel, ZoneModel
+from conftest import async_factory_for, run_async_db
+
+
+def _a(db, fn):
+    """Gọi code household ASYNC trên cùng file SQLite với Session đồng bộ `db` của test."""
+    return run_async_db(db.info["path"], fn)
+
+
+async def _all(s, stmt):
+    return (await s.execute(stmt)).scalars().all()
 
 
 # =========================================================
@@ -35,6 +45,7 @@ def db(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'scope.db'}")
     init_db(engine)
     session = sessionmaker(bind=engine)()
+    session.info["path"] = tmp_path / "scope.db"
     yield session
     session.close()
 
@@ -79,7 +90,7 @@ def _member(db, user_id, role, status="active", zone_ids=()):
 # =========================================================
 def test_nguoi_la_lan_dau_thanh_guest_pending(db):
     user = CurrentUser(user_id="u-new", email="la@x.test", is_admin=False)
-    m = household.provision_member(db, user)
+    m = _a(db, lambda s: household.provision_member(s, user))
     assert m.role == "guest"
     assert m.status == "pending"
 
@@ -87,20 +98,20 @@ def test_nguoi_la_lan_dau_thanh_guest_pending(db):
 def test_email_trong_admin_emails_luon_la_owner(db):
     """Cứu hộ cấp env: chủ nhà không bao giờ tự khóa mình khỏi nhà mình."""
     user = CurrentUser(user_id="u-boss", email="boss@x.test", is_admin=True)
-    m = household.provision_member(db, user)
+    m = _a(db, lambda s: household.provision_member(s, user))
     assert (m.role, m.status) == ("owner", "active")
 
     # Kể cả khi hàng đã bị hạ vai trong DB, lần đăng nhập sau phải nâng lại.
-    m.role, m.status = "kid", "blocked"
+    db.query(MemberModel).filter(MemberModel.user_id == "u-boss").update({"role": "kid", "status": "blocked"})
     db.commit()
-    again = household.provision_member(db, user)
+    again = _a(db, lambda s: household.provision_member(s, user))
     assert (again.role, again.status) == ("owner", "active")
 
 
 def test_provision_khong_tao_trung_hang(db):
     user = CurrentUser(user_id="u-1", email="a@x.test", is_admin=False)
-    household.provision_member(db, user)
-    household.provision_member(db, user)
+    _a(db, lambda s: household.provision_member(s, user))
+    _a(db, lambda s: household.provision_member(s, user))
     assert db.query(MemberModel).filter(MemberModel.user_id == "u-1").count() == 1
 
 
@@ -133,20 +144,20 @@ def test_active_di_qua_duoc(db):
 # =========================================================
 def test_owner_thay_moi_thiet_bi_ke_ca_chua_phan_khu(db, devices):
     m = _member(db, "u-owner", "owner")
-    ids = {d.id for d in household.device_query(db, m).all()}
+    ids = {d.id for d in _a(db, lambda s: household.visible_devices(s, m))}
     assert {"dev-a", "dev-b", "dev-inbox"} <= ids
 
 
 def test_adult_cung_thay_moi_thiet_bi(db, devices):
     m = _member(db, "u-adult", "adult")
-    ids = {d.id for d in household.device_query(db, m).all()}
+    ids = {d.id for d in _a(db, lambda s: household.visible_devices(s, m))}
     assert {"dev-a", "dev-b", "dev-inbox"} <= ids
 
 
 def test_kid_chi_thay_khu_duoc_cap(db, zones, devices):
     a, _b = zones
     m = _member(db, "u-kid", "kid", zone_ids=[a.id])
-    ids = {d.id for d in household.device_query(db, m).all()}
+    ids = {d.id for d in _a(db, lambda s: household.visible_devices(s, m))}
     assert ids == {"dev-a"}
 
 
@@ -154,13 +165,13 @@ def test_thiet_bi_chua_phan_khu_vo_hinh_voi_kid(db, zones, devices):
     """zone_id IS NULL là "hộp thư đến" — rơi ra miễn phí từ INNER JOIN."""
     a, b = zones
     m = _member(db, "u-kid2", "kid", zone_ids=[a.id, b.id])
-    ids = {d.id for d in household.device_query(db, m).all()}
+    ids = {d.id for d in _a(db, lambda s: household.visible_devices(s, m))}
     assert "dev-inbox" not in ids
 
 
 def test_kid_khong_duoc_cap_khu_nao_thi_khong_thay_gi(db, devices):
     m = _member(db, "u-kid3", "kid")
-    assert household.device_query(db, m).all() == []
+    assert _a(db, lambda s: household.visible_devices(s, m)) == []
 
 
 # =========================================================
@@ -171,7 +182,7 @@ def test_thiet_bi_ngoai_khu_tra_403_khong_phai_404(db, zones, devices):
     a, _b = zones
     m = _member(db, "u-kid4", "kid", zone_ids=[a.id])
     with pytest.raises(HTTPException) as err:
-        household.require_device_access(db, m, "dev-b")
+        _a(db, lambda s: household.require_device_access(s, m, "dev-b"))
     assert err.value.status_code == 403
 
 
@@ -179,14 +190,14 @@ def test_thiet_bi_khong_ton_tai_tra_404(db, zones, devices):
     a, _b = zones
     m = _member(db, "u-kid5", "kid", zone_ids=[a.id])
     with pytest.raises(HTTPException) as err:
-        household.require_device_access(db, m, "khong-co-that")
+        _a(db, lambda s: household.require_device_access(s, m, "khong-co-that"))
     assert err.value.status_code == 404
 
 
 def test_thiet_bi_trong_khu_duoc_cap_thi_qua(db, zones, devices):
     a, _b = zones
     m = _member(db, "u-kid6", "kid", zone_ids=[a.id])
-    assert household.require_device_access(db, m, "dev-a").id == "dev-a"
+    assert _a(db, lambda s: household.require_device_access(s, m, "dev-a")).id == "dev-a"
 
 
 # =========================================================
@@ -225,7 +236,7 @@ def test_lich_loc_theo_thiet_bi_khong_theo_nguoi_tao(db, zones, devices):
     _schedule(db, "dev-b", created_by="nguoi-khac")
 
     kid = _member(db, "u-kid7", "kid", zone_ids=[a.id])
-    seen = {s.id for s in household.schedule_query(db, kid).all()}
+    seen = {s.id for s in _a(db, lambda x: _all(x, household.schedule_query(kid)))}
     assert seen == {s_a.id}
 
 
@@ -245,7 +256,7 @@ def test_kid_sua_duoc_lich_cua_chinh_minh(db, zones, devices):
     a, _b = zones
     kid = _member(db, "u-kid9", "kid", zone_ids=[a.id])
     s = _schedule(db, "dev-a", created_by="u-kid9")
-    assert household.require_schedule_write(db, kid, s.id).id == s.id
+    assert _a(db, lambda x: household.require_schedule_write(x, kid, s.id)).id == s.id
 
 
 def test_kid_khong_sua_duoc_lich_nguoi_khac(db, zones, devices):
@@ -253,7 +264,7 @@ def test_kid_khong_sua_duoc_lich_nguoi_khac(db, zones, devices):
     kid = _member(db, "u-kid10", "kid", zone_ids=[a.id])
     s = _schedule(db, "dev-a", created_by="bo-me")
     with pytest.raises(HTTPException) as err:
-        household.require_schedule_write(db, kid, s.id)
+        _a(db, lambda x: household.require_schedule_write(x, kid, s.id))
     assert err.value.status_code == 403
     assert "chính mình" in err.value.detail
 
@@ -261,7 +272,7 @@ def test_kid_khong_sua_duoc_lich_nguoi_khac(db, zones, devices):
 def test_adult_sua_duoc_lich_nguoi_khac(db, zones, devices):
     adult = _member(db, "u-adult2", "adult")
     s = _schedule(db, "dev-a", created_by="ai-do")
-    assert household.require_schedule_write(db, adult, s.id).id == s.id
+    assert _a(db, lambda x: household.require_schedule_write(x, adult, s.id)).id == s.id
 
 
 def test_lich_ngoai_khu_tra_403(db, zones, devices):
@@ -269,7 +280,7 @@ def test_lich_ngoai_khu_tra_403(db, zones, devices):
     kid = _member(db, "u-kid11", "kid", zone_ids=[a.id])
     s = _schedule(db, "dev-b", created_by="u-kid11")
     with pytest.raises(HTTPException) as err:
-        household.require_schedule_write(db, kid, s.id)
+        _a(db, lambda x: household.require_schedule_write(x, kid, s.id))
     assert err.value.status_code == 403
 
 
@@ -293,13 +304,12 @@ def client(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'api.db'}")
     init_db(engine)
     TempSession = sessionmaker(bind=engine)
+    _async = async_factory_for(tmp_path / 'api.db')
+    monkeypatch.setattr("app.main._realtime_session", _async)
 
-    def _override_get_db():
-        session = TempSession()
-        try:
+    async def _override_get_db():
+        async with _async() as session:
             yield session
-        finally:
-            session.close()
 
     fastapi_app.dependency_overrides[get_db] = _override_get_db
     yield httpx.AsyncClient(
@@ -348,13 +358,12 @@ def client_as(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'api2.db'}")
     init_db(engine)
     TempSession = sessionmaker(bind=engine)
+    _async = async_factory_for(tmp_path / 'api2.db')
+    monkeypatch.setattr("app.main._realtime_session", _async)
 
-    def _override_get_db():
-        session = TempSession()
-        try:
+    async def _override_get_db():
+        async with _async() as session:
             yield session
-        finally:
-            session.close()
 
     state = {"user": None}
 
@@ -426,13 +435,12 @@ def test_khong_co_token_thi_401(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'api3.db'}")
     init_db(engine)
     TempSession = sessionmaker(bind=engine)
+    _async = async_factory_for(tmp_path / 'api3.db')
+    monkeypatch.setattr("app.main._realtime_session", _async)
 
-    def _override_get_db():
-        session = TempSession()
-        try:
+    async def _override_get_db():
+        async with _async() as session:
             yield session
-        finally:
-            session.close()
 
     fastapi_app.dependency_overrides[get_db] = _override_get_db
     try:
@@ -501,13 +509,12 @@ def test_app_token_duoc_chap_nhan_nhu_dang_nhap(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'tok.db'}")
     init_db(engine)
     TempSession = sessionmaker(bind=engine)
+    _async = async_factory_for(tmp_path / 'tok.db')
+    monkeypatch.setattr("app.main._realtime_session", _async)
 
-    def _override_get_db():
-        s = TempSession()
-        try:
+    async def _override_get_db():
+        async with _async() as s:
             yield s
-        finally:
-            s.close()
 
     fastapi_app.dependency_overrides[get_db] = _override_get_db
     try:
@@ -567,13 +574,12 @@ def owner_client(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'admin.db'}")
     init_db(engine)
     TempSession = sessionmaker(bind=engine)
+    _async = async_factory_for(tmp_path / 'admin.db')
+    monkeypatch.setattr("app.main._realtime_session", _async)
 
-    def _override_get_db():
-        s = TempSession()
-        try:
+    async def _override_get_db():
+        async with _async() as s:
             yield s
-        finally:
-            s.close()
 
     fastapi_app.dependency_overrides[get_db] = _override_get_db
 

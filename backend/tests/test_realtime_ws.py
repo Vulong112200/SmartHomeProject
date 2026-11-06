@@ -11,9 +11,6 @@ import json
 
 import httpx
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 from app.models.member import MemberModel
 from app.models.schedule import ScheduleModel
 from app.services import realtime, scheduler
@@ -114,9 +111,9 @@ def ws(api, monkeypatch):
     monkeypatch.setenv("APP_TOKEN_SECRET", "test-secret-for-ws-0123456789abcdef")
     # Token /ws đi đường xác thực THẬT: chủ nhà là nhờ ADMIN_EMAILS như production.
     monkeypatch.setenv("ADMIN_EMAILS", "owner@x.test")
-    # /ws đọc DB ở thread riêng (asyncio.to_thread) -> engine cho phép đa luồng.
-    engine = create_engine(api.db.get_bind().url, connect_args={"check_same_thread": False})
-    monkeypatch.setattr(main, "_realtime_session", sessionmaker(bind=engine))
+    # /ws đọc DB bằng AsyncSession riêng — cùng file SQLite tạm với `api` (fixture
+    # `api` đã trỏ main._realtime_session vào đó).
+    monkeypatch.setattr(main, "_realtime_session", api.async_session)
     monkeypatch.setattr(main, "db_ready", True)
     monkeypatch.setattr(main, "_status_cache", {})
     monkeypatch.setattr(realtime, "FOLLOWUP_DELAYS", (0.05,))
@@ -156,8 +153,8 @@ def ws(api, monkeypatch):
     env = Env()
     env.http, env.raw, env.open_ws, env.token = http, raw, open_ws, token
     env.fail, env.states, env.mgr, env.db, env.ai_reply = fail, states, mgr, api.db, api.ai_reply
+    env.async_session = api.async_session
     yield env
-    engine.dispose()
 
 
 def _run(coro):
@@ -232,7 +229,8 @@ def test_tro_ly_kich_ban_chay_thu_lich_va_scheduler_deu_phat(ws):
         assert seen[-1]["data"]["source"] == "schedule" and seen[-1]["data"]["action_label"] == "Tắt"
 
         # Vòng lặp nền của scheduler (không có người bấm).
-        await scheduler._fire(ws.db, sch, "on", None, "Lịch “Tối” lúc 22:00", None)
+        async with ws.async_session() as s:
+            await scheduler._fire(s, sch, "on", None, "Lịch “Tối” lúc 22:00", None)
         seen = await _until(kid, lambda m: m["event"] == realtime.COMMAND_COMPLETED)
         assert seen[-1]["data"]["source"] == "schedule" and seen[-1]["data"]["user_name"] is None
         await kid.close()

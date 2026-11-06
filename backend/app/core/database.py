@@ -4,10 +4,10 @@ import os
 from contextlib import contextmanager
 from uuid import uuid4
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import URL, Engine, make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base
 
 logger = logging.getLogger(__name__)
 
@@ -30,21 +30,6 @@ def normalize_database_url(raw: str) -> str:
     return url
 
 
-def make_engine(url: str):
-    """Dựng engine với tham số pool hợp với từng loại DB."""
-    if url.startswith("sqlite"):
-        return create_engine(url, connect_args={"check_same_thread": False})
-    # Postgres qua Supabase pooler: pre_ping loại bỏ kết nối đã chết sau khi
-    # idle (Render free ngủ thường xuyên), recycle vì pooler cắt kết nối cũ.
-    return create_engine(
-        url,
-        pool_pre_ping=True,
-        pool_recycle=1800,
-        pool_size=5,
-        max_overflow=5,
-    )
-
-
 # =========================================================
 # Engine ASYNC (SQLAlchemy 2.0): asyncpg cho Postgres, aiosqlite cho SQLite
 # =========================================================
@@ -57,6 +42,7 @@ _TRANSACTION_POOLER_PORT = 6543
 # Không đổi thì URL Supabase có `?sslmode=require` làm asyncpg.connect() ném
 # TypeError ngay lúc kết nối đầu tiên.
 _LIBPQ_ONLY_PARAMS = ("sslmode", "connect_timeout", "application_name")
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 def async_database_url(url) -> URL:
@@ -94,6 +80,10 @@ def async_connect_args(url, application_name: str = "smarthome-api") -> dict:
     }
     if q.get("sslmode"):
         args["ssl"] = q["sslmode"]
+    elif (u.host or "localhost") not in _LOCAL_HOSTS:
+        # Mặc định của asyncpg là "prefer" (thử TLS, hỏng thì nói chuyện TRẦN).
+        # Ra Internet (Supabase) thì bắt buộc TLS — đã kiểm: pooler dùng TLSv1.3.
+        args["ssl"] = "require"
     if u.port == _TRANSACTION_POOLER_PORT:
         args["statement_cache_size"] = 0
         args["prepared_statement_cache_size"] = 0
@@ -136,13 +126,11 @@ def make_session_factory(bind) -> async_sessionmaker:
 
 DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", ""))
 IS_SQLITE = DATABASE_URL.startswith("sqlite")
-engine = make_engine(DATABASE_URL)
 
-# Tạo một "nhà máy" sản xuất các phiên làm việc (Session) với DB
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Engine + session async. Tạo engine KHÔNG mở kết nối (lười) ⇒ import không
-# bao giờ ném vì DB chết.
+# Engine + session async — DUY NHẤT trong tiến trình API (request, /ws, bộ hẹn
+# giờ, boot). Tạo engine KHÔNG mở kết nối (lười) ⇒ import không bao giờ ném vì
+# DB chết. ⚠️ Nhưng import driver (asyncpg/aiosqlite) xảy ra NGAY ở đây: thiếu
+# gói trong requirements là "Error loading ASGI app" như vụ PyJWT.
 async_engine = make_async_engine(DATABASE_URL)
 AsyncSessionLocal = make_session_factory(async_engine)
 
@@ -150,19 +138,11 @@ AsyncSessionLocal = make_session_factory(async_engine)
 Base = declarative_base()
 
 
-# Hàm hỗ trợ lấy kết nối DB cho các API
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-async def get_async_db():
+async def get_db():
     """
-    1 AsyncSession / request. `async with` luôn đóng session (rollback transaction
-    còn dở, trả kết nối về pool) kể cả khi endpoint ném lỗi.
+    Dependency FastAPI: 1 AsyncSession / request, không dùng chung giữa request
+    hay task. `async with` luôn đóng session (rollback transaction còn dở, trả
+    kết nối về pool) kể cả khi endpoint ném lỗi.
     """
     async with AsyncSessionLocal() as session:
         yield session
@@ -262,7 +242,7 @@ _REQUIRED_SCHEMA = {
 def _begin(bind):
     """
     Transaction để ghi DDL/seed trên `bind`:
-      - Engine (test, worker cũ): mở kết nối + transaction riêng như trước.
+      - Engine đồng bộ (test trên SQLite tạm): mở kết nối + transaction riêng.
       - Connection (lúc boot: `AsyncConnection.run_sync`): dùng chính kết nối đó,
         commit khi khối chạy xong; lỗi giữa chừng thì không commit — người gọi
         đóng kết nối là rollback.
@@ -275,13 +255,12 @@ def _begin(bind):
     bind.commit()
 
 
-def run_startup_migrations(bind=None) -> None:
+def run_startup_migrations(bind) -> None:
     """
     Thêm cột còn thiếu vào bảng đã tồn tại. Idempotent — chỉ thêm cột chưa có,
     không bao giờ DROP (không hoàn tác được, mà hàm này chạy mỗi lần boot).
     Chạy cho cả SQLite lẫn Postgres.
     """
-    bind = bind if bind is not None else engine
     dialect = bind.dialect.name  # "sqlite" | "postgresql"
     inspector = inspect(bind)
     tables = set(inspector.get_table_names())
@@ -301,7 +280,7 @@ def run_startup_migrations(bind=None) -> None:
                 logger.info("Đã thêm cột %s.%s (%s)", table, name, ddl)
 
 
-def enable_rls(bind=None) -> None:
+def enable_rls(bind) -> None:
     """
     Bật Row Level Security cho bảng do create_all tạo (chỉ Postgres/Supabase).
 
@@ -312,7 +291,6 @@ def enable_rls(bind=None) -> None:
     Bật RLS mà KHÔNG viết policy = deny-all cho anon/authenticated. Backend nối
     bằng role `postgres` nên bỏ qua RLS hoàn toàn, vẫn chạy bình thường.
     """
-    bind = bind if bind is not None else engine
     if bind.dialect.name != "postgresql":
         return
     inspector = inspect(bind)
@@ -325,7 +303,7 @@ def enable_rls(bind=None) -> None:
     logger.info("Đã bật RLS (deny-all cho anon/authenticated) trên %s", list(_REQUIRED_SCHEMA))
 
 
-def seed_defaults(bind=None) -> None:
+def seed_defaults(bind) -> None:
     """
     Nạp dữ liệu tối thiểu để nhà chạy được ngay:
       - 3 thiết bị đang dùng, nếu bảng `devices` rỗng;
@@ -335,7 +313,6 @@ def seed_defaults(bind=None) -> None:
     Cả hai bước chỉ chạy khi bảng tương ứng RỖNG, nên không bao giờ ghi đè
     dữ liệu người dùng đã sửa (đổi tên thiết bị, xóa bớt, chia phòng lại).
     """
-    bind = bind if bind is not None else engine
     with _begin(bind) as conn:
         if not conn.execute(text("SELECT COUNT(*) FROM devices")).scalar():
             for device_id, name, brand, category in _SEED_DEVICES:
@@ -368,7 +345,7 @@ def seed_defaults(bind=None) -> None:
                         _DEFAULT_ZONE_NAME)
 
 
-def verify_schema(bind=None, tables=None) -> None:
+def verify_schema(bind, tables=None) -> None:
     """
     Kiểm schema khớp với những gì code đọc/ghi. Raise nếu thiếu — lifespan bắt
     exception này và cho app boot ở chế độ degraded, /health báo db:false.
@@ -377,7 +354,6 @@ def verify_schema(bind=None, tables=None) -> None:
     `tables`: chỉ kiểm các bảng này (worker hẹn giờ chỉ dùng vài bảng và có
     thể chạy bằng role DB quyền hẹp). None = tất cả.
     """
-    bind = bind if bind is not None else engine
     inspector = inspect(bind)
     existing_tables = set(inspector.get_table_names())
     wanted = _REQUIRED_SCHEMA if tables is None else {t: _REQUIRED_SCHEMA[t] for t in tables}
@@ -400,17 +376,16 @@ def verify_schema(bind=None, tables=None) -> None:
         )
 
 
-def init_db(bind=None) -> None:
+def init_db(bind) -> None:
     """
-    Khởi tạo schema. Gọi từ lifespan của main.py, KHÔNG gọi ở tầng import:
-    exception lúc import làm uvicorn chết với "Error loading ASGI app", không
-    route nào chạy, kể cả /health.
+    Khởi tạo schema. Production gọi qua `init_db_async` từ lifespan của main.py,
+    KHÔNG gọi ở tầng import: exception lúc import làm uvicorn chết với "Error
+    loading ASGI app", không route nào chạy, kể cả /health.
 
     create_all có checkfirst=True nên là no-op khi supabase_schema.sql đã apply.
 
-    `bind` chỉ dùng cho test (trỏ vào DB tạm). Production gọi không tham số.
+    `bind`: Connection (qua run_sync) hoặc Engine đồng bộ (test trên DB tạm).
     """
-    bind = bind if bind is not None else engine
     _import_models()
     with _begin(bind) as conn:
         Base.metadata.create_all(bind=conn)

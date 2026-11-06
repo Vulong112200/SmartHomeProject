@@ -12,6 +12,10 @@ _FEED_STATES = ("standby", "feeding", "done")
 # Số phần tối đa cho 1 lần nhả (UI dùng 1-3). Khớp services/device_actions.py.
 _MAX_PORTIONS = 10
 
+# Mỗi call HTTP tới Tuya Cloud (client đồng bộ chạy trong thread). Không có timeout
+# thì 1 request treo giữ thread + request API mãi — cùng ngưỡng với TuyaConnector.
+_CALL_TIMEOUT_SECONDS = 15
+
 class RojecoConnector(DeviceConnector):
     def __init__(self):
         self.is_connected = False
@@ -25,10 +29,14 @@ class RojecoConnector(DeviceConnector):
         
         self.openapi = TuyaOpenAPI(self.API_ENDPOINT, self.ACCESS_ID, self.ACCESS_KEY)
 
+    async def _call(self, fn, *args):
+        """Client đồng bộ (requests) -> thread, có timeout: không block event loop, không treo mãi."""
+        return await asyncio.wait_for(asyncio.to_thread(fn, *args), _CALL_TIMEOUT_SECONDS)
+
     async def connect(self) -> bool:
         try:
             # Client đồng bộ (requests) -> chạy trong thread, không block event loop.
-            result = await asyncio.to_thread(self.openapi.connect)
+            result = await self._call(self.openapi.connect)
             print("[Tuya Token Response]", result)
             self.is_connected = bool(result.get("success")) if isinstance(result, dict) else True
             if self.is_connected:
@@ -66,12 +74,12 @@ class RojecoConnector(DeviceConnector):
         """
         try:
             if not self.is_connected:
-                await asyncio.to_thread(self.openapi.connect)
+                await self._call(self.openapi.connect)
 
             # Client đồng bộ -> chạy 2 request song song trong thread.
             info, status = await asyncio.gather(
-                asyncio.to_thread(self.openapi.get, f'/v1.0/iot-03/devices/{device_id}'),
-                asyncio.to_thread(self.openapi.get, f'/v1.0/iot-03/devices/{device_id}/status'),
+                self._call(self.openapi.get, f'/v1.0/iot-03/devices/{device_id}'),
+                self._call(self.openapi.get, f'/v1.0/iot-03/devices/{device_id}/status'),
             )
 
             online = bool((info.get('result') or {}).get('online')) if info.get('success') else False
@@ -111,7 +119,7 @@ class RojecoConnector(DeviceConnector):
     async def set_mode(self, device_id: str, mode: str) -> bool:
         try:
             if not self.is_connected:
-                await asyncio.to_thread(self.openapi.connect)
+                await self._call(self.openapi.connect)
 
             # Chuyển mode sang số nguyên (portions). Chặn số vô lý ngay tại đây
             # (spec máy cho tới 40 phần — 1 lệnh sai là đổ cả khay hạt).
@@ -126,7 +134,7 @@ class RojecoConnector(DeviceConnector):
             # ĐƯỜNG DẪN CHUẨN: /v1.0/iot-03/...
             endpoint = f'/v1.0/iot-03/devices/{device_id}/commands'
             # Client đồng bộ -> chạy trong thread để không block event loop.
-            response = await asyncio.to_thread(self.openapi.post, endpoint, commands)
+            response = await self._call(self.openapi.post, endpoint, commands)
             
             print(f"[Rojeco] Gửi lệnh thành công: {response}")
             return response.get('success', False)

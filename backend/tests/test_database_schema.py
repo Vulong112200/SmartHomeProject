@@ -50,16 +50,18 @@ def test_postgres_url_duoc_chuan_hoa():
 
 def test_postgres_dung_pool_co_pre_ping():
     """Render free ngủ thường xuyên -> kết nối chết; thiếu pre_ping là lỗi ngẫu nhiên."""
-    engine = db.make_engine("postgresql://u:p@host:5432/postgres")
+    engine = db.make_async_engine("postgresql://u:p@host:5432/postgres")
     assert engine.dialect.name == "postgresql"
     assert engine.pool.size() == 5
     assert engine.pool._pre_ping is True
 
 
-def test_sqlite_cho_phep_dung_chung_nhieu_thread():
-    """FastAPI chạy handler ở threadpool — thiếu cờ này là lỗi 'same thread'."""
-    engine = db.make_engine("sqlite:///./x.db")
+def test_sqlite_dung_aiosqlite_co_busy_timeout():
+    """Request async chạy song song thật ⇒ có lúc chờ khóa ghi SQLite: cần busy timeout."""
+    engine = db.make_async_engine("sqlite:///./x.db")
     assert engine.dialect.name == "sqlite"
+    assert engine.dialect.driver == "aiosqlite"
+    assert db.async_connect_args("sqlite:///./x.db") == {"timeout": 30}
 
 
 # ---------------------------------------------------------------------
@@ -288,6 +290,13 @@ def test_sslmode_doi_sang_tham_so_asyncpg():
 def test_session_pooler_giu_prepared_statement():
     args = db.async_connect_args("postgresql://u:p@aws-0.pooler.supabase.com:5432/postgres")
     assert "statement_cache_size" not in args
+
+
+def test_host_internet_bat_buoc_tls_localhost_thi_khong():
+    assert db.async_connect_args("postgresql://u:p@aws-0.pooler.supabase.com:5432/postgres")["ssl"] == "require"
+    assert "ssl" not in db.async_connect_args("postgresql://u:p@localhost:5432/dev")
+    # sslmode ghi tường minh trong URL luôn thắng
+    assert db.async_connect_args("postgresql://u:p@db.x.co:5432/p?sslmode=disable")["ssl"] == "disable"
 
 
 def test_transaction_pooler_tat_prepared_statement():

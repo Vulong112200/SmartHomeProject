@@ -26,11 +26,15 @@ Hai tính chất đáng chú ý:
      ngay ở request kế tiếp, không bắt đăng nhập lại (khác với nhét role vào JWT).
   2. Quyền KHÔNG BAO GIỜ xuất hiện trong thân endpoint — endpoint chỉ gọi
      `device_query` / `require_device_access` / `require_owner`.
+
+DB: AsyncSession (SQLAlchemy 2.0). `device_query` / `schedule_query` trả câu
+`select()` CHƯA chạy — người gọi thêm điều kiện/sắp xếp rồi `await db.execute`.
+Hàm thuần (không I/O) như `get_current_member` / `require_owner` vẫn là def thường.
 """
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import Select, inspect as sa_inspect, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser, get_current_user
 from app.core.database import get_db
@@ -55,7 +59,11 @@ _BLOCKED_MESSAGE = "Tài khoản đã bị chặn."
 # =========================================================
 # Tạo / lấy thành viên
 # =========================================================
-def provision_member(db: Session, user: CurrentUser) -> MemberModel:
+async def _member_row(db: AsyncSession, user_id: str) -> MemberModel | None:
+    return (await db.execute(select(MemberModel).where(MemberModel.user_id == user_id))).scalar_one_or_none()
+
+
+async def provision_member(db: AsyncSession, user: CurrentUser) -> MemberModel:
     """
     Trả hàng `members` của user, tự tạo nếu đăng nhập lần đầu.
 
@@ -66,7 +74,7 @@ def provision_member(db: Session, user: CurrentUser) -> MemberModel:
     hàng đã tồn tại với vai thấp hơn. Đây là cứu hộ: chủ nhà không bao giờ tự
     khóa mình khỏi nhà mình.
     """
-    member = db.query(MemberModel).filter(MemberModel.user_id == user.user_id).first()
+    member = await _member_row(db, user.user_id)
 
     if member is None:
         member = MemberModel(
@@ -78,14 +86,15 @@ def provision_member(db: Session, user: CurrentUser) -> MemberModel:
         )
         db.add(member)
         try:
-            db.commit()
+            await db.commit()
         except IntegrityError:
             # App mở lần đầu bắn vài request song song: request khác đã tạo
             # hàng này trước -> dùng hàng đó thay vì 500.
-            db.rollback()
-            member = db.query(MemberModel).filter(MemberModel.user_id == user.user_id).one()
-            return member
-        db.refresh(member)
+            await db.rollback()
+            return (await db.execute(
+                select(MemberModel).where(MemberModel.user_id == user.user_id)
+            )).scalar_one()
+        await db.refresh(member)
         return member
 
     changed = False
@@ -98,13 +107,13 @@ def provision_member(db: Session, user: CurrentUser) -> MemberModel:
         member.email = user.email
         changed = True
     if changed:
-        db.commit()
-        db.refresh(member)
+        await db.commit()
+        await db.refresh(member)
     return member
 
 
-def get_member(
-    db: Session = Depends(get_db),
+async def get_member(
+    db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(get_current_user),
 ) -> MemberModel:
     """
@@ -113,7 +122,7 @@ def get_member(
     Chỉ dùng cho `/api/me` — app cần đọc được trạng thái của chính mình để biết
     hiện màn hình chờ duyệt hay màn hình chính.
     """
-    return provision_member(db, user)
+    return await provision_member(db, user)
 
 
 def get_current_member(
@@ -154,9 +163,9 @@ def _visible_zone_ids(member: MemberModel):
     return select(ZoneModel.id).where(or_(ZoneModel.id.in_(granted), ZoneModel.is_shared.is_(True)))
 
 
-def device_query(db: Session, member: MemberModel):
+def device_query(member: MemberModel) -> Select:
     """
-    Query các thiết bị mà `member` được phép thấy và điều khiển.
+    Câu select các thiết bị mà `member` được phép thấy và điều khiển.
 
     owner/adult: tất cả, kể cả thiết bị chưa phân khu.
     kid/guest:   thiết bị thuộc khu được cấp hoặc khu dùng chung. Thiết bị
@@ -164,31 +173,44 @@ def device_query(db: Session, member: MemberModel):
                  đúng ý "hộp thư đến chỉ chủ nhà thấy", không cần case đặc biệt.
     """
     if sees_all_zones(member):
-        return db.query(DeviceModel)
-    return db.query(DeviceModel).filter(DeviceModel.zone_id.in_(_visible_zone_ids(member)))
+        return select(DeviceModel)
+    return select(DeviceModel).where(DeviceModel.zone_id.in_(_visible_zone_ids(member)))
 
 
-def require_device_access(db: Session, member: MemberModel, device_id: str) -> DeviceModel:
+async def visible_devices(db: AsyncSession, member: MemberModel, *order_by) -> list[DeviceModel]:
+    """Mọi thiết bị `member` thấy (đã chạy `device_query`)."""
+    stmt = device_query(member)
+    if order_by:
+        stmt = stmt.order_by(*order_by)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def _device_row(db: AsyncSession, device_id: str) -> DeviceModel | None:
+    return (await db.execute(select(DeviceModel).where(DeviceModel.id == device_id))).scalar_one_or_none()
+
+
+async def require_device_access(db: AsyncSession, member: MemberModel, device_id: str) -> DeviceModel:
     """
     Thiết bị `device_id` nếu `member` được phép dùng, ngược lại ném lỗi.
 
     404 khi thiết bị không có trong nhà; 403 khi có nhưng ngoài khu của mình —
     trong nhà không cần giấu nhau việc thiết bị đó tồn tại.
     """
-    device = device_query(db, member).filter(DeviceModel.id == device_id).first()
+    device = (await db.execute(
+        device_query(member).where(DeviceModel.id == device_id)
+    )).scalar_one_or_none()
     if device is not None:
         return device
 
-    exists = db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
-    if exists is None:
+    if await _device_row(db, device_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy thiết bị.")
     raise HTTPException(
         status.HTTP_403_FORBIDDEN, "Bạn không được cấp quyền cho khu vực của thiết bị này."
     )
 
 
-def realtime_audience(db: Session, user_ids: set[str], device_id: str | None = None
-                      ) -> tuple[set[str], set[str]]:
+async def realtime_audience(db: AsyncSession, user_ids: set[str], device_id: str | None = None
+                            ) -> tuple[set[str], set[str]]:
     """
     Ai trong `user_ids` (đang giữ kết nối /ws) được nhận sự kiện của `device_id`.
 
@@ -207,7 +229,9 @@ def realtime_audience(db: Session, user_ids: set[str], device_id: str | None = N
         return allowed, revoked
     members = {
         m.user_id: m
-        for m in db.query(MemberModel).filter(MemberModel.user_id.in_(list(user_ids))).all()
+        for m in (await db.execute(
+            select(MemberModel).where(MemberModel.user_id.in_(list(user_ids)))
+        )).scalars().all()
     }
     for uid in user_ids:
         member = members.get(uid)
@@ -217,45 +241,38 @@ def realtime_audience(db: Session, user_ids: set[str], device_id: str | None = N
         if device_id is None:
             allowed.add(uid)
             continue
-        visible = (
-            device_query(db, member)
-            .filter(DeviceModel.id == device_id)
-            .with_entities(DeviceModel.id)
-            .first()
-        )
+        visible = (await db.execute(
+            device_query(member).where(DeviceModel.id == device_id).with_only_columns(DeviceModel.id)
+        )).first()
         if visible is not None:
             allowed.add(uid)
     return allowed, revoked
 
 
-def accessible_zones(db: Session, member: MemberModel) -> list[ZoneModel]:
+async def accessible_zones(db: AsyncSession, member: MemberModel) -> list[ZoneModel]:
     """Danh sách khu vực member được thấy, theo thứ tự hiển thị."""
-    if sees_all_zones(member):
-        return db.query(ZoneModel).order_by(ZoneModel.sort_order, ZoneModel.name).all()
-    return (
-        db.query(ZoneModel)
-        .filter(ZoneModel.id.in_(_visible_zone_ids(member)))
-        .order_by(ZoneModel.sort_order, ZoneModel.name)
-        .all()
-    )
+    stmt = select(ZoneModel)
+    if not sees_all_zones(member):
+        stmt = stmt.where(ZoneModel.id.in_(_visible_zone_ids(member)))
+    return list((await db.execute(stmt.order_by(ZoneModel.sort_order, ZoneModel.name))).scalars().all())
 
 
 # =========================================================
 # Phạm vi lịch hẹn
 # =========================================================
-def schedule_query(db: Session, member: MemberModel):
+def schedule_query(member: MemberModel) -> Select:
     """
-    Lịch của những thiết bị mà `member` dùng được.
+    Câu select lịch của những thiết bị mà `member` dùng được.
 
     Lọc theo THIẾT BỊ chứ không theo người tạo: lịch hẹn là của cả nhà, ai nhìn
     thấy thiết bị thì nhìn thấy lịch của nó.
     """
     if sees_all_zones(member):
-        return db.query(ScheduleModel)
+        return select(ScheduleModel)
     return (
-        db.query(ScheduleModel)
+        select(ScheduleModel)
         .join(DeviceModel, DeviceModel.id == ScheduleModel.device_id)
-        .filter(DeviceModel.zone_id.in_(_visible_zone_ids(member)))
+        .where(DeviceModel.zone_id.in_(_visible_zone_ids(member)))
     )
 
 
@@ -267,7 +284,7 @@ def require_can_schedule(member: MemberModel) -> None:
         )
 
 
-def require_schedule_write(db: Session, member: MemberModel, schedule_id: int) -> ScheduleModel:
+async def require_schedule_write(db: AsyncSession, member: MemberModel, schedule_id: int) -> ScheduleModel:
     """
     Lịch `schedule_id` nếu `member` được phép sửa/xóa.
 
@@ -277,9 +294,13 @@ def require_schedule_write(db: Session, member: MemberModel, schedule_id: int) -
     """
     require_can_schedule(member)
 
-    schedule = schedule_query(db, member).filter(ScheduleModel.id == schedule_id).first()
+    schedule = (await db.execute(
+        schedule_query(member).where(ScheduleModel.id == schedule_id)
+    )).scalar_one_or_none()
     if schedule is None:
-        exists = db.query(ScheduleModel).filter(ScheduleModel.id == schedule_id).first()
+        exists = (await db.execute(
+            select(ScheduleModel.id).where(ScheduleModel.id == schedule_id)
+        )).first()
         if exists is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy lịch hẹn.")
         raise HTTPException(
@@ -295,7 +316,7 @@ def require_schedule_write(db: Session, member: MemberModel, schedule_id: int) -
     )
 
 
-def scheduler_target_device(db: Session, device_id: str) -> DeviceModel | None:
+async def scheduler_target_device(db: AsyncSession, device_id: str) -> DeviceModel | None:
     """
     Luật quyền của BỘ HẸN GIỜ khi bắn lịch (vòng lặp trong FastAPI hoặc worker
     tại nhà — tác nhân HỆ THỐNG, không thay mặt ai).
@@ -311,7 +332,7 @@ def scheduler_target_device(db: Session, device_id: str) -> DeviceModel | None:
     """
     if not device_id:
         return None
-    return db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
+    return await _device_row(db, device_id)
 
 
 def require_scene_write(member: MemberModel) -> None:
@@ -351,8 +372,24 @@ DEVICE_ORDER_MAX_ITEMS = 500
 DEVICE_ORDER_MAX_ID_LEN = 128
 
 
-def _visible_device_ids(db: Session, member: MemberModel) -> set[str]:
-    return {row[0] for row in device_query(db, member).with_entities(DeviceModel.id).all()}
+async def visible_device_ids(db: AsyncSession, member: MemberModel) -> set[str]:
+    return set((await db.execute(
+        device_query(member).with_only_columns(DeviceModel.id)
+    )).scalars().all())
+
+
+async def _stored_device_order(db: AsyncSession, member: MemberModel):
+    """
+    Giá trị `members.sort_order`. Cột `deferred`: object chưa nạp thì đọc thẳng
+    cột (AsyncSession không được lazy-load ngầm — sẽ ném MissingGreenlet); đã
+    gán/nạp trong RAM (vd vừa sửa ở PATCH /api/me) thì dùng giá trị đó.
+    """
+    state = sa_inspect(member)
+    if state.persistent and "sort_order" in state.unloaded:
+        return (await db.execute(
+            select(MemberModel.sort_order).where(MemberModel.user_id == member.user_id)
+        )).scalar_one_or_none()
+    return member.sort_order
 
 
 def _dedupe_visible(ids, visible: set[str]) -> list[str]:
@@ -365,31 +402,29 @@ def _dedupe_visible(ids, visible: set[str]) -> list[str]:
     return out
 
 
-def device_order_of(db: Session, member: MemberModel) -> list[str]:
+async def device_order_of(db: AsyncSession, member: MemberModel) -> list[str]:
     """
     Thứ tự đã lưu, CHỈ gồm thiết bị `member` đang được thấy. Lọc lúc ĐỌC chứ
     không ghi lại DB: thiết bị bị xóa / mất quyền tự biến mất, được cấp lại thì
     vị trí cũ quay về. Giá trị hỏng (không phải list) -> [] = thứ tự mặc định.
     """
-    raw = member.sort_order
+    raw = await _stored_device_order(db, member)
     if not isinstance(raw, list) or not raw:
         return []
-    return _dedupe_visible(raw, _visible_device_ids(db, member))
+    return _dedupe_visible(raw, await visible_device_ids(db, member))
 
 
-def sanitize_device_order(db: Session, member: MemberModel, ids: list[str]) -> list[str]:
+async def sanitize_device_order(db: AsyncSession, member: MemberModel, ids: list[str]) -> list[str]:
     """
     Làm sạch danh sách client gửi lên: khử trùng (giữ lần xuất hiện đầu), bỏ
     id không tồn tại hoặc ngoài quyền. Bỏ âm thầm thay vì 400: thiết bị có thể
     vừa bị xóa giữa lúc kéo-thả và lúc lưu — 400 thì app sẽ thử lại mãi.
     """
-    return _dedupe_visible(ids, _visible_device_ids(db, member))
+    return _dedupe_visible(ids, await visible_device_ids(db, member))
 
 
-def zone_ids_of(db: Session, user_id: str) -> list[int]:
-    rows = (
-        db.query(MemberZoneAccessModel.zone_id)
-        .filter(MemberZoneAccessModel.user_id == user_id)
-        .all()
-    )
-    return sorted(r[0] for r in rows)
+async def zone_ids_of(db: AsyncSession, user_id: str) -> list[int]:
+    rows = (await db.execute(
+        select(MemberZoneAccessModel.zone_id).where(MemberZoneAccessModel.user_id == user_id)
+    )).scalars().all()
+    return sorted(rows)

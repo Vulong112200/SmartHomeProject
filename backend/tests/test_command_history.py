@@ -181,19 +181,19 @@ PURIFIER = D(id="pur", name="Lọc không khí", brand="vesync", category="purif
 
 def test_vesync_doi_trang_thai_ngoai_app(api):
     db = api.db
-    assert device_history.observe_state(db, PURIFIER, {"status": "OFF"}) is False  # mốc đầu
-    assert device_history.observe_state(db, PURIFIER, {"status": "OFF"}) is False  # không đổi
-    assert device_history.observe_state(db, PURIFIER, {"status": "ON", "mode": "manual", "speed": 3})
+    assert api.call(lambda s: device_history.observe_state(s, PURIFIER, {"status": "OFF"})) is False  # mốc đầu
+    assert api.call(lambda s: device_history.observe_state(s, PURIFIER, {"status": "OFF"})) is False  # không đổi
+    assert api.call(lambda s: device_history.observe_state(s, PURIFIER, {"status": "ON", "mode": "manual", "speed": 3}))
     row = db.query(CommandLogModel).filter_by(device_id="pur").one()
     assert (row.source, row.action_label, row.success) == ("external", "Lọc Cao", None)
 
 
 def test_vesync_doi_do_chinh_lenh_cua_minh_thi_khong_ghi(api):
     db = api.db
-    device_history.observe_state(db, PURIFIER, {"status": "OFF"})
+    api.call(lambda s: device_history.observe_state(s, PURIFIER, {"status": "OFF"}))
     command_log.mark_sent("pur")
-    assert device_history.observe_state(db, PURIFIER, {"status": "ON", "mode": "auto"}) is False
-    assert device_history.observe_state(db, PURIFIER, {"status": "offline"}) is False
+    assert api.call(lambda s: device_history.observe_state(s, PURIFIER, {"status": "ON", "mode": "auto"})) is False
+    assert api.call(lambda s: device_history.observe_state(s, PURIFIER, {"status": "offline"})) is False
 
 
 def test_vesync_doi_do_lenh_cua_worker_tai_nha_thi_khong_ghi(api):
@@ -202,9 +202,9 @@ def test_vesync_doi_do_lenh_cua_worker_tai_nha_thi_khong_ghi(api):
     db = api.db
     device_history._vesync_seen.pop("pur", None)
     command_log._last_sent.pop("pur", None)
-    device_history.observe_state(db, PURIFIER, {"status": "OFF"})
+    api.call(lambda s: device_history.observe_state(s, PURIFIER, {"status": "OFF"}))
     db.add(CommandLogModel(at_ms=command_log.now_ms(), device_id="pur", action_type="on",
                            action_label="Bật", source="schedule", success=True))
     db.commit()
-    assert device_history.observe_state(db, PURIFIER, {"status": "ON", "mode": "auto"}) is False
+    assert api.call(lambda s: device_history.observe_state(s, PURIFIER, {"status": "ON", "mode": "auto"})) is False
     assert db.query(CommandLogModel).filter_by(device_id="pur", source="external").count() == 0

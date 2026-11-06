@@ -158,8 +158,22 @@ def test_wait_for_db_tra_false_khi_duoc_yeu_cau_dung():
 def test_check_db_bao_ro_thieu_bang(tmp_path):
     from worker.db import check_db, make_worker_engine
     engine = make_worker_engine(f"sqlite:///{tmp_path / 'trong.db'}")
+
+    async def go():
+        try:
+            await check_db(engine)
+        finally:
+            await engine.dispose()
     with pytest.raises(RuntimeError, match="schedule_runs"):
-        check_db(engine)
+        asyncio.run(go())
+
+
+def test_worker_engine_postgres_pool_nho_va_timeout():
+    """asyncpg không có TCP keepalive như psycopg2 — command_timeout là lớp chống treo thay thế."""
+    from worker.db import make_worker_engine
+    engine = make_worker_engine("postgresql://u:p@pooler.supabase.com:5432/postgres")
+    assert engine.dialect.driver == "asyncpg"
+    assert engine.pool.size() == 2 and engine.pool._timeout == 15
 
 
 # =========================================================
