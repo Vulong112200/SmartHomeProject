@@ -1,7 +1,7 @@
 name: frontend
 description: Smart Home Control Application
 publish_to: 'none' # Ngăn việc vô tình publish app lên mạng
-version: 1.1.0+2
+version: 1.2.0+3
 
 # Khai báo phiên bản SDK (Đoạn này sẽ sửa lỗi bạn vừa gặp)
 environment:
