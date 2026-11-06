@@ -185,7 +185,7 @@ Windows là giết cứng: lần chạy đang gửi (nếu có) được phục 
 | Tình huống | Hành vi |
 |---|---|
 | Pi khởi động khi chưa có mạng | Chờ DB với backoff 5s→60s, không thoát; có mạng là chạy |
-| Mất mạng giữa chừng | Tick lỗi, log; tick sau tự nối lại (`pool_pre_ping`, TCP keepalive, timeout 10s) |
+| Mất mạng giữa chừng | Tick lỗi, log; tick sau tự nối lại (`pool_pre_ping`, timeout kết nối 10s, `command_timeout` 30s cắt câu SQL treo trên kết nối đã chết — asyncpg không có TCP keepalive như psycopg2) |
 | Mạng về trong 120s sau giờ hẹn | Vẫn bắn bình thường |
 | Mạng về muộn hơn | Lịch lặp: bỏ lần đó (không bắn bù muộn — cửa cuốn bắn trễ nguy hiểm). Lịch 1 lần: tự tắt + log. Nếu Render để `SCHEDULER_ENABLED=auto`, Render **tiếp quản** sau 90s không thấy nhịp tim nên lịch vẫn chạy đúng giờ |
 | Mất mạng khi đang gửi lệnh | Lần chạy kẹt `sending` → phục hồi theo bảng mục 2 |

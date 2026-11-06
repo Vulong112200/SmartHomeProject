@@ -237,15 +237,18 @@ uvicorn app.main:app
         DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", ""))
           rỗng          → "sqlite:///./smarthome.db"
           "postgres://" → đổi thành "postgresql://"   # SQLAlchemy 2.x chỉ nhận dạng này
-        engine = make_engine(url)
-          sqlite   → connect_args check_same_thread=False
-          postgres → pool_pre_ping + pool_recycle=1800 + pool_size=5
+        async_engine = make_async_engine(url)     # lười: CHƯA mở kết nối
+          sqlite   → sqlite+aiosqlite, connect_args timeout=30 (busy timeout)
+          postgres → postgresql+asyncpg, pool_pre_ping + recycle 1800 + pool 5+5 + pool_timeout 10s,
+                     asyncpg timeout 10s / command_timeout 30s / ssl=require (ngoài localhost)
+        AsyncSessionLocal = make_session_factory(async_engine)   # expire_on_commit=False
       ⚠️ KHÔNG chạm DB ở tầng import: exception ở đây làm uvicorn chết với
          "Error loading ASGI app", không route nào chạy, kể cả /health.
+         (Import driver asyncpg/aiosqlite thì CÓ xảy ra ở đây — phải có trong requirements.)
 
   → lifespan(app)  [try/except → cờ db_ready]
       log "Đang khởi tạo Database (SQLite|Postgres)..."
-      init_db():
+      await init_db_async()  → async_engine.connect() → conn.run_sync(init_db):
         1. Base.metadata.create_all(bind)        # checkfirst=True → no-op nếu SQL file đã apply
         2. run_startup_migrations(bind)          # ALTER TABLE cột thiếu; DDL theo dialect
         3. verify_schema(bind)                   # raise kèm tên bảng/cột thiếu

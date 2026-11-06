@@ -17,8 +17,10 @@ backend/
 │   │   │                           # require_device_access (403 vs 404), require_schedule_write,
 │   │   │                           # realtime_audience (ai trong các kết nối /ws được nhận sự kiện thiết bị nào / phải bị ngắt),
 │   │                           # scheduler_target_device (luật của bộ hẹn giờ: thiết bị còn trong nhà, hãng lấy từ DB)
-│   │   └── database.py             # Chọn DB theo DATABASE_URL (Postgres/Supabase; rỗng → SQLite smarthome.db): normalize_database_url + make_engine (pool pre_ping/recycle cho Postgres),
-│   │                               # SessionLocal + Base + get_db, init_db() = create_all → run_startup_migrations (2 dialect) → verify_schema → enable_rls → seed_defaults
+│   │   └── database.py             # Chọn DB theo DATABASE_URL (Postgres/Supabase; rỗng → SQLite smarthome.db): normalize_database_url → async_database_url (asyncpg/aiosqlite)
+│   │                               # + async_connect_args (sslmode→ssl, ssl=require ngoài localhost, 6543 tắt prepared stmt) + make_async_engine (pool 5+5, timeout 10s, pre_ping),
+│   │                               # async_engine + AsyncSessionLocal (make_session_factory, expire_on_commit=False) + Base + get_db (async, 1 session/request),
+│   │                               # init_db(bind: Engine|Connection) = create_all → run_startup_migrations (2 dialect) → verify_schema → enable_rls → seed_defaults; init_db_async = run_sync trong lifespan
 │   ├── models/
 │   │   ├── device.py               # DeviceModel (devices: id = id HÃNG làm PK, name, brand, is_active,
 │   │   │                           # zone_id FK ON DELETE SET NULL — NULL = "hộp thư đến", category)
@@ -57,7 +59,7 @@ backend/
 ├── worker/                         # Worker Hẹn giờ tại nhà — tiến trình ĐỘC LẬP (không FastAPI): python -m worker [run|once|status]
 │   ├── __main__.py                 # CLI; nạp .env (--env-file > WORKER_ENV_FILE > worker/.env > backend/.env) TRƯỚC khi import app.*
 │   ├── config.py                   # WorkerConfig từ env: WORKER_DATABASE_URL|DATABASE_URL (bắt buộc; SQLite chỉ khi WORKER_ALLOW_SQLITE=1), WORKER_TICK_SECONDS 5–55, WORKER_LOG_FILE
-│   ├── db.py                       # Engine RIÊNG (pool 2, connect_timeout 10s, keepalive, pre_ping), check_db (verify_schema 5 bảng), wait_for_db backoff 5→60s
+│   ├── db.py                       # Engine ASYNC RIÊNG (asyncpg, pool 2+1, timeout 10s, command_timeout 30s thay TCP keepalive, pre_ping), check_db async (verify_schema 5 bảng qua run_sync), wait_for_db backoff 5→60s
 │   ├── runner.py                   # run_worker: log (stdout + file xoay vòng) → chờ DB → connectors → ScheduleEngine(role worker, giờ DB) → run_forever; SIGTERM/Ctrl+C dừng sau tick, ghi nhịp tim stopped
 │   ├── status.py                   # Sức khỏe (chỉ đọc): DB/schema, lệch đồng hồ, nhịp tim, lần chạy mở/gần đây, lịch sẽ bị từ chối; mã thoát 0/1/2
 │   ├── README.md                   # Vận hành: chống trùng, phục hồi, cài đặt, systemd/Task Scheduler, log, mất mạng, cập nhật, CHUYỂN ĐỔI production
@@ -91,7 +93,7 @@ backend/
 ├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL,
 │                                   # SUPABASE_JWT_SECRET, ADMIN_EMAILS, AUTH_DISABLED) — gitignored
 ├── .env.example                    # Mẫu biến môi trường (có DATABASE_URL + ghi chú bẫy Session pooler)
-├── requirements.txt                # Python deps THẬT (UTF-8; tzdata cho zoneinfo, PyJWT + psycopg2-binary 2.9.11, pytest + httpx; KHÔNG còn google-*)
+├── requirements.txt                # Python deps THẬT (UTF-8; tzdata cho zoneinfo, PyJWT + asyncpg 0.32.0 + aiosqlite 0.22.1 (psycopg2-binary 2.9.11 còn giữ, không dùng), pytest + httpx; KHÔNG còn google-*)
 └── smarthome.db                    # SQLite DB — chỉ dùng khi KHÔNG đặt DATABASE_URL (dev local). Đang bị track trong git nên redeploy Render ghi đè nó.
 ```
 

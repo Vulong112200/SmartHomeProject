@@ -483,7 +483,7 @@ scheduler tick 30s → lịch đến giờ → đánh dấu đã bắn → conne
 - **VeSync**: thay đổi ngoài app chỉ phát hiện khi có người mở app; giờ ghi là lúc phát hiện.
 - Máy cho ăn **không báo** mức hạt / pin.
 - Server Render free có thể ngủ nếu UptimeRobot gián đoạn → lịch trễ, app chờ "đánh thức".
-- SQLAlchemy đồng bộ chạy trên event loop (mỗi query tới Supabase Tokyo chặn loop); race nhỏ ở cache trạng thái 3 giây.
+- Race nhỏ ở cache trạng thái 3 giây. (Đã sửa 2026-11-06: truy vấn DB không còn chặn event loop — backend chuyển sang SQLAlchemy async/asyncpg.)
 - WebSocket `/ws` mới chỉ echo.
 - Thứ tự thiết bị: hai máy cùng tài khoản sắp xếp gần như cùng lúc thì bản lưu sau thắng; máy kia chỉ thấy thứ tự mới khi mở lại app hoặc kéo xuống làm mới.
 
