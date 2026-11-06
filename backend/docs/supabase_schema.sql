@@ -107,6 +107,8 @@ create index if not exists idx_schedules_enabled on public.schedules (enabled);
 -- scenes — kịch bản: 1 nút chạy nhiều hành động
 --   actions = JSON text [{"device_id","action_type","action_value"}] đã chuẩn
 --   hóa theo loại thiết bị lúc lưu (services/device_actions.py).
+--   conditions = JSON text {"operator","items"} (NULL = không điều kiện) —
+--   services/scene_condition_engine.py. Backend tự ALTER thêm cột lúc boot.
 -- ---------------------------------------------------------------------
 create table if not exists public.scenes (
     id         serial primary key,
@@ -114,8 +116,10 @@ create table if not exists public.scenes (
     icon       text,
     sort_order integer not null default 0,
     actions    text not null default '[]',
-    created_by text
+    created_by text,
+    conditions text
 );
+alter table public.scenes add column if not exists conditions text;
 
 -- ---------------------------------------------------------------------
 -- floor_plans — sơ đồ mặt bằng 2D (1 hàng duy nhất, id = 1)

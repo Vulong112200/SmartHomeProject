@@ -400,3 +400,32 @@ Nút "Sửa" (profile.canAdmin) → _draft = _plan; tắt pan/zoom khung nhìn
   "Lưu" → FloorPlanApi.save → PUT /api/floor-plan (require_owner → sanitize_layout → 400 nếu sai, không ghi)
         → floor_plans id=1 ← JSON; trả về bản đã lọc → thoát chế độ sửa
 ```
+
+## 11. Chạy kịch bản (có điều kiện)
+
+```
+Dashboard chạm thẻ kịch bản → _runScene
+  → sceneOpensDoor? → hộp xác nhận "sẽ MỞ CỬA CUỐN" (điều kiện KHÔNG bỏ qua bước này)
+  → SceneApi.run → POST /api/scenes/{id}/run (40s timeout)
+      → main._run_scene
+          devices_by_id = device_query(người chạy)
+          scene_conditions.load_stored(scenes.conditions)
+            NULL / items rỗng → không điều kiện (kịch bản cũ) → chạy như trước
+            JSON hỏng        → broken_result() = unknown → BỎ QUA
+            có điều kiện     → evaluate_conditions:
+               1. time_range trước (giờ theo timezone của điều kiện, không theo máy chủ)
+               2. AND đã có failed / OR đã có passed → KHÔNG đọc thiết bị (tiết kiệm quota)
+               3. device_state song song: ngoài quyền/đã xóa → unknown (không đọc);
+                  _read_state_fresh (connector.get_device_state, BỎ cache 3s, timeout 12s)
+                  offline / lỗi / cửa đang chạy / không rõ → unknown
+               4. gộp Kleene AND/OR → passed | failed | unknown
+          ≠ passed → logger.info, return {executed:false, results:[], conditions:{result, reason, items}}
+                     (KHÔNG chạm connector nào)
+          = passed → hành động TUẦN TỰ qua _execute_device_action (ngoài khu → skipped, ghi Lịch sử)
+      → executed:false → {status:"skipped", message:"Kịch bản đã bỏ qua: …", data}
+  → SceneRunResult.fromResponse → snack (cam = bỏ qua vì điều kiện, đỏ = có lệnh lỗi)
+
+Giọng nói "đi ngủ" → /api/ai/parse → match_scene
+  → kịch bản MỞ CỬA → từ chối (trước cả điều kiện)
+  → _run_scene (cùng cổng điều kiện) → executed:false → bubble "Kịch bản đã bỏ qua: … <lý do>"
+```

@@ -41,6 +41,8 @@ const List<HelpTopic> helpTopics = [
   HelpTopic(Icons.auto_awesome_outlined, 'Kịch bản (1 nút, nhiều thiết bị)', [
     'Chạm thẻ kịch bản để chạy, ví dụ "Ra khỏi nhà" = đóng cửa + tắt máy lọc + tắt máy bơm.',
     'Kịch bản có MỞ CỬA sẽ hỏi xác nhận trước khi chạy.',
+    'Điều kiện (tùy chọn): chỉ chạy trong khung giờ (vd 22:00 → 06:00) hoặc khi thiết bị đang ở trạng thái nào đó (vd máy bơm đang tắt). '
+        'Không đạt — hoặc thiết bị offline — thì kịch bản bỏ qua, không gửi lệnh nào.',
     'Chủ nhà / người lớn: bấm "+ Kịch bản" để tạo, giữ lâu thẻ để sửa hoặc xóa.',
   ]),
   HelpTopic(Icons.schedule_outlined, 'Hẹn giờ', [

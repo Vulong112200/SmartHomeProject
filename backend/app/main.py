@@ -37,6 +37,8 @@ from app.services import command_log, device_history
 from app.models.command_log import CommandLogModel
 from app.services.vn_time_parser import resolve_target_days
 from app.services.device_actions import normalize_action
+from app.services import scene_condition_engine as scene_conditions
+from typing import Any
 
 # Tạm thời comment Automation Engine để tránh lỗi chưa hoàn thiện
 # from app.services.automation_engine import automation_engine, AutomationRule
@@ -393,6 +395,22 @@ def _cache_set(brand: str, device_id: str, data):
 def _cache_invalidate(brand: str, device_id: str):
     _status_cache.pop((brand, device_id), None)
 
+async def _read_state_fresh(db: Session, device: DeviceModel) -> dict:
+    """
+    Đọc trạng thái THẬT, bỏ qua cache — cho điều kiện kịch bản: cache 3s có thể
+    là trạng thái từ trước một lệnh vừa gửi, quyết định chạy/bỏ qua dựa vào nó
+    là sai. Lỗi connector ném ra ngoài (engine coi là unknown).
+    """
+    connector = device_manager.get_connector(device.brand)
+    state = await connector.get_device_state(device.id)
+    _cache_set(device.brand, device.id, state)
+    if isinstance(state, dict):
+        try:
+            device_history.observe_state(db, device, state)
+        except Exception as e:  # ghi lịch sử lỗi không được làm hỏng kết quả đọc
+            logger.warning(f"observe_state lỗi {device.id}: {e}")
+    return state
+
 def _log_control(db: Session, device: DeviceModel, action_type: str, action_value: str | None,
                  via: str, member: MemberModel, ok: bool, error: str | None = None) -> None:
     """Ghi lịch sử cho endpoint control. `via` do app tự khai — chỉ nhận giá trị
@@ -644,6 +662,12 @@ async def parse_voice_command(
                 "action": "Kịch bản này mở cửa — hãy chạy trên màn hình chính để xác nhận",
             }]}
         data = await _run_scene(db, member, scene)
+        if not data["executed"]:
+            return {"status": "success", "ai_understood": [{"intent": "scene", "id": scene.id}],
+                    "execution_results": [{
+                        "device_name": scene.name, "success": False,
+                        "action": f"{_scene_skip_message(data)} {data['conditions']['reason']}",
+                    }]}
         results = data["results"] + ([{
             "device_name": scene.name, "success": False,
             "action": f"Bỏ qua {data['skipped']} thiết bị ngoài khu của bạn",
@@ -977,6 +1001,8 @@ class SceneBody(BaseModel):
     icon: str | None = None
     sort_order: int = 0
     actions: list[SceneAction] = []
+    # {"operator": "AND"|"OR", "items": [...]} — kiểm kỹ ở scene_condition_engine.
+    conditions: Any = None
 
 
 class SceneUpdate(BaseModel):
@@ -984,13 +1010,26 @@ class SceneUpdate(BaseModel):
     icon: str | None = None
     sort_order: int | None = None
     actions: list[SceneAction] | None = None
+    conditions: Any = None  # không gửi = giữ nguyên; null / items rỗng = bỏ hết điều kiện
 
 
 def _scene_to_dict(s: SceneModel) -> dict:
+    conditions, broken = scene_conditions.load_stored(s.conditions)
     return {
         "id": s.id, "name": s.name, "icon": s.icon, "sort_order": s.sort_order,
         "actions": json.loads(s.actions or "[]"), "created_by": s.created_by,
+        # Luôn là object (kể cả kịch bản cũ) — client khỏi phân biệt null.
+        "conditions": conditions or {**scene_conditions.empty_conditions(), **({"invalid": True} if broken else {})},
     }
+
+
+def _normalize_scene_conditions(db: Session, member: MemberModel, raw) -> str | None:
+    """Kiểm điều kiện (thiết bị tồn tại + NGƯỜI LƯU dùng được + trạng thái hợp lệ với loại) -> JSON hoặc NULL."""
+    try:
+        norm = scene_conditions.normalize_conditions(raw, lambda did: require_device_access(db, member, did))
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Điều kiện: {e}")
+    return json.dumps(norm, ensure_ascii=False) if norm else None
 
 
 def _normalize_scene_actions(db: Session, member: MemberModel, actions: list[SceneAction]) -> str:
@@ -1037,6 +1076,7 @@ async def create_scene(
     scene = SceneModel(
         name=_clean_scene_name(body.name), icon=body.icon, sort_order=body.sort_order,
         actions=_normalize_scene_actions(db, member, body.actions), created_by=member.user_id,
+        conditions=_normalize_scene_conditions(db, member, body.conditions),
     )
     db.add(scene)
     db.commit()
@@ -1070,6 +1110,8 @@ async def update_scene(
         scene.sort_order = fields["sort_order"]
     if body.actions is not None:
         scene.actions = _normalize_scene_actions(db, member, body.actions)
+    if "conditions" in fields:
+        scene.conditions = _normalize_scene_conditions(db, member, body.conditions)
     db.commit()
     db.refresh(scene)
     return {"status": "success", "data": _scene_to_dict(scene)}
@@ -1092,8 +1134,29 @@ async def _run_scene(db: Session, member: MemberModel, scene: SceneModel) -> dic
     Chạy kịch bản TUẦN TỰ (không song song: 2 lệnh cùng connector Tuya chen nhau
     thì interlock stop->open của cửa có thể lẫn với lệnh khác). Hành động trên
     thiết bị ngoài khu của người chạy bị BỎ QUA và báo lại, không chạy thay.
+
+    ĐIỀU KIỆN được đánh giá TRƯỚC lệnh đầu tiên; chỉ `passed` mới chạy tiếp —
+    `failed`/`unknown` trả `executed: False` mà không chạm connector nào.
     """
     devices_by_id = {d.id: d for d in device_query(db, member).all()}
+
+    check = None
+    conditions, broken = scene_conditions.load_stored(scene.conditions)
+    if broken or conditions:
+        if broken:
+            check = scene_conditions.broken_result()
+        else:
+            known_ids = {row[0] for row in db.query(DeviceModel.id).all()}
+            check = await scene_conditions.evaluate_conditions(
+                conditions, visible_devices=devices_by_id, known_ids=known_ids,
+                read_state=lambda device: _read_state_fresh(db, device),
+            )
+        if check["result"] != scene_conditions.PASSED:
+            logger.info(f"🎬 Kịch bản #{scene.id} “{scene.name}” bị bỏ qua "
+                        f"({check['result']}): {check['reason']}")
+            return {"scene": scene.name, "executed": False, "results": [], "skipped": 0,
+                    "conditions": check}
+
     results, skipped = [], 0
     for a in json.loads(scene.actions or "[]"):
         device = devices_by_id.get(a.get("device_id"))
@@ -1104,7 +1167,13 @@ async def _run_scene(db: Session, member: MemberModel, scene: SceneModel) -> dic
             device, a.get("action_type"), a.get("action_value"),
             db=db, member=member, source="scene", detail=f"Kịch bản “{scene.name}”",
         ))
-    return {"scene": scene.name, "results": results, "skipped": skipped}
+    return {"scene": scene.name, "executed": True, "results": results, "skipped": skipped,
+            "conditions": check}
+
+
+def _scene_skip_message(data: dict) -> str:
+    return scene_conditions.SKIP_MESSAGES.get(data["conditions"]["result"],
+                                              scene_conditions.SKIP_MESSAGES[scene_conditions.UNKNOWN])
 
 
 @app.post("/api/scenes/{scene_id}/run")
@@ -1114,6 +1183,10 @@ async def run_scene(
     member: MemberModel = Depends(get_current_member),
 ):
     data = await _run_scene(db, member, _get_scene(db, scene_id))
+    if not data["executed"]:
+        # HTTP 200 + status "skipped": không phải lỗi máy chủ. App cũ (chỉ biết
+        # "success") sẽ hiện `message` như một lỗi — vẫn đúng ý: không có gì chạy.
+        return {"status": "skipped", "message": _scene_skip_message(data), "data": data}
     logger.info(f"🎬 {member.user_id} chạy kịch bản #{scene_id}: "
                 f"{sum(r['success'] for r in data['results'])}/{len(data['results'])} ok, bỏ qua {data['skipped']}")
     return {"status": "success", "data": data}

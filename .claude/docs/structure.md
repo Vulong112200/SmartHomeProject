@@ -27,7 +27,7 @@ backend/
 │   │   │                           # (member_zone_access: grant theo khu, CHỈ cho kid/guest)
 │   │   ├── command_log.py          # CommandLogModel (command_logs: at_ms, device/user ẢNH CHỤP, action_label, source, success NULL = quan sát, ext_id UNIQUE)
 │   │   ├── floor_plan.py           # FloorPlanModel (floor_plans: 1 hàng id=1, layout JSON {rooms, doors, devices} theo MÉT, updated_by/at_ms)
-│   │   ├── scene.py                # SceneModel (scenes: name, icon, actions JSON đã chuẩn hóa, created_by) — kịch bản của cả nhà
+│   │   ├── scene.py                # SceneModel (scenes: name, icon, actions JSON đã chuẩn hóa, created_by, conditions JSON|NULL) — kịch bản của cả nhà
 │   │   └── schedule.py             # ScheduleModel (bảng schedules: time HH:MM, days CSV, action, last_fired_date + lịch KHOẢNG end_time/end_action_*/last_end_fired_date, one_shot, created_by)
 │   └── services/
 │       ├── base_connector.py       # Lớp trừu tượng: connect/turn_on/turn_off/get_device_state (+set_mode tùy chọn)
@@ -37,6 +37,7 @@ backend/
 │       ├── rojeco_connector.py     # Rojeco — máy cho ăn: state = online + feed_state + last_feed (feed_report); credential từ env
 │       ├── floor_plan.py           # Sơ đồ 2D thuần dữ liệu: DEFAULT_LAYOUT (2 phòng kích thước thật), sanitize_layout (400 khi hình học sai, bỏ thiết bị lạ, kẹp tọa độ), parse_stored, visible_layout (lọc thiết bị theo quyền)
 │       ├── device_actions.py       # normalize_action: whitelist hành động theo LOẠI thiết bị cho AI/lịch giọng nói/kịch bản
+│       ├── scene_condition_engine.py # Điều kiện kịch bản: normalize_conditions (lưu), load_stored, evaluate_conditions (time_range + device_state, AND/OR ba giá trị passed|failed|unknown)
 │       ├── local_parser.py         # parse_command_locally: lệnh đơn giản không cần AI; câu CÓ GIỜ → intent schedule (không thi hành ngay)
 │       ├── vn_time_parser.py       # extract_schedule_times: parse giờ tiếng Việt (16h30, 4 giờ chiều, từ X đến Y, mai, mỗi ngày) + resolve_target_days
 │       ├── ai_parser.py            # parse_command_with_ai: gọi LLM (OpenRouter) cho câu phức (có few-shot intent schedule); client lazy (thiếu key vẫn boot)
@@ -62,6 +63,7 @@ backend/
 │   ├── test_profile.py             # PATCH /api/me chỉ sửa chính mình, validate tên/màu
 │   ├── test_device_order.py        # members.sort_order: lưu/đọc, khử trùng, lọc ngoài quyền, mỗi tài khoản riêng, giá trị hỏng không làm hỏng API
 │   ├── test_shared_zones_scenes.py # khu dùng chung, kịch bản (quyền tạo/chạy, bỏ qua ngoài khu), kịch bản bằng giọng nói
+│   ├── test_scene_conditions.py    # điều kiện kịch bản: qua đêm, AND/OR, offline/lỗi/ngoài quyền = unknown, bỏ cache, skipped không gửi lệnh, giọng nói, kịch bản cũ
 │   ├── test_command_history.py    # lịch sử: người/nguồn/kết quả, via không giả được, giọng nói/kịch bản/lịch, lọc theo khu, phân loại nhật ký Tuya, VeSync
 │   ├── test_floor_plan.py          # sơ đồ: mặc định đúng kích thước, chỉ chủ nhà PUT, kid chỉ thấy thiết bị khu mình, validate hình học, layout hỏng → mặc định, DB cũ được tạo bảng
 │   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)
@@ -100,7 +102,7 @@ frontend/
 │   │   ├── device_status.dart      # Diễn giải /status: describeDeviceStatus (active/idle/moving/offline/unknown + nhãn), currentActionKey, statusConfirms, needsPolling
 │   │   ├── device_type.dart        # deviceTypeOf(name, category:): category backend thắng, fallback suy từ tên; deviceCategoryLabels (nơi duy nhất)
 │   │   ├── history_api.dart        # HistoryEntry + HistorySource (nơi duy nhất map nguồn → nhãn/icon) + HistoryApi.fetch (timeout 20s)
-│   │   ├── scene_api.dart          # Scene/SceneAction model + SceneApi: fetch/save/delete/run (SceneRunResult.summary)
+│   │   ├── scene_api.dart          # Scene/SceneAction/SceneCondition(s) model + SceneApi: fetch/save/delete/run (SceneRunResult.fromResponse — status success|skipped)
 │   │   ├── zone_groups.dart        # zoneGroupsOf/devicesInZone: gom thiết bị theo khu cho chip lọc dashboard (thuần dữ liệu)
 │   │   ├── theme_controller.dart   # ThemeMode Hệ thống/Sáng/Tối, lưu SharedPreferences, mặc định Tối
 │   │   ├── voice_feedback.dart     # TTS vi-VN đọc phản hồi trợ lý + summarize(execution_results); bật/tắt ở Hồ sơ
@@ -133,7 +135,7 @@ frontend/
 │   │   ├── help_screen.dart        # Hướng dẫn sử dụng: helpTopics (mục Quản trị chỉ chủ nhà thấy)
 │   │   ├── onboarding_screen.dart  # Giới thiệu 4 trang ở lần đầu vào app (cờ onboarding_done_v1)
 │   │   ├── profile_screen.dart     # Hồ sơ & giao diện: tên, màu avatar, vai/khu, sáng/tối, đọc phản hồi, đăng xuất
-│   │   ├── scene_editor_screen.dart # Tạo/sửa kịch bản: tên, icon, hành động theo loại (kéo-thả thứ tự); sceneOpensDoor()
+│   │   ├── scene_editor_screen.dart # Tạo/sửa kịch bản: tên, icon, ĐIỀU KIỆN (giờ/trạng thái thiết bị, AND/OR), hành động theo loại (kéo-thả thứ tự); sceneOpensDoor(), describeSceneCondition()
 │   │   └── chat_bubble.dart        # Widget bong bóng chat cho AI tab
 │   └── theme/
 │       ├── app_colors.dart         # AppPalette (ThemeExtension) dark = màu gốc + light; đọc qua context.palette

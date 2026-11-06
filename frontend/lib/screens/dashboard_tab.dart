@@ -403,7 +403,10 @@ class _DashboardTabState extends State<DashboardTab> with WidgetsBindingObserver
     setState(() => _runningScenes.remove(scene.id));
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(err ?? '${scene.name}: ${result!.summary}'),
-      backgroundColor: (err != null || result!.failed > 0) ? Colors.redAccent : context.palette.primary,
+      // Bỏ qua vì điều kiện: không phải lỗi, nhưng cũng không có gì chạy -> màu cam.
+      backgroundColor: (err != null || result!.failed > 0)
+          ? Colors.redAccent
+          : (result.conditionsBlocked ? Colors.orange.shade800 : context.palette.primary),
     ));
   }
 

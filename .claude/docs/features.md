@@ -7,6 +7,21 @@
 ```
 
 
+### Điều kiện kịch bản (giờ + trạng thái thiết bị, AND/OR)
+- **Status:** ✅ code xong, chưa lên production (nhánh release/prod-ready)
+- **Backend:** `services/scene_condition_engine.py` (`normalize_conditions` lúc lưu, `load_stored`, `evaluate_conditions`, `combine`, `time_in_range`, `observed_state`, `SKIP_MESSAGES` — sạch HTTP/DB, quyền + cách đọc trạng thái do `main.py` truyền vào) · cột `scenes.conditions` · `main._normalize_scene_conditions`, `_read_state_fresh`, cổng điều kiện trong `_run_scene` (dùng chung endpoint `/run` lẫn giọng nói)
+- **Frontend:** `core/scene_api.dart` (`SceneCondition`, `SceneConditions`, `SceneRunResult.fromResponse`/`conditionsBlocked`) · `core/device_type.dart` `conditionStateOptions` · mục "ĐIỀU KIỆN" trong `scene_editor_screen.dart` (`describeSceneCondition`, chọn khoảng giờ bằng 2 `showTimePicker`, chọn thiết bị → trạng thái, `SegmentedButton` "Tất cả đều đúng"/"Chỉ cần 1 đúng" khi ≥2 điều kiện) · snack cam trong `dashboard_tab._runScene` · 1 dòng `helpTopics`
+- **Key logic:**
+  - Schema `{"operator":"AND"|"OR","items":[{"type":"time_range","start":"HH:MM","end":"HH:MM","timezone":"Asia/Ho_Chi_Minh"}, {"type":"device_state","device_id","expected_state"}]}`. Lưu NULL khi không có điều kiện (= kịch bản cũ). GET luôn trả object (`{"operator":"AND","items":[]}` khi không có; thêm `invalid:true` nếu JSON trong DB hỏng). Tối đa 10 điều kiện.
+  - **Ba giá trị** `passed|failed|unknown`, gộp kiểu Kleene. Chỉ `passed` mới chạy. Unknown = offline, lỗi/quá 12s đọc, trạng thái không rõ, cửa đang chạy (`opening`/`closing`) hoặc `stopped`, thiết bị đã xóa, thiết bị NGOÀI QUYỀN người chạy (không đọc luôn — không "mượn" thiết bị để vượt quyền). Offline KHÔNG BAO GIỜ thành "tắt".
+  - Giờ: `[start, end)`, `start > end` = qua đêm; `start == end` → 400 lúc lưu (mơ hồ), gặp trong DB → unknown. Quy đổi theo `timezone` của điều kiện, không phụ thuộc giờ máy chủ Render.
+  - Trạng thái mong muốn theo loại (`device_kind`): máy lọc/công tắc/chưa rõ = `on|off`; cửa = `open|closed` (đọc `door_state`); máy cho ăn KHÔNG làm điều kiện được ("ON" chỉ là online). Lúc lưu kiểm thiết bị tồn tại + người lưu dùng được (404/403) + trạng thái hợp lệ (400). ⚠️ Cửa `clkg` chỉ có DP `control` ⇒ `closed` là SUY từ lệnh cuối ≥30s; remote RF không lên cloud.
+  - Đọc trạng thái luôn MỚI (`_read_state_fresh` bỏ cache 3s, rồi cập nhật cache + `observe_state`). Điều kiện giờ đánh giá trước; AND đã sai / OR đã đúng ⇒ không gọi cloud.
+  - `/run` không đạt → HTTP 200 `{status:"skipped", message, data:{executed:false, results:[], skipped:0, conditions:{result,reason,items}}}`. App cũ (chỉ biết "success") hiện `message` như lỗi — vẫn đúng: không gì chạy. Đạt → như cũ + `executed:true`, `conditions`.
+  - Không đổi quyền tạo/sửa/xóa/chạy; xác nhận MỞ CỬA ở app vẫn hỏi trước khi gọi `/run`; giọng nói vẫn từ chối kịch bản mở cửa trước cả điều kiện. PATCH không gửi `conditions` = giữ nguyên; `null`/items rỗng = xóa.
+  - ⚠️ Thứ tự deploy: backend trước APK — backend cũ bỏ qua âm thầm field `conditions` (Pydantic ignore) ⇒ app mới tưởng đã lưu.
+  - Test: `backend/tests/test_scene_conditions.py` (engine + HTTP) · migration ở `test_database_schema.py` · `frontend/test/zones_scenes_test.dart`.
+
 ### Sơ đồ mặt bằng 2D
 - **Status:** ✅ code xong, chưa lên production (nhánh release/prod-ready)
 - **Backend:** `models/floor_plan.py` (bảng `floor_plans`, 1 hàng id=1, `layout` JSON text) · `services/floor_plan.py` (`DEFAULT_LAYOUT`, `sanitize_layout`, `parse_stored`, `visible_layout` — thuần, không DB) · `GET /api/floor-plan` (active member) + `PUT /api/floor-plan` (`require_owner`) trong `main.py`
@@ -44,6 +59,7 @@
 - **Key logic:**
   - Hành động kịch bản CHUẨN HÓA lúc lưu qua `normalize_action` (sai loại → 400). Chạy TUẦN TỰ (tránh lệnh chen làm lẫn interlock cửa). Thiết bị ngoài khu người chạy → bỏ qua, báo `skipped`.
   - Kịch bản có MỞ CỬA: app hỏi xác nhận (`sceneOpensDoor`); gọi bằng giọng nói → TỪ CHỐI (nhận dạng có thể nghe nhầm).
+  - Điều kiện chạy (giờ / trạng thái thiết bị, AND/OR): xem mục "Điều kiện kịch bản" ở đầu file.
   - Giọng nói: `local_parser.match_scene` — tên kịch bản xuất hiện trong câu (tên dài nhất thắng), xét TRƯỚC tường lửa từ khóa thiết bị; câu có giờ hẹn thì không khớp.
   - Chip "Phòng khách 1/3": thứ tự khu theo backend (sort_order), kéo-thả thiết bị chỉ ở "Tất cả". Ô thống kê dùng số thật (thiết bị/đang bật/khu) — trước đây "24°C / 60%" viết cứng.
 

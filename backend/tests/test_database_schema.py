@@ -175,6 +175,29 @@ def test_bang_members_cu_duoc_them_sort_order_khong_mat_ho_so(tmp_path):
     assert tuple(row) == ("me@x.test", "Bố", "owner", "active", None)
 
 
+def test_bang_scenes_cu_duoc_them_cot_conditions_khong_mat_actions(tmp_path):
+    """scenes có từ trước (chưa có conditions) -> thêm cột NULL, actions giữ nguyên."""
+    path = tmp_path / "old_scenes.db"
+    raw = sqlite3.connect(path)
+    raw.execute(
+        "CREATE TABLE scenes (id INTEGER PRIMARY KEY, name TEXT NOT NULL, icon TEXT, "
+        "sort_order INTEGER NOT NULL DEFAULT 0, actions TEXT NOT NULL DEFAULT '[]', created_by TEXT)"
+    )
+    actions = '[{"device_id": "d1", "action_type": "off", "action_value": null}]'
+    raw.execute("INSERT INTO scenes (id, name, actions) VALUES (1, 'Ra khỏi nhà', ?)", (actions,))
+    raw.commit()
+    raw.close()
+
+    engine = _engine_over(path)
+    db.init_db(engine)
+    db.init_db(engine)  # boot lần 2: idempotent, không ALTER lại
+
+    assert "conditions" in {c["name"] for c in inspect(engine).get_columns("scenes")}
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT name, actions, conditions FROM scenes WHERE id = 1")).one()
+    assert tuple(row) == ("Ra khỏi nhà", actions, None)
+
+
 def test_ddl_sort_order_theo_dialect():
     ddl = db._WANTED_COLUMNS["members"]["sort_order"]
     assert ddl == {"sqlite": "JSON", "postgresql": "JSONB"}

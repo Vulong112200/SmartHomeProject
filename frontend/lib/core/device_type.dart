@@ -83,6 +83,23 @@ List<DeviceActionOption> deviceActionOptions(DeviceType type) {
   }
 }
 
+/// Trạng thái chọn được làm ĐIỀU KIỆN kịch bản theo loại thiết bị:
+/// (giá trị gửi backend, nhãn). Khớp `EXPECTED_STATES` của backend
+/// services/scene_condition_engine.py. Máy cho ăn: rỗng — "ON" của nó chỉ
+/// nghĩa là đang online, không phải đang bật.
+List<(String, String)> conditionStateOptions(DeviceType type) {
+  switch (type) {
+    case DeviceType.curtain:
+      return const [('closed', 'Đang đóng'), ('open', 'Đang mở')];
+    case DeviceType.feeder:
+      return const [];
+    case DeviceType.airPurifier:
+    case DeviceType.powerSwitch:
+    case DeviceType.unknown:
+      return const [('on', 'Đang bật'), ('off', 'Đang tắt')];
+  }
+}
+
 /// Nhãn tiếng Việt cho 1 hành động (dùng cho cả hành động bắt đầu lẫn kết thúc).
 String deviceActionLabel(String actionType, String? actionValue, DeviceType type) {
   for (final opt in deviceActionOptions(type)) {

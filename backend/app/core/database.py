@@ -106,6 +106,11 @@ _WANTED_COLUMNS = {
         # không default: hàng cũ = NULL = thứ tự mặc định.
         "sort_order": {"sqlite": "JSON", "postgresql": "JSONB"},
     },
+    "scenes": {
+        # Điều kiện chạy kịch bản. Nullable, không default: hàng cũ = NULL =
+        # không điều kiện, chạy y như trước; `actions` không bị đụng tới.
+        "conditions": {"sqlite": "TEXT", "postgresql": "TEXT"},
+    },
     "zones": {
         # Đợt 2 — khu dùng chung cả nhà.
         "is_shared": {
@@ -127,7 +132,7 @@ _REQUIRED_SCHEMA = {
     "members": {"user_id", "email", "display_name", "role", "status", "avatar_color", "sort_order"},
     "zones": {"id", "name", "sort_order", "is_shared"},
     "member_zone_access": {"user_id", "zone_id"},
-    "scenes": {"id", "name", "icon", "sort_order", "actions", "created_by"},
+    "scenes": {"id", "name", "icon", "sort_order", "actions", "created_by", "conditions"},
     "command_logs": {
         "id", "at_ms", "device_id", "device_name", "action_type", "action_value",
         "action_label", "source", "user_id", "user_name", "success", "detail", "ext_id",

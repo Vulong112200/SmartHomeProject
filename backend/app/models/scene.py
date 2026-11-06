@@ -26,3 +26,7 @@ class SceneModel(Base):
     sort_order = Column(Integer, nullable=False, default=0)
     actions = Column(Text, nullable=False, default="[]")
     created_by = Column(String, nullable=True)  # chỉ để audit
+    # Điều kiện chạy: JSON text {"operator": "AND"|"OR", "items": [...]} đã chuẩn
+    # hóa (services/scene_condition_engine.py). NULL = không điều kiện — kịch bản
+    # cũ giữ nguyên hành vi. Thêm bằng run_startup_migrations (bảng đã có).
+    conditions = Column(Text, nullable=True)
