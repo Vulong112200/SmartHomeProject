@@ -45,7 +45,7 @@ from typing import Any
 
 # Import Database
 from app.core.auth import app_token_secret, auth_status, get_current_user, issue_app_token
-from app.core.database import SessionLocal, get_db, init_db, IS_SQLITE
+from app.core.database import SessionLocal, get_db, init_db_async, IS_SQLITE
 from app.core.household import (
     DEVICE_ORDER_MAX_ID_LEN,
     DEVICE_ORDER_MAX_ITEMS,
@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI):
     global db_ready
     logger.info("Đang khởi tạo Database (%s)...", "SQLite" if IS_SQLITE else "Postgres")
     try:
-        init_db()
+        await init_db_async()
         db_ready = True
         logger.info("✅ Database sẵn sàng.")
         if IS_SQLITE:

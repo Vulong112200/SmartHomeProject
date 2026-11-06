@@ -1,8 +1,12 @@
 # backend/app/core/database.py
 import logging
 import os
+from contextlib import contextmanager
+from uuid import uuid4
 
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import URL, Engine, make_url
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -41,12 +45,106 @@ def make_engine(url: str):
     )
 
 
+# =========================================================
+# Engine ASYNC (SQLAlchemy 2.0): asyncpg cho Postgres, aiosqlite cho SQLite
+# =========================================================
+# Supabase transaction pooler (cổng 6543) không giữ prepared statement giữa các
+# transaction ⇒ asyncpg lỗi "prepared statement ... already exists". Session
+# pooler (5432, đang dùng) và kết nối thẳng không bị.
+_TRANSACTION_POOLER_PORT = 6543
+
+# sslmode là tham số của libpq/psycopg2; asyncpg nhận `ssl` với cùng tập giá trị.
+# Không đổi thì URL Supabase có `?sslmode=require` làm asyncpg.connect() ném
+# TypeError ngay lúc kết nối đầu tiên.
+_LIBPQ_ONLY_PARAMS = ("sslmode", "connect_timeout", "application_name")
+
+
+def async_database_url(url) -> URL:
+    """
+    URL đồng bộ ("postgresql://", "sqlite:///") -> URL cho driver async.
+    Driver ghi sẵn (vd "+psycopg2") bị thay: cả backend chỉ chạy một kiểu driver.
+    Trả `URL` (không phải chuỗi) để mật khẩu có ký tự đặc biệt không bị escape sai.
+    """
+    u = make_url(url) if not isinstance(url, URL) else url
+    backend = u.get_backend_name()
+    if backend == "sqlite":
+        return u.set(drivername="sqlite+aiosqlite")
+    if backend != "postgresql":
+        raise ValueError(f"DATABASE_URL không hỗ trợ: {backend}")
+    query = {k: v for k, v in u.query.items() if k not in _LIBPQ_ONLY_PARAMS}
+    return u.set(drivername="postgresql+asyncpg", query=query)
+
+
+def async_connect_args(url, application_name: str = "smarthome-api") -> dict:
+    """
+    Tham số asyncpg.connect() suy từ URL gốc (đọc các tham số libpq đã gỡ khỏi URL).
+    - timeout: kết nối không được >10s (mạng chập chờn thì lỗi nhanh, không treo).
+    - command_timeout: 1 câu SQL treo (mất mạng giữa chừng) không giữ request mãi.
+    - transaction pooler: tắt cache prepared statement + tên ngẫu nhiên.
+    """
+    u = make_url(url) if not isinstance(url, URL) else url
+    if u.get_backend_name() == "sqlite":
+        # busy timeout: request async chạy song song thật sự ⇒ có lúc chờ khóa ghi.
+        return {"timeout": 30}
+    q = u.query
+    args: dict = {
+        "timeout": float(q.get("connect_timeout") or 10),
+        "command_timeout": 30,
+        "server_settings": {"application_name": q.get("application_name") or application_name},
+    }
+    if q.get("sslmode"):
+        args["ssl"] = q["sslmode"]
+    if u.port == _TRANSACTION_POOLER_PORT:
+        args["statement_cache_size"] = 0
+        args["prepared_statement_cache_size"] = 0
+        args["prepared_statement_name_func"] = lambda: f"__asyncpg_{uuid4()}__"
+    return args
+
+
+def make_async_engine(url, *, pool_size: int = 5, max_overflow: int = 5,
+                      application_name: str = "smarthome-api"):
+    """
+    Engine async với pool hợp từng loại DB.
+    Postgres: pool_pre_ping loại kết nối chết sau khi idle (Render free ngủ),
+    recycle vì pooler cắt kết nối cũ, pool_timeout ngắn: hết kết nối thì báo lỗi
+    sau 10s (→ 503) thay vì treo request 30s.
+    """
+    aurl = async_database_url(url)
+    connect_args = async_connect_args(url, application_name)
+    if aurl.get_backend_name() == "sqlite":
+        return create_async_engine(aurl, connect_args=connect_args)
+    return create_async_engine(
+        aurl,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_timeout=10,
+        connect_args=connect_args,
+    )
+
+
+def make_session_factory(bind) -> async_sessionmaker:
+    """
+    expire_on_commit=False: BẮT BUỘC với AsyncSession — đọc thuộc tính sau commit
+    không được phát SQL ngầm (lazy load ngoài greenlet = MissingGreenlet). Hệ quả:
+    object không tự làm mới sau commit; chỗ nào cần giá trị DB mới (sau UPDATE
+    Core) phải đọc lại tường minh (`populate_existing=True` / `refresh`).
+    """
+    return async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False, autoflush=False)
+
+
 DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", ""))
 IS_SQLITE = DATABASE_URL.startswith("sqlite")
 engine = make_engine(DATABASE_URL)
 
 # Tạo một "nhà máy" sản xuất các phiên làm việc (Session) với DB
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Engine + session async. Tạo engine KHÔNG mở kết nối (lười) ⇒ import không
+# bao giờ ném vì DB chết.
+async_engine = make_async_engine(DATABASE_URL)
+AsyncSessionLocal = make_session_factory(async_engine)
 
 # Base class: Mọi bảng dữ liệu (Models) sau này sẽ kế thừa từ class này
 Base = declarative_base()
@@ -59,6 +157,15 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+async def get_async_db():
+    """
+    1 AsyncSession / request. `async with` luôn đóng session (rollback transaction
+    còn dở, trả kết nối về pool) kể cả khi endpoint ném lỗi.
+    """
+    async with AsyncSessionLocal() as session:
+        yield session
 
 
 # =========================================================
@@ -151,6 +258,23 @@ _REQUIRED_SCHEMA = {
 }
 
 
+@contextmanager
+def _begin(bind):
+    """
+    Transaction để ghi DDL/seed trên `bind`:
+      - Engine (test, worker cũ): mở kết nối + transaction riêng như trước.
+      - Connection (lúc boot: `AsyncConnection.run_sync`): dùng chính kết nối đó,
+        commit khi khối chạy xong; lỗi giữa chừng thì không commit — người gọi
+        đóng kết nối là rollback.
+    """
+    if isinstance(bind, Engine):
+        with bind.begin() as conn:
+            yield conn
+        return
+    yield bind
+    bind.commit()
+
+
 def run_startup_migrations(bind=None) -> None:
     """
     Thêm cột còn thiếu vào bảng đã tồn tại. Idempotent — chỉ thêm cột chưa có,
@@ -169,7 +293,7 @@ def run_startup_migrations(bind=None) -> None:
         missing = {n: t for n, t in wanted.items() if n not in existing}
         if not missing:
             continue
-        with bind.begin() as conn:
+        with _begin(bind) as conn:
             for name, types in missing.items():
                 ddl = types.get(dialect, types["sqlite"])
                 # SQLite không có ADD COLUMN IF NOT EXISTS; đã lọc `missing` ở trên.
@@ -193,7 +317,7 @@ def enable_rls(bind=None) -> None:
         return
     inspector = inspect(bind)
     tables = set(inspector.get_table_names())
-    with bind.begin() as conn:
+    with _begin(bind) as conn:
         for table in _REQUIRED_SCHEMA:
             if table not in tables:
                 continue
@@ -212,7 +336,7 @@ def seed_defaults(bind=None) -> None:
     dữ liệu người dùng đã sửa (đổi tên thiết bị, xóa bớt, chia phòng lại).
     """
     bind = bind if bind is not None else engine
-    with bind.begin() as conn:
+    with _begin(bind) as conn:
         if not conn.execute(text("SELECT COUNT(*) FROM devices")).scalar():
             for device_id, name, brand, category in _SEED_DEVICES:
                 conn.execute(
@@ -287,16 +411,30 @@ def init_db(bind=None) -> None:
     `bind` chỉ dùng cho test (trỏ vào DB tạm). Production gọi không tham số.
     """
     bind = bind if bind is not None else engine
-
-    # import để models đăng ký vào Base.metadata trước khi create_all
-    from app.models import (  # noqa: F401
-        command_log, device, floor_plan, member, scene, schedule, schedule_run, zone,
-    )
-
-    Base.metadata.create_all(bind=bind)
+    _import_models()
+    with _begin(bind) as conn:
+        Base.metadata.create_all(bind=conn)
     run_startup_migrations(bind)
     # verify TRƯỚC seed: nếu schema lệch thì seed sẽ ném OperationalError thô
     # (stack trace SQLAlchemy), che mất thông báo nói rõ bảng/cột nào thiếu.
     verify_schema(bind)
     enable_rls(bind)
     seed_defaults(bind)
+
+
+def _import_models() -> None:
+    # import để models đăng ký vào Base.metadata trước khi create_all
+    from app.models import (  # noqa: F401
+        command_log, device, floor_plan, member, scene, schedule, schedule_run, zone,
+    )
+
+
+async def init_db_async(bind=None) -> None:
+    """
+    init_db trên engine ASYNC (lifespan của main.py). Cùng các bước đồng bộ ở
+    trên, chạy qua `run_sync` trên MỘT kết nối của engine async: không cần
+    driver đồng bộ (psycopg2) hay engine thứ hai chỉ để boot.
+    """
+    bind = bind if bind is not None else async_engine
+    async with bind.connect() as conn:
+        await conn.run_sync(init_db)

@@ -255,3 +255,93 @@ def test_enable_rls_bo_qua_sqlite(temp_engine):
     """SQLite không có RLS — gọi phải là no-op, không được ném lỗi."""
     db.init_db(temp_engine)
     db.enable_rls(temp_engine)  # không raise là đạt
+
+
+# ---------------------------------------------------------------------
+# Engine ASYNC (asyncpg / aiosqlite)
+# ---------------------------------------------------------------------
+def test_url_async_doi_driver():
+    assert db.async_database_url("sqlite:///./smarthome.db").drivername == "sqlite+aiosqlite"
+    u = db.async_database_url("postgresql://u:p@host:5432/postgres")
+    assert u.drivername == "postgresql+asyncpg"
+    # driver đồng bộ ghi sẵn cũng bị thay — cả backend chỉ một kiểu driver
+    assert db.async_database_url("postgresql+psycopg2://u:p@h/d").drivername == "postgresql+asyncpg"
+
+
+def test_url_async_giu_mat_khau_ky_tu_dac_biet():
+    u = db.async_database_url("postgresql://u:p%40ss%2Fw@host:5432/postgres")
+    assert u.password == "p@ss/w"
+
+
+def test_sslmode_doi_sang_tham_so_asyncpg():
+    """asyncpg.connect() không nhận `sslmode` — để nguyên trong URL là TypeError lúc kết nối."""
+    raw = "postgresql://u:p@host:5432/postgres?sslmode=require&connect_timeout=5&application_name=x"
+    u = db.async_database_url(raw)
+    assert "sslmode" not in u.query and "connect_timeout" not in u.query
+    args = db.async_connect_args(raw)
+    assert args["ssl"] == "require"
+    assert args["timeout"] == 5.0
+    assert args["server_settings"]["application_name"] == "x"
+    assert args["command_timeout"] == 30
+
+
+def test_session_pooler_giu_prepared_statement():
+    args = db.async_connect_args("postgresql://u:p@aws-0.pooler.supabase.com:5432/postgres")
+    assert "statement_cache_size" not in args
+
+
+def test_transaction_pooler_tat_prepared_statement():
+    args = db.async_connect_args("postgresql://u:p@aws-0.pooler.supabase.com:6543/postgres")
+    assert args["statement_cache_size"] == 0
+    assert args["prepared_statement_cache_size"] == 0
+    a, b = args["prepared_statement_name_func"](), args["prepared_statement_name_func"]()
+    assert a != b
+
+
+def test_engine_async_postgres_co_pool_va_pre_ping():
+    engine = db.make_async_engine("postgresql://u:p@host:5432/postgres")
+    assert engine.dialect.driver == "asyncpg"
+    assert engine.pool.size() == 5
+    assert engine.pool._pre_ping is True
+    assert engine.pool._timeout == 10
+
+
+def test_init_db_async_tren_aiosqlite(tmp_path):
+    """Boot thật đi đường này: init_db chạy qua run_sync trên kết nối async."""
+    import asyncio
+
+    path = tmp_path / "async.db"
+    engine = db.make_async_engine(f"sqlite:///{path}")
+
+    async def go():
+        await db.init_db_async(engine)
+        await db.init_db_async(engine)  # idempotent: boot lần 2 không seed/ALTER lại
+        await engine.dispose()
+
+    asyncio.run(go())
+    check = _engine_over(path)
+    with check.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM devices")).scalar() == 3
+        assert conn.execute(text("SELECT COUNT(*) FROM zones")).scalar() == 1
+    assert "schedule_runs" in inspect(check).get_table_names()
+
+
+def test_init_db_async_verify_loi_thi_nem(tmp_path):
+    """Schema lệch -> RuntimeError rõ ràng (lifespan bắt -> boot degraded)."""
+    import asyncio
+
+    path = tmp_path / "broken.db"
+    raw = sqlite3.connect(path)
+    raw.execute("CREATE TABLE scenes (id INTEGER PRIMARY KEY)")  # thiếu cột, không ALTER được hết
+    raw.commit()
+    raw.close()
+    engine = db.make_async_engine(f"sqlite:///{path}")
+
+    async def go():
+        try:
+            await db.init_db_async(engine)
+        finally:
+            await engine.dispose()
+
+    with pytest.raises(RuntimeError, match="scenes"):
+        asyncio.run(go())
