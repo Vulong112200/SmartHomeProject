@@ -54,3 +54,9 @@ services:
       # thi dung chung SUPABASE_JWT_SECRET. Thu hoi = doi gia tri nay.
       - key: APP_TOKEN_SECRET
         sync: false
+      # --- Hen gio ---
+      # Vong lap hen gio trong API. Khong dat = 1 (chay nhu truoc).
+      # 0 = tat (worker tai nha lo het) | auto = dung cho khi worker tai nha con
+      # nhip tim, tu tiep quan khi worker im lang. Xem backend/worker/README.md.
+      - key: SCHEDULER_ENABLED
+        sync: false

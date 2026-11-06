@@ -158,6 +158,49 @@ create index if not exists ix_command_logs_at_ms     on public.command_logs (at_
 create index if not exists ix_command_logs_device_id on public.command_logs (device_id);
 
 -- ---------------------------------------------------------------------
+-- schedule_runs — mỗi lần một lịch đến hạn = 1 hàng (chống bắn trùng + phục hồi)
+-- scheduler_heartbeats — nhịp tim của vòng lặp hẹn giờ (API trên Render / worker tại nhà)
+-- Backend TỰ TẠO 2 bảng này lúc boot (create_all). Chạy khối này bằng tay CHỈ
+-- khi muốn bật worker tại nhà TRƯỚC khi deploy backend mới (worker không tự tạo bảng).
+-- UNIQUE(schedule_id, part, occurrence) là chốt thứ hai của claim nguyên tử
+-- (services/scheduler.py). Không FK tới schedules: xóa lịch không bị chặn.
+-- ---------------------------------------------------------------------
+create table if not exists public.schedule_runs (
+    id            serial  primary key,
+    schedule_id   integer not null,
+    part          text    not null,
+    occurrence    text    not null,
+    due_at_ms     bigint  not null,
+    label         text,
+    device_id     text    not null,
+    brand         text,
+    action_type   text    not null,
+    action_value  text,
+    status        text    not null,
+    attempts      integer not null default 0,
+    worker_id     text,
+    claimed_at_ms bigint  not null,
+    updated_at_ms bigint  not null,
+    detail        text,
+    constraint uq_schedule_runs_occurrence unique (schedule_id, part, occurrence)
+);
+create index if not exists ix_schedule_runs_schedule_id   on public.schedule_runs (schedule_id);
+create index if not exists ix_schedule_runs_status        on public.schedule_runs (status);
+create index if not exists ix_schedule_runs_updated_at_ms on public.schedule_runs (updated_at_ms);
+
+create table if not exists public.scheduler_heartbeats (
+    worker_id     text    primary key,
+    role          text    not null,
+    host          text,
+    pid           integer,
+    state         text    not null,
+    started_at_ms bigint  not null,
+    last_seen_ms  bigint  not null,
+    detail        text
+);
+create index if not exists ix_scheduler_heartbeats_last_seen_ms on public.scheduler_heartbeats (last_seen_ms);
+
+-- ---------------------------------------------------------------------
 -- Seed 3 thiết bị đang chạy thật
 --
 -- ⚠️ GIỮ NGUYÊN id. Shortcut đã pin ra màn hình chính và các slot Home Widget
@@ -211,6 +254,8 @@ alter table public.member_zone_access enable row level security;
 alter table public.scenes             enable row level security;
 alter table public.command_logs       enable row level security;
 alter table public.floor_plans        enable row level security;
+alter table public.schedule_runs        enable row level security;
+alter table public.scheduler_heartbeats enable row level security;
 
 -- ---------------------------------------------------------------------
 -- Kiểm tra nhanh sau khi chạy (nên thấy 3 dòng, rowsecurity = true)

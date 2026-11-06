@@ -151,27 +151,47 @@ schedule_tab.dart (FAB ＋ / tap card) → _ScheduleForm (bottom sheet)
     → INSERT/UPDATE bảng schedules; PATCH đổi time/end_time/bật enabled → reset fired-date tương ứng
 ```
 
-**Vòng lặp kích hoạt (chạy nền trên server):**
+**Vòng lặp kích hoạt** — CÙNG bộ máy `ScheduleEngine` ở 2 nơi:
 ```
-main.py lifespan → init_db() (try/except -> db_ready) → connectors
-  → CHỈ KHI db_ready: asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
-  → mỗi 30s: now = datetime.now(Asia/Ho_Chi_Minh); duyệt schedules enabled==True
-    → start ĐẾN GIỜ khi: weekday ∈ days (hoặc days rỗng) VÀ 0 <= now - time < 120s
-                         VÀ last_fired_date != hôm nay
-    → end ĐẾN GIỜ khi:   có end_time VÀ weekday ∈ _end_days (qua đêm: days dịch +1 mod 7)
-                         VÀ 0 <= now - end_time < 120s VÀ last_end_fired_date != hôm nay
-    → mỗi mốc: đánh dấu fired-date + commit TRƯỚC khi gửi lệnh (chống bắn lặp);
-         one_shot: lịch đơn tắt sau start, lịch khoảng tắt sau end;
-         one_shot lỡ trọn cửa sổ mốc cuối (server ngủ) → enabled=False + log (không bắn tuần sau)
-    → execute_schedule_action: device_manager.get_connector(brand)
-         → turn_on / turn_off / set_mode(device_id, action_value)
-    → _cache_invalidate(brand, device_id)  # app đọc được trạng thái mới ngay
+API (Render):  main.py lifespan → init_db() → register_default_connectors
+                 → CHỈ KHI db_ready VÀ SCHEDULER_ENABLED != 0:
+                   create_task(scheduler_loop(invalidate_cache=_cache_invalidate, mode=on|auto))
+Worker (nhà):  python -m worker → nạp .env → WorkerConfig → engine DB riêng
+                 → wait_for_db (SELECT 1 + verify_schema 5 bảng, backoff 5→60s)
+                 → register_default_connectors → ScheduleEngine(role=worker, use_db_clock)
+                 → run_forever (SIGTERM/Ctrl+C: xong tick rồi mark_stopped)
+
+ScheduleEngine.tick (mỗi 30s):
+  now = giờ DB (worker/Postgres) | giờ máy (API), TZ Asia/Ho_Chi_Minh
+  [auto] có nhịp tim worker running < 90s → ghi nhịp tim "standby", DỪNG tick
+  _recover: schedule_runs claimed/sending kẹt > 90s, retry > 30s
+     → lịch còn muốn (tồn tại, cùng giờ/thiết bị/hành động) + trong cửa sổ + RETRY_POLICIES
+         ? CAS giành lại (status, updated_at_ms) → _execute
+         : abandoned/failed (+ lịch sử success=false nếu kết quả chưa từng được ghi)
+  duyệt schedules enabled==True (ảnh chụp _Snap):
+    start ĐẾN GIỜ: weekday ∈ days (rỗng = mọi ngày) VÀ 0 <= now - time < 120s VÀ last_fired_date != hôm nay
+    end ĐẾN GIỜ:   có end_time VÀ weekday ∈ _end_days (qua đêm +1) VÀ 0 <= now - end_time < 120s
+                   VÀ last_end_fired_date != hôm nay
+    one_shot lỡ trọn cửa sổ mốc cuối → UPDATE có điều kiện enabled=False + log
+    mỗi mốc đến giờ → claim():
+         UPDATE schedules SET fired-date=hôm nay [, enabled=False nếu one_shot mốc cuối]
+           WHERE id AND enabled AND fired-date != hôm nay AND (time, days, end_time, one_shot,
+                 device_id, action) = ảnh chụp          # rowcount != 1 → tiến trình khác thắng
+         + INSERT schedule_runs(status=claimed) UNIQUE(schedule_id, part, occurrence)  → COMMIT
+      → _execute: scheduler_target_device (còn trong nhà?) → normalize_action(device, …)
+           lỗi → rejected + lịch sử thất bại, KHÔNG gửi
+         → UPDATE status=sending, attempts+1 (COMMIT trước khi gửi; ghi lỗi = không gửi)
+         → _fire: wait_for(execute_schedule_action(brand TỪ DB, …), 60s)
+              → connector turn_on/turn_off/set_mode → invalidate_cache (API)
+              → command_log.record(source=schedule) → realtime.notify_command (worker: no-op)
+         → success | retry (theo loại, còn lượt+cửa sổ) | failed
+  _housekeeping (mỗi giờ) → nhịp tim "running"
 ```
-Ghi chú: server được UptimeRobot ping /health giữ thức (Render free-tier). Lịch lưu SQLite —
-ephemeral trên Render, mất khi redeploy. `/api/schedules/{id}/run` chạy ngay để test (không
-đổi fired-date; `?part=end` chạy hành động kết thúc). Start xử lý trước end trong cùng tick
-nên khoảng ngắn hơn grace vẫn đúng thứ tự. Restart giữa khoảng: end vẫn bắn độc lập → thiết bị
-về trạng thái "sau" như mong muốn.
+Ghi chú: Render được UptimeRobot ping /health giữ thức; worker tại nhà loại bỏ phụ thuộc này.
+`/api/schedules/{id}/run` chạy ngay để test (không đổi fired-date, không tạo schedule_runs;
+`?part=end` chạy hành động kết thúc). Start xử lý trước end trong cùng tick. Restart giữa
+khoảng: end vẫn bắn độc lập. Restart tiến trình: quyết định chống trùng nằm trong DB → không
+gửi lặp. Lệnh của worker không phát /ws — app thấy qua watcher 15s/poll.
 
 ## 4b. Khởi động app (warm-up server)
 
@@ -236,8 +256,10 @@ uvicorn app.main:app
       thành công → db_ready=True; nếu IS_SQLITE → log WARNING cảnh báo mất dữ liệu khi redeploy
       thất bại   → db_ready=False, KHÔNG raise (boot degraded)
 
-  → khởi động connector (mỗi hãng bọc try/except riêng — 1 hãng lỗi không sập app)
-  → scheduler_task = create_task(scheduler_loop()) CHỈ KHI db_ready
+  → register_default_connectors(device_manager) (connector_manager.py, dùng chung với worker;
+       mỗi hãng bọc try/except riêng — 1 hãng lỗi không sập app)
+  → scheduler_mode() đọc SCHEDULER_ENABLED (trống/1=on, 0=off, auto, lạ=on)
+  → scheduler_task = create_task(scheduler_loop(mode=…)) CHỈ KHI db_ready VÀ mode != off
        (db lỗi mà vẫn chạy thì tick 30s log stack trace vĩnh viễn)
 
   → GET /health → {"status":"online", "db": db_ready}   # LUÔN 200

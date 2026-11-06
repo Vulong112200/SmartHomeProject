@@ -7,7 +7,7 @@
 ```
 backend/
 ├── app/
-│   ├── main.py                     # FastAPI app: endpoints (devices/control/status/ai/schedules), init_db() + lifespan (khởi tạo DB → connectors → scheduler task), cờ db_ready, middleware đo thời gian
+│   ├── main.py                     # FastAPI app: endpoints (devices/control/status/ai/schedules), init_db() + lifespan (khởi tạo DB → register_default_connectors → scheduler task theo SCHEDULER_ENABLED 1|0|auto), cờ db_ready, middleware đo thời gian
 │   ├── core/
 │   │   ├── auth.py                 # Verify JWT Supabase -> CurrentUser; CỐ TÌNH sạch model + sạch DB.
 │   │   │                           # Token Supabase ES256 qua JWKS (SUPABASE_URL) hoặc HS256 (SUPABASE_JWT_SECRET);
@@ -15,7 +15,8 @@ backend/
 │   │   ├── household.py            # NƠI DUY NHẤT quyết định quyền: provision_member, get_current_member,
 │   │   │                           # require_owner, device_query/schedule_query (lọc theo khu),
 │   │   │                           # require_device_access (403 vs 404), require_schedule_write,
-│   │   │                           # realtime_audience (ai trong các kết nối /ws được nhận sự kiện thiết bị nào / phải bị ngắt)
+│   │   │                           # realtime_audience (ai trong các kết nối /ws được nhận sự kiện thiết bị nào / phải bị ngắt),
+│   │                           # scheduler_target_device (luật của bộ hẹn giờ: thiết bị còn trong nhà, hãng lấy từ DB)
 │   │   └── database.py             # Chọn DB theo DATABASE_URL (Postgres/Supabase; rỗng → SQLite smarthome.db): normalize_database_url + make_engine (pool pre_ping/recycle cho Postgres),
 │   │                               # SessionLocal + Base + get_db, init_db() = create_all → run_startup_migrations (2 dialect) → verify_schema → enable_rls → seed_defaults
 │   ├── models/
@@ -29,10 +30,12 @@ backend/
 │   │   ├── command_log.py          # CommandLogModel (command_logs: at_ms, device/user ẢNH CHỤP, action_label, source, success NULL = quan sát, ext_id UNIQUE)
 │   │   ├── floor_plan.py           # FloorPlanModel (floor_plans: 1 hàng id=1, layout JSON {rooms, doors, devices} theo MÉT, updated_by/at_ms)
 │   │   ├── scene.py                # SceneModel (scenes: name, icon, actions JSON đã chuẩn hóa, created_by, conditions JSON|NULL) — kịch bản của cả nhà
+│   │   ├── schedule_run.py         # ScheduleRunModel (schedule_runs: 1 hàng / occurrence, UNIQUE(schedule_id, part, occurrence),
+│   │   │                           # status claimed|sending|success|retry|failed|rejected|abandoned) + SchedulerHeartbeatModel (scheduler_heartbeats: role api|worker, state)
 │   │   └── schedule.py             # ScheduleModel (bảng schedules: time HH:MM, days CSV, action, last_fired_date + lịch KHOẢNG end_time/end_action_*/last_end_fired_date, one_shot, created_by)
 │   └── services/
 │       ├── base_connector.py       # Lớp trừu tượng: connect/turn_on/turn_off/get_device_state (+set_mode tùy chọn)
-│       ├── connector_manager.py    # device_manager: register_connector / get_connector theo brand
+│       ├── connector_manager.py    # device_manager: register_connector / get_connector theo brand; register_default_connectors() (Tuya/VeSync/Rojeco — dùng chung API + worker)
 │       ├── tuya_connector.py       # Tuya Cloud — cửa cuốn (control open/close/stop; trạng thái từ shadow/properties có thời điểm) + công tắc (switch_1, tự nhận theo category Tuya); credential từ env
 │       ├── vesync_connector.py     # VeSync — máy lọc khí (mode, speed)
 │       ├── rojeco_connector.py     # Rojeco — máy cho ăn: state = online + feed_state + last_feed (feed_report); credential từ env
@@ -43,19 +46,31 @@ backend/
 │       ├── vn_time_parser.py       # extract_schedule_times: parse giờ tiếng Việt (16h30, 4 giờ chiều, từ X đến Y, mai, mỗi ngày) + resolve_target_days
 │       ├── ai_parser.py            # parse_command_with_ai: gọi LLM (OpenRouter) cho câu phức (có few-shot intent schedule); client lazy (thiếu key vẫn boot)
 │       ├── command_log.py          # record(): ghi lệnh hệ thống gửi (lỗi DB không làm hỏng lệnh); action_label theo loại; prune_old 90 ngày
-│       ├── device_history.py       # Sự kiện NGOÀI app: nhật ký Tuya (type 5/7, classify_tuya_logs) + VeSync observe_state
-│       ├── scheduler.py            # scheduler_loop: vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh); bắn start+end độc lập, qua đêm _end_days +1, one-shot tự tắt; _fire → record + realtime.notify_command
+│       ├── device_history.py       # Sự kiện NGOÀI app: nhật ký Tuya (type 5/7, classify_tuya_logs) + VeSync observe_state (bỏ qua nếu RAM recently_sent HOẶC command_logs có lệnh hệ thống ≤60s — thấy cả lệnh của worker)
+│       ├── scheduler.py            # Bộ máy Hẹn giờ DÙNG CHUNG (API + worker): ScheduleEngine.tick (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh; start+end độc lập, qua đêm _end_days +1, one-shot tự tắt)
+│       │                           # claim nguyên tử (UPDATE có điều kiện + INSERT schedule_runs UNIQUE), phục hồi hàng kẹt (lease 90s), RETRY_POLICIES theo loại,
+│       │                           # normalize_action trước khi gửi, giờ DB (use_db_clock), nhịp tim; run_forever, scheduler_loop (API), scheduler_mode (SCHEDULER_ENABLED); _fire → record + realtime.notify_command
 │       ├── realtime.py             # /ws: ConnectionManager (kết nối đã xác thực, gửi có khóa+timeout 5s, heartbeat ping 25s/chết 75s, kiểm lại thành viên 2 phút),
 │       │                           # notify_state (phát khi trạng thái ĐỔI, bỏ bản đọc cũ, offline/online), notify_command (chỉ lệnh thành công + đọc lại 1.5s/5s, cửa +32s),
 │       │                           # watcher 15s khi có ≥1 kết nối. Sạch DB/quyền: main.py cắm audience/refresh/targets qua configure()
 │       └── automation_engine.py    # Automation rules (đang đóng băng, không import trong main.py)
+├── worker/                         # Worker Hẹn giờ tại nhà — tiến trình ĐỘC LẬP (không FastAPI): python -m worker [run|once|status]
+│   ├── __main__.py                 # CLI; nạp .env (--env-file > WORKER_ENV_FILE > worker/.env > backend/.env) TRƯỚC khi import app.*
+│   ├── config.py                   # WorkerConfig từ env: WORKER_DATABASE_URL|DATABASE_URL (bắt buộc; SQLite chỉ khi WORKER_ALLOW_SQLITE=1), WORKER_TICK_SECONDS 5–55, WORKER_LOG_FILE
+│   ├── db.py                       # Engine RIÊNG (pool 2, connect_timeout 10s, keepalive, pre_ping), check_db (verify_schema 5 bảng), wait_for_db backoff 5→60s
+│   ├── runner.py                   # run_worker: log (stdout + file xoay vòng) → chờ DB → connectors → ScheduleEngine(role worker, giờ DB) → run_forever; SIGTERM/Ctrl+C dừng sau tick, ghi nhịp tim stopped
+│   ├── status.py                   # Sức khỏe (chỉ đọc): DB/schema, lệch đồng hồ, nhịp tim, lần chạy mở/gần đây, lịch sẽ bị từ chối; mã thoát 0/1/2
+│   ├── README.md                   # Vận hành: chống trùng, phục hồi, cài đặt, systemd/Task Scheduler, log, mất mạng, cập nhật, CHUYỂN ĐỔI production
+│   └── deploy/                     # smarthome-worker.service (systemd), worker.env.example, worker_role.sql (role Postgres quyền tối thiểu + policy RLS riêng)
 ├── docs/
-│   ├── supabase_schema.sql         # DDL Postgres idempotent (zones, members, member_zone_access, devices, schedules
+│   ├── supabase_schema.sql         # DDL Postgres idempotent (zones, members, member_zone_access, devices, schedules, schedule_runs, scheduler_heartbeats
 │   │                               # + index + seed 3 thiết bị giữ NGUYÊN id + khu 'Nhà' + ENABLE RLS); chạy 1 lần trong SQL Editor
 │   └── SUPABASE_SETUP.md           # Hướng dẫn 5 bước tạo Supabase → lấy Session pooler (IPv4) → set DATABASE_URL trên Render → verify; kèm bảng sự cố thường gặp
 ├── tests/
 │   ├── test_vn_time_parser.py      # pytest bảng ví dụ parse giờ + resolve_target_days
 │   ├── test_scheduler_helpers.py   # pytest _is_time_due/_is_time_missed/_end_days (grace, thứ, qua đêm)
+│   ├── test_scheduler_engine.py    # bộ máy hẹn giờ: đúng 1 lần, lặp theo thứ, khoảng, qua đêm, claim CAS (ảnh chụp cũ / 8 luồng / 2 worker), phục hồi crash, thử lại theo loại, normalize, mất DB, auto standby
+│   ├── test_worker.py              # worker: cấu hình env, không nạp app.main/uvicorn, once trên SQLite tạm, wait_for_db, status mã thoát
 │   ├── test_database_schema.py     # pytest chọn DB theo env, seed/idempotent/không ghi đè, migration cột, verify_schema, RLS no-op trên SQLite
 │   ├── test_household_scope.py     # pytest ma trận quyền: device_query theo khu, 403-vs-404, pending/blocked,
 │                                   # lịch lọc theo thiết bị chứ không theo người tạo, quy tắc bật/tắt xác thực,

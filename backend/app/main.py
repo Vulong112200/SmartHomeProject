@@ -26,16 +26,13 @@ from sqlalchemy.orm import Session
 
 # Import các Connector và Manager
 from app.services.local_parser import match_scene, parse_command_locally
-from app.services.connector_manager import device_manager
-from app.services.tuya_connector import TuyaConnector
-from app.services.vesync_connector import VeSyncConnector
-from app.services.rojeco_connector import RojecoConnector
+from app.services.connector_manager import device_manager, register_default_connectors
 
 # Import AI Parser (Đã đổi thành AI dùng cho OpenRouter)
 from app.services.ai_parser import parse_command_with_ai
 
 # Vòng lặp Hẹn giờ chạy nền
-from app.services.scheduler import scheduler_loop, execute_schedule_action, TZ
+from app.services.scheduler import scheduler_loop, scheduler_mode, execute_schedule_action, TZ
 from app.services import command_log, device_history, realtime
 from app.models.command_log import CommandLogModel
 from app.services.vn_time_parser import resolve_target_days
@@ -155,34 +152,24 @@ async def lifespan(app: FastAPI):
         )
 
     logger.info("Bắt đầu khởi động các connector...")
-
-    async def _init_connector(brand: str, factory):
-        """Khởi tạo 1 connector an toàn: lỗi 1 hãng không làm sập cả app."""
-        try:
-            plugin = factory()
-            # Đăng ký TRƯỚC khi connect: connect lỗi thì connector vẫn có mặt
-            # và tự thử lại khi có lệnh, thay vì "chưa hỗ trợ hãng" tới khi restart.
-            device_manager.register_connector(brand, plugin)
-            ok = await plugin.connect()
-            if not ok:
-                logger.warning(f"Connector {brand} kết nối KHÔNG thành công (sẽ thử lại khi có lệnh).")
-        except Exception as e:
-            logger.error(f"Lỗi khởi động connector {brand}: {e}")
-
-    await _init_connector("tuya", TuyaConnector)
-    await _init_connector("vesync", lambda: VeSyncConnector(
-        email=os.getenv("VESYNC_EMAIL", ""),
-        password=os.getenv("VESYNC_PASSWORD", ""),
-    ))
-    await _init_connector("rojeco", RojecoConnector)
+    # Dùng chung với worker hẹn giờ tại nhà (backend/worker/) — 1 bản connector.
+    # Lỗi 1 hãng không làm sập cả app.
+    await register_default_connectors(device_manager)
 
     # --- Vòng lặp Hẹn giờ (server luôn thức nhờ UptimeRobot ping /health) ---
     # DB chết thì KHÔNG chạy scheduler: tick 30s sẽ log stack trace vĩnh viễn.
+    # SCHEDULER_ENABLED: 1 (mặc định) | 0 (worker tại nhà lo hết) | auto (đứng
+    # chờ khi worker còn nhịp tim). Chạy song song với worker KHÔNG bắn trùng —
+    # mỗi lần đến hạn được giành bằng claim nguyên tử trong DB.
+    sched_mode = scheduler_mode()
     scheduler_task = (
-        asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate))
-        if db_ready else None
+        asyncio.create_task(scheduler_loop(invalidate_cache=_cache_invalidate, mode=sched_mode))
+        if db_ready and sched_mode != "off" else None
     )
-    if scheduler_task is None:
+    if sched_mode == "off":
+        logger.warning("⏰ Scheduler trong API TẮT (SCHEDULER_ENABLED=0) — lịch chỉ chạy khi "
+                       "worker tại nhà (python -m worker) đang chạy.")
+    elif scheduler_task is None:
         logger.warning("⏰ Scheduler KHÔNG khởi động vì DB chưa sẵn sàng.")
 
     # /ws: heartbeat + watcher. Không có DB thì /ws từ chối mọi kết nối (không

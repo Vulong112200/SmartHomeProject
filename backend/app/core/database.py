@@ -139,6 +139,15 @@ _REQUIRED_SCHEMA = {
     },
     # Bảng mới (create_all tạo) — có trong đây để enable_rls bật RLS cho nó.
     "floor_plans": {"id", "layout", "updated_by", "updated_at_ms"},
+    # Chống bắn trùng + phục hồi của bộ hẹn giờ (services/scheduler.py, worker/).
+    "schedule_runs": {
+        "id", "schedule_id", "part", "occurrence", "due_at_ms", "label", "device_id",
+        "brand", "action_type", "action_value", "status", "attempts", "worker_id",
+        "claimed_at_ms", "updated_at_ms", "detail",
+    },
+    "scheduler_heartbeats": {
+        "worker_id", "role", "host", "pid", "state", "started_at_ms", "last_seen_ms", "detail",
+    },
 }
 
 
@@ -235,19 +244,23 @@ def seed_defaults(bind=None) -> None:
                         _DEFAULT_ZONE_NAME)
 
 
-def verify_schema(bind=None) -> None:
+def verify_schema(bind=None, tables=None) -> None:
     """
     Kiểm schema khớp với những gì code đọc/ghi. Raise nếu thiếu — lifespan bắt
     exception này và cho app boot ở chế độ degraded, /health báo db:false.
     Không có bước này thì schema lệch chỉ lộ ra lúc request đầu tiên lỗi 500.
+
+    `tables`: chỉ kiểm các bảng này (worker hẹn giờ chỉ dùng vài bảng và có
+    thể chạy bằng role DB quyền hẹp). None = tất cả.
     """
     bind = bind if bind is not None else engine
     inspector = inspect(bind)
-    tables = set(inspector.get_table_names())
+    existing_tables = set(inspector.get_table_names())
+    wanted = _REQUIRED_SCHEMA if tables is None else {t: _REQUIRED_SCHEMA[t] for t in tables}
 
     problems = []
-    for table, required in _REQUIRED_SCHEMA.items():
-        if table not in tables:
+    for table, required in wanted.items():
+        if table not in existing_tables:
             problems.append(f"thiếu bảng '{table}'")
             continue
         existing = {col["name"] for col in inspector.get_columns(table)}
@@ -276,7 +289,9 @@ def init_db(bind=None) -> None:
     bind = bind if bind is not None else engine
 
     # import để models đăng ký vào Base.metadata trước khi create_all
-    from app.models import command_log, device, floor_plan, member, scene, schedule, zone  # noqa: F401
+    from app.models import (  # noqa: F401
+        command_log, device, floor_plan, member, scene, schedule, schedule_run, zone,
+    )
 
     Base.metadata.create_all(bind=bind)
     run_startup_migrations(bind)

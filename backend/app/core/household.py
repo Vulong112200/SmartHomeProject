@@ -295,6 +295,25 @@ def require_schedule_write(db: Session, member: MemberModel, schedule_id: int) -
     )
 
 
+def scheduler_target_device(db: Session, device_id: str) -> DeviceModel | None:
+    """
+    Luật quyền của BỘ HẸN GIỜ khi bắn lịch (vòng lặp trong FastAPI hoặc worker
+    tại nhà — tác nhân HỆ THỐNG, không thay mặt ai).
+
+    Lịch là của CẢ NHÀ: quyền đã kiểm lúc TẠO/SỬA lịch (`require_can_schedule`
+    + `require_device_access`, đổi device_id phải có quyền thiết bị MỚI). Lúc
+    bắn KHÔNG lọc theo người tạo — kid tạo lịch rồi bị thu quyền khu thì lịch
+    vẫn là lịch của nhà, chủ nhà xóa ở tab Hẹn giờ nếu muốn.
+
+    Điều kiện duy nhất: thiết bị CÒN trong bảng `devices`. Trả hàng thiết bị để
+    người gọi lấy HÃNG từ DB (không tin `schedules.brand`) và chuẩn hóa hành
+    động theo LOẠI (`normalize_action`). None = không được bắn.
+    """
+    if not device_id:
+        return None
+    return db.query(DeviceModel).filter(DeviceModel.id == device_id).first()
+
+
 def require_scene_write(member: MemberModel) -> None:
     """Tạo/sửa/xóa kịch bản: chỉ owner/adult. Chạy thì ai cũng được (lọc theo thiết bị)."""
     if member.role not in _CAN_EDIT_SCENES:

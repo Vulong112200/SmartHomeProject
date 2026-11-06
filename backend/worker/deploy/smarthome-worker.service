@@ -1,0 +1,32 @@
+# systemd unit cho worker Hẹn giờ tại nhà (Raspberry Pi / Linux).
+# Cài: xem backend/worker/README.md mục "Chạy nền 24/7".
+#   sudo cp smarthome-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now smarthome-worker
+# Sửa User + 2 đường dẫn bên dưới cho khớp máy của bạn.
+
+[Unit]
+Description=SmartHome - worker Hen gio tai nha
+Wants=network-online.target
+After=network-online.target time-sync.target
+# Không bao giờ "bỏ cuộc" khởi động lại (mặc định systemd dừng sau 5 lần/10s).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/SmartHomeProject/backend
+ExecStart=/home/pi/SmartHomeProject/.venv/bin/python -m worker
+# Biến môi trường đọc từ backend/worker/.env (hoặc backend/.env) — xem README.
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+# Dừng: SIGTERM → worker làm XONG tick hiện tại (gửi lệnh tối đa ~60s) rồi thoát,
+# ghi nhịp tim "stopped" để Render (SCHEDULER_ENABLED=auto) tiếp quản ngay.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

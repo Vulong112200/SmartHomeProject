@@ -183,6 +183,29 @@ def _vesync_label(key: tuple) -> str:
     return "Bật"
 
 
+def _recent_system_command(db: Session, device_id: str, within_seconds: float) -> bool:
+    """
+    Có lệnh do HỆ THỐNG gửi (success khác NULL) tới thiết bị này gần đây không —
+    đọc từ DB, nên thấy cả lệnh của TIẾN TRÌNH KHÁC (worker hẹn giờ tại nhà),
+    thứ `recently_sent` (RAM của tiến trình này) không thấy. Lỗi DB → False
+    (thà ghi thừa 1 dòng "ngoài app" còn hơn nuốt mất thay đổi thật).
+    """
+    try:
+        cut = now_ms() - int(within_seconds * 1000)
+        return db.query(CommandLogModel.id).filter(
+            CommandLogModel.device_id == device_id,
+            CommandLogModel.success.isnot(None),
+            CommandLogModel.at_ms >= cut,
+        ).first() is not None
+    except Exception as e:
+        logger.warning(f"Không kiểm được lệnh gần đây của {device_id}: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
+
+
 def observe_state(db: Session, device, state: dict) -> bool:
     """
     Gọi mỗi lần backend đọc trạng thái THẬT (không phải cache) của máy lọc
@@ -197,6 +220,8 @@ def observe_state(db: Session, device, state: dict) -> bool:
     prev = _vesync_seen.get(device.id)
     _vesync_seen[device.id] = key
     if prev is None or prev == key or recently_sent(device.id, _VESYNC_ECHO_SECONDS):
+        return False
+    if _recent_system_command(db, device.id, _VESYNC_ECHO_SECONDS):
         return False
     try:
         db.add(CommandLogModel(

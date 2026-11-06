@@ -194,3 +194,17 @@ def test_vesync_doi_do_chinh_lenh_cua_minh_thi_khong_ghi(api):
     command_log.mark_sent("pur")
     assert device_history.observe_state(db, PURIFIER, {"status": "ON", "mode": "auto"}) is False
     assert device_history.observe_state(db, PURIFIER, {"status": "offline"}) is False
+
+
+def test_vesync_doi_do_lenh_cua_worker_tai_nha_thi_khong_ghi(api):
+    """Worker hẹn giờ là TIẾN TRÌNH KHÁC: RAM `recently_sent` của API không biết lệnh của
+    nó — chỉ dòng lịch sử trong DB cho biết. Không được ghi thêm dòng 'ngoài app'."""
+    db = api.db
+    device_history._vesync_seen.pop("pur", None)
+    command_log._last_sent.pop("pur", None)
+    device_history.observe_state(db, PURIFIER, {"status": "OFF"})
+    db.add(CommandLogModel(at_ms=command_log.now_ms(), device_id="pur", action_type="on",
+                           action_label="Bật", source="schedule", success=True))
+    db.commit()
+    assert device_history.observe_state(db, PURIFIER, {"status": "ON", "mode": "auto"}) is False
+    assert db.query(CommandLogModel).filter_by(device_id="pur", source="external").count() == 0

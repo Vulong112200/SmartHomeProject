@@ -7,5 +7,8 @@ __pycache__/
 backend/.env
 .env
 
+# Log của worker hẹn giờ tại nhà (WORKER_LOG_FILE)
+backend/worker/logs/
+
 # Database local (Render tự tạo lại từ create_all)
 # backend/smarthome.db  # đang được commit sẵn 3 thiết bị — bỏ comment nếu muốn ngừng track
