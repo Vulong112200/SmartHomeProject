@@ -11,6 +11,7 @@ import '../core/device_api.dart';
 import '../core/device_order.dart';
 import '../core/device_type.dart';
 import '../core/household_api.dart';
+import '../core/realtime_service.dart';
 import '../core/scene_api.dart';
 import '../core/zone_groups.dart';
 import 'scene_editor_screen.dart';
@@ -748,8 +749,17 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   bool _sending = false;         // đang gửi lệnh -> chặn double-tap
   String? _pendingMode;          // mode vừa bấm (tô sáng lạc quan trước khi có trạng thái thật)
   DateTime? _pendingSince;       // thời điểm set _pendingMode (để timeout tránh kẹt highlight)
-  Timer? _pollTimer;             // tự động poll trạng thái định kỳ
+  Timer? _pollTimer;             // poll DỰ PHÒNG — chỉ chạy khi /ws không live
   String? _lastShortcutIcon;     // icon shortcut đã đẩy gần nhất (tránh gọi native lặp lại)
+
+  // Thời gian thực (/ws): thẻ chỉ nghe sự kiện của CHÍNH thiết bị mình ⇒ sự
+  // kiện chỉ rebuild thẻ này, không rebuild cả Dashboard.
+  final RealtimeService _rt = RealtimeService.instance;
+  StreamSubscription<DeviceEvent>? _rtSub;
+  bool _rtLive = false;
+  // Giờ MÁY CHỦ lúc đọc ra `_status` — chặn kết quả cũ về muộn ghi đè bản mới.
+  int? _statusAtMs;
+  DateTime? _lastRefreshAt;
 
   // Giữ tô sáng lạc quan tối đa 10s: nếu cloud vẫn chưa xác nhận thì thôi giữ
   // (tránh kẹt highlight sai khi lệnh thật sự không ăn).
@@ -772,21 +782,47 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   @override
   void initState() {
     super.initState();
-    // Máy lọc & cửa: poll trạng thái thật 6s. Máy cho ăn chỉ đọc khi hiện lên
-    // + sau khi bấm cho ăn (trạng thái ít đổi, tiết kiệm quota API Tuya).
+    _rtLive = _rt.isLive;
+    _rtSub = _rt.eventsFor(_id).listen(_onRealtimeEvent);
+    _rt.status.addListener(_onRealtimeStatus);
+    // Máy lọc & cửa: poll trạng thái thật 6s KHI /ws không live. Máy cho ăn chỉ
+    // đọc khi hiện lên + sau khi bấm cho ăn (tiết kiệm quota API Tuya).
     if (_needsStatus || _isFeeder) _refreshStatus();
-    if (_needsStatus) _setPolling(widget.pollingEnabled);
+    if (_needsStatus) _setPolling(_shouldPoll);
   }
+
+  /// Poll 6s chỉ khi thẻ đang hiển thị VÀ /ws không live (dự phòng). /ws live
+  /// thì máy chủ tự đọc định kỳ + đẩy thay đổi về, mọi máy dùng chung.
+  bool get _shouldPoll => widget.pollingEnabled && !_rtLive;
 
   @override
   void didUpdateWidget(covariant SmartDeviceCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     // Tab ẩn / app vào nền -> dừng poll; hiển thị lại -> refresh ngay + poll tiếp.
-    if (_isFeeder && widget.pollingEnabled && !oldWidget.pollingEnabled) _refreshStatus();
-    if (_needsStatus && widget.pollingEnabled != oldWidget.pollingEnabled) {
-      if (widget.pollingEnabled) _refreshStatus();
-      _setPolling(widget.pollingEnabled);
+    // /ws đang live thì sự kiện đã giữ thẻ đúng trong lúc ẩn -> khỏi đọc lại.
+    if (widget.pollingEnabled != oldWidget.pollingEnabled) {
+      if (widget.pollingEnabled && !_rtLive && (_needsStatus || _isFeeder)) _refreshStatus();
+      if (_needsStatus) _setPolling(_shouldPoll);
     }
+  }
+
+  void _onRealtimeStatus() {
+    final live = _rt.isLive;
+    if (!mounted || live == _rtLive) return;
+    _rtLive = live;
+    // Vừa nối (lại): đồng bộ 1 lần — sự kiện trong lúc mất kết nối đã bị lỡ.
+    // Vừa đọc (< 5s, vd. lúc mở app) thì thôi.
+    final recent = _lastRefreshAt != null &&
+        DateTime.now().difference(_lastRefreshAt!) < const Duration(seconds: 5);
+    if (live && !recent && (_needsStatus || _isFeeder)) _refreshStatus();
+    if (_needsStatus) _setPolling(_shouldPoll);
+  }
+
+  void _onRealtimeEvent(DeviceEvent e) {
+    // Chỉ `device.status_changed` mang trạng thái; offline/online đi kèm nó.
+    final s = e.state;
+    if (s == null || !mounted || widget.isOffline) return;
+    _applyStatus(s, e.readAtMs);
   }
 
   // Bật/tắt vòng poll trạng thái 6s.
@@ -800,6 +836,8 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _rtSub?.cancel();
+    _rt.status.removeListener(_onRealtimeStatus);
     super.dispose();
   }
 
@@ -825,10 +863,23 @@ class _SmartDeviceCardState extends State<SmartDeviceCard> {
 
   Future<void> _refreshStatus({bool fresh = false}) async {
     if (widget.isOffline || !mounted) return;
-    final s = await DeviceApi.fetchStatus(_brand, _id, fresh: fresh);
+    _lastRefreshAt = DateTime.now();
+    final r = await DeviceApi.fetchStatusStamped(_brand, _id, fresh: fresh);
     if (!mounted) return;
+    _applyStatus(r?.data, r?.readAtMs);
+  }
+
+  /// Áp trạng thái THẬT — từ HTTP (poll, đọc sau lệnh) hoặc từ /ws. `raw` null
+  /// = đọc lỗi (giữ trạng thái cũ, chỉ xét hết hạn tô sáng lạc quan).
+  void _applyStatus(Map<String, dynamic>? raw, int? readAtMs) {
+    // Kết quả bắt đầu đọc TRƯỚC trạng thái đang hiện (vd. poll HTTP chậm về
+    // sau sự kiện /ws) là bản cũ -> bỏ, không cho nhảy ngược.
+    final s = (raw != null && isFresherStatus(readAtMs, _statusAtMs)) ? raw : null;
     setState(() {
-      if (s != null) _status = s;
+      if (s != null) {
+        _status = s;
+        if (readAtMs != null) _statusAtMs = readAtMs;
+      }
       // Chỉ bỏ tô sáng lạc quan khi trạng thái thật ĐÃ KHỚP mode vừa bấm
       // (cloud xác nhận), hoặc đã quá hạn chờ. Nếu chưa khớp -> GIỮ highlight
       // để không nhảy về mode cũ khi cloud chưa kịp propagate.

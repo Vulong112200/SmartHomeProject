@@ -31,7 +31,14 @@ class DeviceApi {
   /// Lấy trạng thái THẬT của thiết bị từ backend (query phần cứng).
   /// Trả về map data (vd {status, mode, speed} cho máy lọc; {door_state, position}
   /// cho cửa) hoặc null nếu lỗi.
-  static Future<Map<String, dynamic>?> fetchStatus(String brand, String deviceId, {bool fresh = false}) async {
+  static Future<Map<String, dynamic>?> fetchStatus(String brand, String deviceId, {bool fresh = false}) async =>
+      (await fetchStatusStamped(brand, deviceId, fresh: fresh))?.data;
+
+  /// Như [fetchStatus], kèm `readAtMs` = giờ MÁY CHỦ lúc bắt đầu đọc (null với
+  /// backend cũ). Dùng để so với sự kiện /ws: kết quả CŨ về muộn không được
+  /// ghi đè trạng thái mới hơn đã nhận qua /ws.
+  static Future<({Map<String, dynamic> data, int? readAtMs})?> fetchStatusStamped(
+      String brand, String deviceId, {bool fresh = false}) async {
     try {
       // fresh=true -> bỏ qua cache backend (dùng sau lệnh điều khiển để bắt kịp
       // trạng thái mới nhất từ cloud, tránh đọc trúng bản cache cũ).
@@ -44,7 +51,11 @@ class DeviceApi {
       if (res.statusCode == 200) {
         final body = json.decode(utf8.decode(res.bodyBytes));
         if (body['status'] == 'success') {
-          return Map<String, dynamic>.from(body['data'] ?? {});
+          final at = body['read_at_ms'];
+          return (
+            data: Map<String, dynamic>.from(body['data'] ?? {}),
+            readAtMs: at is num ? at.toInt() : null,
+          );
         }
       }
     } catch (_) {

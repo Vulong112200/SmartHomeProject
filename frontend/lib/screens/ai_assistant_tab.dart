@@ -52,7 +52,8 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
   @override
   void initState() {
     super.initState();
-    // Tự kết nối WebSocket khi vào app (trước đây phải bấm badge mới connect).
+    // Kết nối /ws do MainScreen quản lý (dùng chung cả app); gọi ở đây chỉ để
+    // chắc chắn đang nối — đang nối/đã nối thì không tạo kết nối thứ hai.
     Future.microtask(() => ref.read(webSocketProvider.notifier).connect());
   }
 
@@ -204,8 +205,6 @@ class _AIAssistantTabState extends ConsumerState<AIAssistantTab> {
       _commandController.clear();
     });
     _scrollToBottom();
-    
-    ref.read(webSocketProvider.notifier).sendMessage("Bạn: $text");
 
     try {
       // Header xác thực: backend scope thiết bị theo khu của người đang hỏi,

@@ -187,6 +187,47 @@ def require_device_access(db: Session, member: MemberModel, device_id: str) -> D
     )
 
 
+def realtime_audience(db: Session, user_ids: set[str], device_id: str | None = None
+                      ) -> tuple[set[str], set[str]]:
+    """
+    Ai trong `user_ids` (đang giữ kết nối /ws) được nhận sự kiện của `device_id`.
+
+    Trả `(allowed, revoked)`:
+      - revoked: không còn là thành viên ACTIVE (bị chặn / về chờ duyệt / bị
+        xóa) ⇒ kết nối của họ phải bị ngắt, không chỉ bỏ qua.
+      - allowed: active VÀ thiết bị nằm trong `device_query` của họ — đúng luật
+        với GET /api/devices. `device_id` None = chỉ kiểm trạng thái thành viên.
+
+    Đọc DB MỖI lần phát (như mọi request) ⇒ đổi khu / đổi vai / chặn có hiệu
+    lực ngay sự kiện kế tiếp, không phải chờ app kết nối lại.
+    """
+    allowed: set[str] = set()
+    revoked: set[str] = set()
+    if not user_ids:
+        return allowed, revoked
+    members = {
+        m.user_id: m
+        for m in db.query(MemberModel).filter(MemberModel.user_id.in_(list(user_ids))).all()
+    }
+    for uid in user_ids:
+        member = members.get(uid)
+        if member is None or member.status != "active":
+            revoked.add(uid)
+            continue
+        if device_id is None:
+            allowed.add(uid)
+            continue
+        visible = (
+            device_query(db, member)
+            .filter(DeviceModel.id == device_id)
+            .with_entities(DeviceModel.id)
+            .first()
+        )
+        if visible is not None:
+            allowed.add(uid)
+    return allowed, revoked
+
+
 def accessible_zones(db: Session, member: MemberModel) -> list[ZoneModel]:
     """Danh sách khu vực member được thấy, theo thứ tự hiển thị."""
     if sees_all_zones(member):

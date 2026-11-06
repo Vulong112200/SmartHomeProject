@@ -104,7 +104,7 @@ def api(tmp_path, monkeypatch):
         state["user"] = CurrentUser(user_id=user_id, email=f"{user_id}@x.test", is_admin=is_admin)
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://t")
 
-    yield D(as_user=as_user, db=setup, sent=sent, ai_reply=ai_reply)
+    yield D(as_user=as_user, db=setup, sent=sent, ai_reply=ai_reply, session=Session)
     setup.close()
     main.app.dependency_overrides.clear()
 

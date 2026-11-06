@@ -11,6 +11,7 @@ import 'screens/schedule_tab.dart';
 import 'screens/floor_plan/floor_plan_tab.dart';
 import 'core/auth_service.dart';
 import 'core/config.dart';
+import 'core/realtime_service.dart';
 import 'core/shortcut_handler.dart';
 import 'core/theme_controller.dart';
 import 'core/voice_feedback.dart';
@@ -81,7 +82,7 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> {
+class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   int _currentIndex = 0;
   // Bản hồ sơ đang dùng: sửa ở màn Hồ sơ thì cập nhật ở đây để lời chào /
   // avatar đổi ngay, không phải gọi lại /api/me.
@@ -90,10 +91,34 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Trạng thái thời gian thực: MainScreen chỉ tồn tại khi AuthGate đã vào
+    // app (đã đăng nhập + được duyệt) ⇒ không bao giờ nối khi chưa có quyền.
+    RealtimeService.instance.start();
     // Giới thiệu nhanh ở lần đầu vào app (sau frame đầu để có Navigator).
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) OnboardingScreen.showIfFirstTime(context);
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // App vào nền ⇒ đóng /ws (máy chủ ngừng đọc thiết bị khi không ai nghe);
+    // quay lại ⇒ nối ngay, các thẻ tự đồng bộ lại. `inactive` (kéo thanh thông
+    // báo) chỉ thoáng qua nên giữ nguyên.
+    if (state == AppLifecycleState.resumed) {
+      RealtimeService.instance.start();
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      RealtimeService.instance.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    // Đăng xuất ⇒ AuthGate gỡ MainScreen ⇒ đóng kết nối của tài khoản cũ.
+    WidgetsBinding.instance.removeObserver(this);
+    RealtimeService.instance.stop();
+    super.dispose();
   }
 
   Future<void> _signOut() async {

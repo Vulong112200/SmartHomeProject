@@ -113,11 +113,12 @@ Ghi chú quan trọng — reconcile theo GIÁ TRỊ:
 ```
 dashboard_tab.dart / shortcut_handler.dart → DeviceApi.fetchStatus(brand, id)
   → GET /api/devices/{brand}/{id}/status  (thêm ?fresh=1 để bỏ qua cache)
-       ├─ (không fresh) cache còn hạn (<3s) → trả ngay {..., cached:true}
-       └─ connector.get_device_state → cache_set → trả về
-  → trả {status: success, data: {status, door_state/position | mode/speed}}
+       ├─ (không fresh) cache còn hạn (<3s) → trả ngay {..., cached:true, read_at_ms của lần đọc đó}
+       └─ _read_and_publish: connector.get_device_state → cache_set(read_at_ms) → observe_state (VeSync)
+                             → realtime.notify_state (phát /ws nếu ĐỔI) → trả về
+  → trả {status: success, data: {status, door_state/position | mode/speed}, read_at_ms}
 ```
-Ghi chú: card máy lọc & cửa tự động poll `Timer.periodic(6s)` — CHỈ khi `pollingEnabled`
+Ghi chú: card máy lọc & cửa tự động poll `Timer.periodic(6s)` — CHỈ khi /ws KHÔNG live (xem §12) VÀ `pollingEnabled`
 (tab Home hiển thị theo `DashboardTab.isVisible` từ IndexedStack VÀ app foreground theo
 `WidgetsBindingObserver`); tab ẩn/app nền → `_setPolling(false)` dừng timer, hiển thị lại →
 refresh ngay + poll tiếp (`didUpdateWidget`). Mỗi lần có data → `onStatusChanged` báo ON/OFF
@@ -428,4 +429,47 @@ Dashboard chạm thẻ kịch bản → _runScene
 Giọng nói "đi ngủ" → /api/ai/parse → match_scene
   → kịch bản MỞ CỬA → từ chối (trước cả điều kiện)
   → _run_scene (cùng cổng điều kiện) → executed:false → bubble "Kịch bản đã bỏ qua: … <lý do>"
+```
+
+## 12. Trạng thái thời gian thực (WebSocket /ws)
+
+### Kết nối
+```
+AuthGate ready → MainScreen.initState / app resumed → RealtimeService.instance.start()
+  → WebSocketChannel.connect(AppConfig.wsUrl) → chờ ready (10s)
+  → gửi {"event":"connection.auth","token": AuthService.accessToken()}
+  → main.websocket_endpoint
+      legacy_count >= 20 → đóng 4429 ; db_ready=false → 1013
+      frame đầu không phải connection.auth → nhánh echo app cũ (không dữ liệu thiết bị)
+      _ws_authenticate (thread): get_current_user → provision_member → get_current_member
+          401 → đóng 4401 ; 403 (pending/blocked) → 4403 ; >10 kết nối/tài khoản → 4429
+      → gửi connection.ready → manager.add(Connection)
+  → app: status=live → SmartDeviceCard/FloorPlanTab thôi poll 6s, đọc lại 1 lần (nếu chưa đọc < 5s)
+App vào nền (paused) / đăng xuất (dispose MainScreen) → stop() đóng kết nối
+Mất kết nối / im lặng > 70s / không có ready trong 10s → retrying → backoff 1s,2s,4s… ≤60s (±20%)
+  (4401/4403/4429 → 5 phút) → trong lúc đó các thẻ poll 6s như cũ
+```
+
+### Lệnh → mọi máy (vd. mẹ bấm, con thấy)
+```
+Bất kỳ đường gửi lệnh (control endpoint, trợ lý, kịch bản, chạy thử lịch, scheduler._fire)
+  → connector → invalidate cache → command_log.record (lịch sử) → realtime.notify_command
+      success khác True → DỪNG (không phát gì)
+      không ai kết nối → DỪNG (không đọc lại)
+      → nền: broadcast_device(command_completed)
+             → _ws_audience (thread): household.realtime_audience(user_ids, device_id)
+                  không active → đóng 4403 ; thấy thiết bị (device_query) → nhận
+             → gửi song song, mỗi socket khóa riêng + timeout 5s; lỗi → gỡ socket đó
+      → hẹn đọc lại 1,5s / 5s (cửa thêm 32s): _ws_refresh → cache trẻ hơn 1,2s thì bỏ
+             → _read_and_publish → notify_state → status_changed (nếu ĐỔI)
+  → app: SmartDeviceCard._onRealtimeEvent → _applyStatus(state, read_at_ms)
+             read_at_ms < bản đang hiện → bỏ ; else setState thẻ đó + shortcut icon + onStatusChanged
+```
+
+### Thay đổi ngoài app (Smart Life, nút vật lý, app VeSync)
+```
+Có ≥1 kết nối → watcher 15s/lần: thiết bị purifier/curtain/switch (không máy cho ăn)
+  → bỏ thiết bị vừa đọc < 13s → _read_and_publish → notify_state → status_changed nếu ĐỔI
+  (một app nào đó đang poll dự phòng / đọc fresh cũng phát cho mọi máy qua cùng đường)
+Heartbeat 25s: ping mọi kết nối; im lặng > 75s → đóng 1001; mỗi 2 phút kiểm lại thành viên
 ```

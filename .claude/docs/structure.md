@@ -14,7 +14,8 @@ backend/
 │   │   │                           # auth_disabled() TỰ SUY: bật khi có 1 trong 2, AUTH_DISABLED đặt tường minh thắng
 │   │   ├── household.py            # NƠI DUY NHẤT quyết định quyền: provision_member, get_current_member,
 │   │   │                           # require_owner, device_query/schedule_query (lọc theo khu),
-│   │   │                           # require_device_access (403 vs 404), require_schedule_write
+│   │   │                           # require_device_access (403 vs 404), require_schedule_write,
+│   │   │                           # realtime_audience (ai trong các kết nối /ws được nhận sự kiện thiết bị nào / phải bị ngắt)
 │   │   └── database.py             # Chọn DB theo DATABASE_URL (Postgres/Supabase; rỗng → SQLite smarthome.db): normalize_database_url + make_engine (pool pre_ping/recycle cho Postgres),
 │   │                               # SessionLocal + Base + get_db, init_db() = create_all → run_startup_migrations (2 dialect) → verify_schema → enable_rls → seed_defaults
 │   ├── models/
@@ -43,7 +44,10 @@ backend/
 │       ├── ai_parser.py            # parse_command_with_ai: gọi LLM (OpenRouter) cho câu phức (có few-shot intent schedule); client lazy (thiếu key vẫn boot)
 │       ├── command_log.py          # record(): ghi lệnh hệ thống gửi (lỗi DB không làm hỏng lệnh); action_label theo loại; prune_old 90 ngày
 │       ├── device_history.py       # Sự kiện NGOÀI app: nhật ký Tuya (type 5/7, classify_tuya_logs) + VeSync observe_state
-│       ├── scheduler.py            # scheduler_loop: vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh); bắn start+end độc lập, qua đêm _end_days +1, one-shot tự tắt
+│       ├── scheduler.py            # scheduler_loop: vòng lặp Hẹn giờ (tick 30s, grace 120s, TZ Asia/Ho_Chi_Minh); bắn start+end độc lập, qua đêm _end_days +1, one-shot tự tắt; _fire → record + realtime.notify_command
+│       ├── realtime.py             # /ws: ConnectionManager (kết nối đã xác thực, gửi có khóa+timeout 5s, heartbeat ping 25s/chết 75s, kiểm lại thành viên 2 phút),
+│       │                           # notify_state (phát khi trạng thái ĐỔI, bỏ bản đọc cũ, offline/online), notify_command (chỉ lệnh thành công + đọc lại 1.5s/5s, cửa +32s),
+│       │                           # watcher 15s khi có ≥1 kết nối. Sạch DB/quyền: main.py cắm audience/refresh/targets qua configure()
 │       └── automation_engine.py    # Automation rules (đang đóng băng, không import trong main.py)
 ├── docs/
 │   ├── supabase_schema.sql         # DDL Postgres idempotent (zones, members, member_zone_access, devices, schedules
@@ -66,6 +70,8 @@ backend/
 │   ├── test_scene_conditions.py    # điều kiện kịch bản: qua đêm, AND/OR, offline/lỗi/ngoài quyền = unknown, bỏ cache, skipped không gửi lệnh, giọng nói, kịch bản cũ
 │   ├── test_command_history.py    # lịch sử: người/nguồn/kết quả, via không giả được, giọng nói/kịch bản/lịch, lọc theo khu, phân loại nhật ký Tuya, VeSync
 │   ├── test_floor_plan.py          # sơ đồ: mặc định đúng kích thước, chỉ chủ nhà PUT, kid chỉ thấy thiết bị khu mình, validate hình học, layout hỏng → mặc định, DB cũ được tạo bảng
+│   ├── test_realtime.py            # ConnectionManager: phát khi đổi, bản cũ về muộn bị bỏ, offline/online, lọc quyền, kết nối lỗi không lan, lệnh lỗi không phát, heartbeat, watcher + household.realtime_audience
+│   ├── test_realtime_ws.py         # /ws qua ASGI thật (cùng loop với HTTP): auth 4401/4403/4429/1013, app/trợ lý/kịch bản/lịch/scheduler → sự kiện đúng người, chặn → ngắt, app cũ chỉ echo
 │   └── test_rojeco_state.py        # pytest map online/feed_state/feed_report -> trạng thái máy cho ăn (stub openapi, không gọi mạng)
 ├── .env                            # Credential thật (VESYNC_*, TUYA_*, OPENROUTER_API_KEY, DATABASE_URL,
 │                                   # SUPABASE_JWT_SECRET, ADMIN_EMAILS, AUTH_DISABLED) — gitignored
@@ -97,7 +103,7 @@ frontend/
 │   │   ├── household_api.dart      # Zone/Member model + CRUD khu vực, duyệt/đổi vai/cấp khu, gán thiết bị vào khu
 │   │   ├── auth_service.dart       # accessToken() Supabase → fallback app-token (isolate nền), headers() ném
 │   │   │                           # NotAuthenticatedException, handleUnauthorized(); HouseholdProfile + fetchMe()
-│   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus / sendMode / sendAction (+ via) + PurifierCycle
+│   │   ├── device_api.dart         # HTTP client: fetchDevices / fetchStatus (+ fetchStatusStamped kèm read_at_ms) / sendMode / sendAction (+ via) + PurifierCycle
 │   │   ├── floor_plan.dart         # FloorPlan/PlanRoom/PlanDoor/DevicePlacement (bất biến, mét) + thao tác sửa (kéo/hút/kẹp) + PlanGeometry (mét↔px, 1 tỷ lệ chung) + FloorPlanApi (GET/PUT /api/floor-plan)
 │   │   ├── device_status.dart      # Diễn giải /status: describeDeviceStatus (active/idle/moving/offline/unknown + nhãn), currentActionKey, statusConfirms, needsPolling
 │   │   ├── device_type.dart        # deviceTypeOf(name, category:): category backend thắng, fallback suy từ tên; deviceCategoryLabels (nơi duy nhất)
@@ -112,7 +118,9 @@ frontend/
 │   │   ├── widget_service.dart      # Đẩy trạng thái lên App Widget + callback nền xử lý nút widget (home_widget)
 │   │   ├── shortcut_service.dart   # Singleton: MethodChannel 'smarthome/shortcuts' ↔ Android; quick_actions iOS; pin/update/consume action
 │   │   ├── shortcut_handler.dart   # Điều phối khi bấm shortcut (purifier cycle / door toggle / feeder); ShortcutIcons map trạng thái→drawable; appNavigatorKey
-│   │   └── websocket_provider.dart # Kết nối WebSocket wss (AppConfig.wsUrl); Live chỉ sau channel.ready; cap 200 msg
+│   │   ├── realtime_service.dart   # RealtimeService.instance: MỘT kết nối /ws (auth frame đầu, live sau connection.ready, pong, backoff 1s→60s ±20%,
+│   │   │                           # 4401/4403/4429 chờ 5 phút, watchdog im lặng 70s), DeviceEvent, eventsFor(id), isFresherStatus; RealtimeTransport để test thay
+│   │   └── websocket_provider.dart # Lớp Riverpod MỎNG trên RealtimeService (huy hiệu "Live" tab Trợ lý) — không mở kết nối riêng
 │   ├── screens/
 │   │   ├── admin_screen.dart       # 2 tab quản trị: Thành viên (pending ghim đầu) + Khu vực (CRUD + gán thiết bị,
 │   │   │                           # pseudo-zone "Chưa phân khu" ghim cuối để thiết bị mới import không mất dấu;
@@ -121,12 +129,12 @@ frontend/
 │   │   ├── login_screen.dart       # Đăng nhập/đăng ký email+mật khẩu (Supabase Auth), dịch lỗi sang tiếng Việt
 │   │   ├── pending_screen.dart     # Màn chờ chủ nhà duyệt + OfflineScreen (mất mạng ≠ hết phiên)
 │   │   ├── floor_plan/             # Tab "Sơ đồ" (mặt bằng 2D)
-│   │   │   ├── floor_plan_tab.dart       # Màn + FloorPlanDataSource (API thật / giả cho test), poll khi hiển thị, gửi lệnh + chờ xác nhận, chế độ Sửa (chủ nhà)
+│   │   │   ├── floor_plan_tab.dart       # Màn + FloorPlanDataSource (API thật / giả cho test), poll dự phòng khi hiển thị + /ws không live (live ⇒ áp sự kiện /ws), gửi lệnh + chờ xác nhận, chế độ Sửa (chủ nhà)
 │   │   │   ├── floor_plan_painter.dart   # CustomPainter phòng/lưới 1 m/tường/cửa/nhãn kích thước; KHÔNG vẽ thiết bị
 │   │   │   ├── plan_device.dart          # PlanDevice, DeviceLive (trạng thái sống/lệnh), DeviceMarker (icon theo trạng thái), icon/màu theo loại
 │   │   │   ├── device_control_sheet.dart # Bottom sheet điều khiển 1 thiết bị (deviceActionOptions), hiện kết quả lệnh
 │   │   │   └── plan_edit_sheets.dart     # Bảng sửa: phòng (thêm cửa, kích thước), cửa (bề rộng/xóa), bỏ thiết bị, chọn phòng
-│   │   ├── dashboard_tab.dart      # UI danh sách thiết bị, nút điều khiển + nút "Tạo icon xử lý nhanh"; poll pause theo isVisible/lifecycle
+│   │   ├── dashboard_tab.dart      # UI danh sách thiết bị, nút điều khiển + nút "Tạo icon xử lý nhanh"; thẻ nghe eventsFor(id) của /ws, poll 6s CHỈ khi /ws không live (dự phòng), pause theo isVisible/lifecycle, chặn bản đọc cũ (read_at_ms)
 │   │   ├── ai_assistant_tab.dart   # Trợ lý giọng nói (speech-to-text → /api/ai/parse)
 │   │   ├── schedule_tab.dart       # Tab Hẹn giờ: danh sách lịch + form thêm/sửa (bottom sheet)
 │   │   ├── forgot_password_screen.dart # Quên mật khẩu: email -> mã OTP (verifyOTP recovery) -> mật khẩu mới

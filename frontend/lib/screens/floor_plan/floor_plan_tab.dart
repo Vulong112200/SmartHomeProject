@@ -9,6 +9,7 @@ import '../../core/device_api.dart';
 import '../../core/device_status.dart';
 import '../../core/device_type.dart';
 import '../../core/floor_plan.dart';
+import '../../core/realtime_service.dart';
 import '../../theme/app_colors.dart';
 import 'device_control_sheet.dart';
 import 'floor_plan_painter.dart';
@@ -106,6 +107,11 @@ class _FloorPlanTabState extends State<FloorPlanTab> with WidgetsBindingObserver
   Timer? _pollTimer;
   bool _appActive = true;
 
+  // Thời gian thực (/ws): live ⇒ thôi poll 6s, áp sự kiện vào đúng thiết bị.
+  final RealtimeService _rt = RealtimeService.instance;
+  StreamSubscription<DeviceEvent>? _rtSub;
+  bool _rtLive = false;
+
   List<PlanDevice> _devices = [];
   final Map<String, ValueNotifier<DeviceLive>> _live = {};
   final Set<String> _reading = {};
@@ -130,7 +136,27 @@ class _FloorPlanTabState extends State<FloorPlanTab> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _rtLive = _rt.isLive;
+    _rtSub = _rt.events.listen(_onRealtimeEvent);
+    _rt.status.addListener(_onRealtimeStatus);
     if (widget.isVisible) _load();
+  }
+
+  void _onRealtimeStatus() {
+    final live = _rt.isLive;
+    if (!mounted || live == _rtLive) return;
+    _rtLive = live;
+    // Vừa nối (lại) khi đang xem: đồng bộ 1 lần (sự kiện lúc mất kết nối đã lỡ).
+    if (live && _loaded && widget.isVisible && _appActive) _refreshAll();
+    _syncPolling();
+  }
+
+  void _onRealtimeEvent(DeviceEvent e) {
+    final s = e.state;
+    final n = _live[e.deviceId];
+    // Đang gửi lệnh: vòng xác nhận tự cập nhật (giống poll — không ghi đè).
+    if (s == null || n == null || n.value.sending || !mounted) return;
+    n.value = n.value.copyWith(status: s, readFailures: 0);
   }
 
   @override
@@ -154,6 +180,8 @@ class _FloorPlanTabState extends State<FloorPlanTab> with WidgetsBindingObserver
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _rtSub?.cancel();
+    _rt.status.removeListener(_onRealtimeStatus);
     _retryTimer?.cancel();
     _pollTimer?.cancel();
     if (widget.transformationController == null) _transform.dispose();
@@ -215,9 +243,10 @@ class _FloorPlanTabState extends State<FloorPlanTab> with WidgetsBindingObserver
   }
 
   /// Poll 6s CHỈ khi tab hiển thị + app ở foreground (giống Dashboard: 2 tab
-  /// không bao giờ cùng poll vì chỉ 1 tab hiển thị một lúc).
+  /// không bao giờ cùng poll vì chỉ 1 tab hiển thị một lúc) VÀ /ws không live
+  /// (dự phòng — /ws live thì máy chủ đẩy thay đổi về).
   void _syncPolling() {
-    final active = widget.isVisible && _appActive && _loaded;
+    final active = widget.isVisible && _appActive && _loaded && !_rtLive;
     if (!active) {
       _pollTimer?.cancel();
       _pollTimer = null;

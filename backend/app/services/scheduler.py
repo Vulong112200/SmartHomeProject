@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from app.core.database import SessionLocal
 from app.models.device import DeviceModel
 from app.models.schedule import ScheduleModel
-from . import command_log
+from . import command_log, realtime
 from .connector_manager import device_manager
 
 logger = logging.getLogger("SmartHome.Scheduler")
@@ -116,6 +116,9 @@ async def _fire(db, sch: ScheduleModel, action_type: str, action_value: Optional
     command_log.record(db, device=device, device_id=sch.device_id, action_type=action_type,
                        action_value=action_value, source="schedule", success=ok,
                        detail=f"{detail}: {error}" if error else detail)
+    # Lịch sử trước, /ws sau; lệnh lỗi không phát gì. Không bao giờ ném.
+    realtime.manager.notify_command(device, action_type=action_type, action_value=action_value,
+                                    source="schedule", success=ok)
 
 
 async def scheduler_loop(invalidate_cache: Optional[Callable] = None):

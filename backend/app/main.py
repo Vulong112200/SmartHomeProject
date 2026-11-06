@@ -14,10 +14,13 @@ from dotenv import load_dotenv
 # (credential Tuya/VeSync/Rojeco đọc từ os.getenv lúc khởi tạo).
 load_dotenv()
 
+from types import SimpleNamespace
+
 from pydantic import BaseModel
-from fastapi import Body, FastAPI, WebSocket, Depends, HTTPException, status
+from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials
 
 from sqlalchemy.orm import Session
 
@@ -33,7 +36,7 @@ from app.services.ai_parser import parse_command_with_ai
 
 # Vòng lặp Hẹn giờ chạy nền
 from app.services.scheduler import scheduler_loop, execute_schedule_action, TZ
-from app.services import command_log, device_history
+from app.services import command_log, device_history, realtime
 from app.models.command_log import CommandLogModel
 from app.services.vn_time_parser import resolve_target_days
 from app.services.device_actions import normalize_action
@@ -44,7 +47,7 @@ from typing import Any
 # from app.services.automation_engine import automation_engine, AutomationRule
 
 # Import Database
-from app.core.auth import app_token_secret, auth_status, issue_app_token
+from app.core.auth import app_token_secret, auth_status, get_current_user, issue_app_token
 from app.core.database import SessionLocal, get_db, init_db, IS_SQLITE
 from app.core.household import (
     DEVICE_ORDER_MAX_ID_LEN,
@@ -55,6 +58,8 @@ from app.core.household import (
     get_current_member,
     get_member,
     member_to_dict,
+    provision_member,
+    realtime_audience,
     require_can_schedule,
     require_device_access,
     require_owner,
@@ -180,8 +185,14 @@ async def lifespan(app: FastAPI):
     if scheduler_task is None:
         logger.warning("⏰ Scheduler KHÔNG khởi động vì DB chưa sẵn sàng.")
 
+    # /ws: heartbeat + watcher. Không có DB thì /ws từ chối mọi kết nối (không
+    # kiểm được quyền) nên cũng không cần chạy.
+    if db_ready:
+        realtime.manager.start()
+
     yield
 
+    await realtime.manager.stop()
     # Shutdown: dừng scheduler sạch sẽ
     if scheduler_task is not None:
         scheduler_task.cancel()
@@ -381,19 +392,64 @@ async def delete_device(
 # mỗi lệnh điều khiển để lần đọc kế tiếp lấy trạng thái mới.
 # =========================================================
 _STATUS_CACHE_TTL = 3.0  # giây
-_status_cache: dict = {}  # {(brand, device_id): (monotonic_ts, data)}
+_status_cache: dict = {}  # {(brand, device_id): (monotonic_ts, data, read_at_ms)}
 
-def _cache_get(brand: str, device_id: str):
+def _cache_entry(brand: str, device_id: str, max_age: float = _STATUS_CACHE_TTL):
+    """(monotonic_ts, data, read_at_ms) nếu bản cache trẻ hơn `max_age` giây."""
     entry = _status_cache.get((brand, device_id))
-    if entry and (time.monotonic() - entry[0]) < _STATUS_CACHE_TTL:
-        return entry[1]
+    if entry and (time.monotonic() - entry[0]) < max_age:
+        return entry
     return None
 
-def _cache_set(brand: str, device_id: str, data):
-    _status_cache[(brand, device_id)] = (time.monotonic(), data)
+def _cache_get(brand: str, device_id: str):
+    entry = _cache_entry(brand, device_id)
+    return entry[1] if entry else None
+
+def _cache_set(brand: str, device_id: str, data, read_at_ms: int | None = None):
+    _status_cache[(brand, device_id)] = (time.monotonic(), data, read_at_ms or realtime.now_ms())
 
 def _cache_invalidate(brand: str, device_id: str):
     _status_cache.pop((brand, device_id), None)
+
+# Session cho việc chạy NGOÀI request (/ws, đọc nền). Test thay bằng DB tạm.
+_realtime_session = SessionLocal
+
+def _with_session(fn):
+    db = _realtime_session()
+    try:
+        return fn(db)
+    finally:
+        db.close()
+
+def _observe_external(db: Session | None, device, state: dict) -> None:
+    """Ghi thay đổi ngoài app (chỉ máy lọc VeSync — Tuya có nhật ký riêng).
+    Lỗi ghi lịch sử không được làm hỏng kết quả đọc."""
+    if getattr(device, "brand", None) != "vesync":
+        return
+    try:
+        if db is not None:
+            device_history.observe_state(db, device, state)
+        else:
+            _with_session(lambda s: device_history.observe_state(s, device, state))
+    except Exception as e:
+        logger.warning(f"observe_state lỗi {device.id}: {e}")
+
+async def _read_and_publish(device, db: Session | None = None) -> tuple[Any, int]:
+    """
+    MỌI lần đọc trạng thái THẬT (không phải cache) đi qua đây: connector → cache
+    → ghi nhận đổi ngoài app → phát /ws nếu trạng thái đổi. Nhờ vậy một máy
+    đang poll dự phòng, vòng xác nhận sau lệnh, điều kiện kịch bản hay watcher
+    đều giúp mọi máy khác cập nhật. Trả (state, read_at_ms = lúc BẮT ĐẦU đọc).
+    Lỗi connector ném ra ngoài như trước.
+    """
+    read_at = realtime.now_ms()
+    connector = device_manager.get_connector(device.brand)
+    state = await connector.get_device_state(device.id)
+    _cache_set(device.brand, device.id, state, read_at)
+    if isinstance(state, dict):
+        _observe_external(db, device, state)
+    realtime.manager.notify_state(device.id, device.brand, state, read_at)
+    return state, read_at
 
 async def _read_state_fresh(db: Session, device: DeviceModel) -> dict:
     """
@@ -401,23 +457,31 @@ async def _read_state_fresh(db: Session, device: DeviceModel) -> dict:
     là trạng thái từ trước một lệnh vừa gửi, quyết định chạy/bỏ qua dựa vào nó
     là sai. Lỗi connector ném ra ngoài (engine coi là unknown).
     """
-    connector = device_manager.get_connector(device.brand)
-    state = await connector.get_device_state(device.id)
-    _cache_set(device.brand, device.id, state)
-    if isinstance(state, dict):
-        try:
-            device_history.observe_state(db, device, state)
-        except Exception as e:  # ghi lịch sử lỗi không được làm hỏng kết quả đọc
-            logger.warning(f"observe_state lỗi {device.id}: {e}")
+    state, _ = await _read_and_publish(device, db)
     return state
+
+def _record_command(db: Session | None, device, *, action_type: str | None, action_value: str | None,
+                    source: str, success: bool, member: MemberModel | None = None,
+                    detail: str | None = None, device_id: str | None = None) -> None:
+    """
+    Sau khi connector trả kết quả: ghi lịch sử TRƯỚC, rồi phát /ws. Cả hai không
+    bao giờ ném — lỗi ghi/phát không được làm hỏng lệnh đã chạy. Lệnh lỗi KHÔNG
+    phát sự kiện (notify_command tự bỏ khi success khác True).
+    """
+    if db is not None:
+        command_log.record(db, device=device, device_id=device_id, action_type=action_type,
+                           action_value=action_value, source=source, success=success,
+                           member=member, detail=detail)
+    realtime.manager.notify_command(device, action_type=action_type, action_value=action_value,
+                                    source=source, success=success, member=member)
 
 def _log_control(db: Session, device: DeviceModel, action_type: str, action_value: str | None,
                  via: str, member: MemberModel, ok: bool, error: str | None = None) -> None:
     """Ghi lịch sử cho endpoint control. `via` do app tự khai — chỉ nhận giá trị
     trong CLIENT_SOURCES, lạ thì coi là "app" (client không giả được nguồn khác)."""
     source = via if via in command_log.CLIENT_SOURCES else "app"
-    command_log.record(db, device=device, action_type=action_type, action_value=action_value,
-                       source=source, success=ok, member=member, detail=error)
+    _record_command(db, device, action_type=action_type, action_value=action_value,
+                    source=source, success=ok, member=member, detail=error)
 
 # =========================================================
 # API - Test Control Device (Action & Mode)
@@ -503,16 +567,15 @@ async def get_device_status(
     try:
         # fresh=1: bỏ qua cache (client gọi ngay sau lệnh điều khiển để lấy
         # trạng thái mới nhất). Poll định kỳ vẫn dùng cache bình thường.
+        # read_at_ms (giờ máy chủ, lúc bắt đầu đọc): app so với sự kiện /ws để
+        # không để kết quả CŨ về muộn ghi đè trạng thái mới hơn. Trường thêm —
+        # app cũ bỏ qua.
         if not fresh:
-            cached = _cache_get(brand, device_id)
-            if cached is not None:
-                return {"status": "success", "data": cached, "cached": True}
-        connector = device_manager.get_connector(brand)
-        state = await connector.get_device_state(device_id)
-        _cache_set(brand, device_id, state)
-        if isinstance(state, dict):
-            device_history.observe_state(db, device, state)
-        return {"status": "success", "data": state}
+            entry = _cache_entry(brand, device_id)
+            if entry is not None:
+                return {"status": "success", "data": entry[1], "cached": True, "read_at_ms": entry[2]}
+        state, read_at = await _read_and_publish(device, db)
+        return {"status": "success", "data": state, "read_at_ms": read_at}
     except Exception as e:
         logger.error(f"Lỗi lấy trạng thái {brand}/{device_id}: {e}")
         return {"status": "error", "message": str(e)}
@@ -559,9 +622,8 @@ async def _execute_device_action(device: DeviceModel | None, verb: str | None, m
         )
     except Exception as e:
         logger.error(f"[Action Error] {device.brand}/{device.id}: {e}")
-    if db is not None:
-        command_log.record(db, device=device, action_type=action_type, action_value=action_value,
-                           source=source, success=success, member=member, detail=detail)
+    _record_command(db, device, action_type=action_type, action_value=action_value,
+                    source=source, success=success, member=member, detail=detail)
     return {"device_name": device.name, "action": _action_label_vn(action_type, action_value),
             "success": success}
 
@@ -971,17 +1033,17 @@ async def run_schedule_now(
             sch.brand, sch.device_id, action_type, action_value,
             invalidate_cache=_cache_invalidate,
         )
-        command_log.record(db, device=device, device_id=sch.device_id, action_type=action_type,
-                           action_value=action_value, source="schedule", success=ok,
-                           member=member, detail=label)
+        _record_command(db, device, device_id=sch.device_id, action_type=action_type,
+                        action_value=action_value, source="schedule", success=ok,
+                        member=member, detail=label)
         if not ok:
             return {"status": "error", "message": "Thiết bị không nhận lệnh."}
         return {"status": "success", "message": f"Đã chạy lịch #{schedule_id}"}
     except Exception as e:
         logger.error(f"Lỗi chạy lịch #{schedule_id}: {e}")
-        command_log.record(db, device=device, device_id=sch.device_id, action_type=action_type,
-                           action_value=action_value, source="schedule", success=False,
-                           member=member, detail=f"{label}: {e}")
+        _record_command(db, device, device_id=sch.device_id, action_type=action_type,
+                        action_value=action_value, source="schedule", success=False,
+                        member=member, detail=f"{label}: {e}")
         return {"status": "error", "message": str(e)}
 
 # =========================================================
@@ -1558,6 +1620,9 @@ async def update_member(
 
     db.commit()
     db.refresh(target)
+    # Bị chặn / về chờ duyệt -> ngắt /ws của họ NGAY (không đợi vòng kiểm 2 phút).
+    # Đổi khu không cần gì thêm: quyền được tính lại mỗi lần phát sự kiện.
+    realtime.manager.revalidate_soon(user_id)
     logger.info(
         f"Đã cập nhật thành viên {target.email}: vai={target.role} trạng thái={target.status}"
     )
@@ -1565,18 +1630,141 @@ async def update_member(
 
 
 # =========================================================
-# WebSocket (Giữ kết nối cho App)
+# WebSocket — trạng thái thiết bị thời gian thực (services/realtime.py)
 # =========================================================
+# Câu trả lời của /ws bản cũ (chỉ echo). App ≤ 1.1.0 kết nối không token để
+# hiện huy hiệu "Live" ở tab Trợ lý — giữ nguyên cho nó, KHÔNG kèm dữ liệu
+# thiết bị nào.
+_WS_LEGACY_ECHO = "📡 Server đã nhận lệnh, đang xử lý qua AI..."
+
+
+async def _ws_audience(device_id: str | None, user_ids: set) -> tuple[set, set]:
+    # Quyền do household.py quyết; chạy ở thread vì SQLAlchemy đồng bộ.
+    return await asyncio.to_thread(_with_session, lambda db: realtime_audience(db, user_ids, device_id))
+
+
+async def _ws_refresh(device_id: str, brand: str, name: str | None, max_age: float) -> None:
+    """Đọc lại cho /ws (sau lệnh, watcher). Ai đó vừa đọc (< max_age) thì thôi —
+    lần đọc đó đã phát rồi."""
+    if _cache_entry(brand, device_id, max_age) is not None:
+        return
+    await _read_and_publish(SimpleNamespace(id=device_id, brand=brand, name=name))
+
+
+async def _ws_watch_targets() -> list:
+    def load(db: Session) -> list:
+        return [(d.id, d.brand, d.name) for d in db.query(DeviceModel).all()
+                if device_kind(d) in realtime.WATCHED_KINDS]
+    return await asyncio.to_thread(_with_session, load)
+
+
+realtime.manager.configure(audience=_ws_audience, refresh=_ws_refresh, targets=_ws_watch_targets)
+
+
+def _ws_parse(text: str) -> dict | None:
+    try:
+        msg = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return msg if isinstance(msg, dict) else None
+
+
+def _ws_authenticate(token: str | None) -> str:
+    """
+    user_id của thành viên ACTIVE sở hữu `token` — CÙNG đường với mọi endpoint
+    HTTP (get_current_user → provision_member → get_current_member), nên token
+    Supabase lẫn app-token đều dùng được và luật pending/blocked giống hệt.
+    Ném HTTPException 401/403. Không bao giờ tin user_id do client tự gửi.
+    """
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token) if token else None
+    user = get_current_user(creds)
+    db = _realtime_session()
+    try:
+        return get_current_member(provision_member(db, user)).user_id
+    finally:
+        db.close()
+
+
+async def _ws_legacy(websocket: WebSocket) -> None:
+    """App cũ: trả lời y như /ws trước đây cho tới khi nó tự ngắt."""
+    await websocket.send_text(_WS_LEGACY_ECHO)
+    while True:
+        await websocket.receive_text()
+        await websocket.send_text(_WS_LEGACY_ECHO)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    """
+    Giao thức: app gửi frame đầu `{"event":"connection.auth","token":"<JWT>"}`
+    (hoặc header `Authorization: Bearer`). Token KHÔNG đi trong URL — Render ghi
+    log cả query string. Hợp lệ → `connection.ready`, sau đó chỉ nhận sự kiện
+    của thiết bị mình được thấy. Server ping 25s, app trả `connection.pong`.
+    Đóng 4401 = token sai, 4403 = chờ duyệt/bị chặn, 4429 = quá nhiều kết nối,
+    1013 = DB chưa sẵn sàng.
+    """
+    mgr = realtime.manager
+    if mgr.legacy_count >= realtime.MAX_LEGACY:
+        await websocket.close(code=realtime.CLOSE_TOO_MANY)
+        return
     await websocket.accept()
-    logger.info("Client WebSocket mới đã kết nối.")
+    if not db_ready:
+        await websocket.close(code=realtime.CLOSE_UNAVAILABLE)
+        return
+
+    # --- Giai đoạn CHƯA xác thực (gồm app cũ chỉ echo) — có giới hạn số lượng.
+    mgr.legacy_count += 1
+    try:
+        auth = websocket.headers.get("authorization") or ""
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
+        if not token:
+            first = await websocket.receive_text()
+            msg = _ws_parse(first)
+            if msg is None or msg.get("event") != realtime.AUTH:
+                await _ws_legacy(websocket)
+                return
+            token = msg.get("token") or None  # xác thực TẮT: app chưa đăng nhập gửi rỗng
+        try:
+            user_id = await asyncio.to_thread(_ws_authenticate, token)
+        except HTTPException as e:
+            code = realtime.CLOSE_UNAUTHORIZED if e.status_code == 401 else realtime.CLOSE_FORBIDDEN
+            await websocket.close(code=code)
+            return
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        logger.warning(f"WS: lỗi lúc xác thực: {e}")
+        try:
+            await websocket.close(code=1011)
+        except Exception:
+            pass
+        return
+    finally:
+        mgr.legacy_count -= 1
+
+    if mgr.user_count(user_id) >= realtime.MAX_PER_USER:
+        await websocket.close(code=realtime.CLOSE_TOO_MANY)
+        return
+
+    conn = realtime.Connection(websocket, user_id)
+    if not await conn.send(realtime.make_event(realtime.READY, data={
+        "user_id": user_id, "ping_interval": realtime.PING_INTERVAL,
+    })):
+        return
+    mgr.add(conn)
     try:
         while True:
-            user_text = await websocket.receive_text()
-            await websocket.send_text("📡 Server đã nhận lệnh, đang xử lý qua AI...")
+            text = await websocket.receive_text()
+            conn.touch()  # mọi frame (pong, ping...) đều chứng minh kết nối còn sống
+            msg = _ws_parse(text)
+            if msg is not None and msg.get("event") == realtime.PING:
+                await conn.send(realtime.make_event(realtime.PONG))
+    except WebSocketDisconnect:
+        pass
     except Exception as e:
-        logger.warning(f"WebSocket ngắt kết nối: {e}")
+        logger.info(f"WS #{conn.id} đóng: {type(e).__name__}: {e}")
+    finally:
+        mgr.remove(conn)
 
 # =========================================================
 # Root & Favicon
